@@ -1,0 +1,41 @@
+appId: com.personalworkshop.researchworkbench
+productName: Personal Research Workbench
+asar: true
+electronFuses:
+  runAsNode: false
+  enableCookieEncryption: true
+  enableNodeOptionsEnvironmentVariable: false
+  enableNodeCliInspectArguments: false
+  enableEmbeddedAsarIntegrityValidation: true
+  onlyLoadAppFromAsar: true
+  grantFileProtocolExtraPrivileges: false
+directories:
+  output: ../../release
+files:
+  - out/**
+  - package.json
+extraResources:
+  # Ship the project-owned skill registry from the single canonical location.
+  # Runtime resolution looks under resources/skills/<skill>/...
+  - from: ../../.agents/skills
+    to: skills
+  # The Scholar adapter is an explicit, page-bounded sidecar. It is shipped
+  # as data so the Python runtime remains user-controlled and inspectable.
+  - from: ../../sidecars
+    to: sidecars
+asarUnpack:
+  - node_modules/better-sqlite3/**
+  - node_modules/sqlite-vec/**
+win:
+  executableName: research-workbench
+  target:
+    - target: nsis
+      arch:
+        - x64
+nsis:
+  artifactName: Personal-Research-Workbench-${version}-Setup.${ext}
+  oneClick: false
+  allowToChangeInstallationDirectory: true
+  createDesktopShortcut: always
+  createStartMenuShortcut: true
+  shortcutName: Personal Research Workbench

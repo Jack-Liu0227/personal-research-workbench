@@ -1,0 +1,28 @@
+{
+  "name": "@prw/workspace-service",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts",
+    "./dispatcher": "./src/dispatcher.ts",
+    "./agent-runtime": "./src/agent-runtime.ts",
+    "./agent-coordinator": "./src/agent-coordinator.ts",
+    "./integration-runtime": "./src/integration-runtime.ts"
+  },
+  "scripts": {
+    "typecheck": "tsc -p tsconfig.json --noEmit"
+  },
+  "dependencies": {
+    "@prw/agent-runtime": "workspace:*",
+    "@prw/ai-runtime": "workspace:*",
+    "@prw/connectors": "workspace:*",
+    "@prw/contracts": "workspace:*",
+    "@prw/database": "workspace:*",
+    "undici": "7.29.0",
+    "zod": "4.4.3"
+  },
+  "devDependencies": {
+    "typescript": "7.0.2"
+  }
+}

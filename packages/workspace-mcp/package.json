@@ -1,0 +1,26 @@
+{
+  "name": "@prw/workspace-mcp",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "bin": {
+    "workspace-mcp": "out/cli.js"
+  },
+  "exports": {
+    ".": "./out/index.js"
+  },
+  "scripts": {
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "build": "esbuild src/cli.ts --bundle --platform=node --format=esm --outfile=out/cli.js && esbuild src/index.ts --bundle --platform=node --format=esm --outfile=out/index.js"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "1.30.0",
+    "@prw/contracts": "workspace:*",
+    "@prw/workspace-core": "workspace:*",
+    "zod": "4.4.3"
+  },
+  "devDependencies": {
+    "esbuild": "0.28.2",
+    "typescript": "7.0.2"
+  }
+}

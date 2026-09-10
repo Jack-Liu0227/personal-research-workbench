@@ -1,0 +1,14 @@
+packages:
+  - apps/*
+  - packages/*
+
+allowBuilds:
+  '@google/genai': false
+  better-sqlite3: true
+  electron-winstaller: true
+  esbuild: true
+  protobufjs: false
+
+minimumReleaseAgeExclude:
+  - '@tanstack/query-core@5.102.2'
+  - '@tanstack/react-query@5.102.2'

@@ -1,0 +1,19 @@
+{
+  "name": "@prw/connectors",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "scripts": {
+    "typecheck": "tsc -p tsconfig.json --noEmit"
+  },
+  "dependencies": {
+    "@prw/contracts": "workspace:*",
+    "zod": "4.4.3"
+  },
+  "devDependencies": {
+    "typescript": "7.0.2"
+  }
+}

@@ -1,0 +1,19 @@
+node_modules/
+.pnpm-store/
+out/
+release*/
+_archive_cleanup_*/
+coverage/
+playwright-report/
+test-results/
+*.log
+*.tsbuildinfo
+__pycache__/
+*.py[cod]
+*.db
+*.db-shm
+*.db-wal
+.env
+.env.*
+!.env.example
+* TO DO list.csv

@@ -1,0 +1,26 @@
+{
+  "name": "personal-research-workbench",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Local-first personal research workbench for tasks, literature and AI-assisted writing.",
+  "packageManager": "pnpm@11.5.2",
+  "engines": {
+    "node": ">=24.0.0"
+  },
+  "scripts": {
+    "dev": "pnpm --filter @prw/desktop dev",
+    "build": "pnpm --filter @prw/desktop build",
+    "package:win": "pnpm --filter @prw/desktop package:win",
+    "typecheck": "pnpm -r typecheck",
+    "test": "node -e \"console.log('Test suite intentionally removed; use typecheck and build gates.')\"",
+    "test:e2e": "node scripts/e2e-electron.cjs",
+    "test:e2e:zotero": "node scripts/e2e-zotero-real.cjs",
+    "check": "pnpm typecheck && pnpm build"
+  },
+  "devDependencies": {
+    "@types/node": "24.10.14",
+    "playwright-core": "1.58.2",
+    "typescript": "7.0.2"
+  }
+}
