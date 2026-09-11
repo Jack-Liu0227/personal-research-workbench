@@ -281,6 +281,124 @@ export const AgentRunEventsInputSchema = z.strictObject({
 })
 export type AgentRunEventsInput = z.infer<typeof AgentRunEventsInputSchema>
 
+/** The normalized run ledger.
+ *
+ * A run ledger entry is the provider-neutral, auditable projection of one
+ * Codex/Pi CLI event (or one of its lifecycle mutations). The renderer's chat
+ * view and trajectory view are both pure projections of this ledger, so the
+ * mapping from raw CLI JSON to a record happens exactly once, inside
+ * `@prw/agent-runtime`, instead of being guessed in the renderer. */
+export const AgentRecordKindSchema = z.enum([
+  'user', 'assistant', 'reasoning', 'tool', 'subtool', 'system', 'context',
+  'diagnostic', 'compacted', 'error', 'turn_end'
+])
+export type AgentRecordKind = z.infer<typeof AgentRecordKindSchema>
+
+export const AgentRecordStatusSchema = z.enum(['info', 'running', 'completed', 'failed', 'canceled'])
+export type AgentRecordStatus = z.infer<typeof AgentRecordStatusSchema>
+
+/** Token accounting as reported by the CLI. Every field stays nullable because
+ * Codex and Pi report different subsets, and this value is never synthesized. */
+export const AgentUsageSchema = z.strictObject({
+  input: z.int().nonnegative().nullable().default(null),
+  output: z.int().nonnegative().nullable().default(null),
+  think: z.int().nonnegative().nullable().default(null),
+  cacheRead: z.int().nonnegative().nullable().default(null),
+  cacheWrite: z.int().nonnegative().nullable().default(null),
+  total: z.int().nonnegative().nullable().default(null)
+})
+export type AgentUsage = z.infer<typeof AgentUsageSchema>
+
+/** `parentId` references the parent record's `recordKey` (not its row id), so a
+ * chain of subtool records stays stable across the streamed in-place updates. */
+export const AgentRunRecordEntrySchema = z.strictObject({
+  id: IdSchema,
+  runId: IdSchema,
+  seq: z.int().nonnegative(),
+  recordKey: z.string().min(1).max(512),
+  kind: AgentRecordKindSchema,
+  status: AgentRecordStatusSchema,
+  turn: z.int().nonnegative(),
+  step: z.int().nonnegative(),
+  title: z.string().max(500),
+  detail: z.string().max(65_536),
+  inputText: z.string().max(65_536).nullable(),
+  outputText: z.string().max(65_536).nullable(),
+  toolName: z.string().max(200).nullable(),
+  callId: z.string().max(200).nullable(),
+  parentId: z.string().max(512).nullable(),
+  startedAt: IsoDateSchema.nullable(),
+  finishedAt: IsoDateSchema.nullable(),
+  durationMs: z.int().nonnegative().nullable(),
+  usage: AgentUsageSchema.nullable(),
+  truncated: z.boolean(),
+  createdAt: IsoDateSchema
+})
+export type AgentRunRecordEntry = z.infer<typeof AgentRunRecordEntrySchema>
+
+/** Internal (non-wire) shape an adapter hands to Core for one ledger record.
+ * Persistence owns `id`/`runId`/`seq`/`createdAt`, and every optional field means
+ * "unspecified": an in-place update keeps the previously stored value instead of
+ * clearing it, which is what lets a streamed record grow without losing fields. */
+export interface AgentRunRecordDraft {
+  /** Adapter-owned stable identity: the ledger upserts by this key, so streamed
+   * content grows one record in place instead of appending a row per delta. */
+  readonly recordKey: string
+  readonly kind: AgentRecordKind
+  readonly status?: AgentRecordStatus | undefined
+  /** Ledger-owned hierarchy. Omitted means "unspecified": an update keeps the
+   * stored value and an insert falls back to `0`. */
+  readonly turn?: number | undefined
+  readonly step?: number | undefined
+  readonly title?: string | undefined
+  readonly detail?: string | undefined
+  readonly inputText?: string | null | undefined
+  readonly outputText?: string | null | undefined
+  readonly toolName?: string | null | undefined
+  readonly callId?: string | null | undefined
+  readonly parentId?: string | null | undefined
+  readonly startedAt?: string | null | undefined
+  readonly finishedAt?: string | null | undefined
+  readonly durationMs?: number | null | undefined
+  readonly usage?: AgentUsage | null | undefined
+}
+
+/** Trajectory paging. `beforeSeq` walks older rows, `afterSeq` tops up a live
+ * run, and omitting both returns the newest `limit` rows. Row `seq` is stable
+ * after insert, which is what makes it usable as the trajectory anchor. */
+export const AgentRunRecordsPageInputSchema = z.strictObject({
+  runId: IdSchema,
+  beforeSeq: z.int().nonnegative().nullable().default(null),
+  afterSeq: z.int().nonnegative().nullable().default(null),
+  limit: z.int().min(1).max(500).default(200)
+})
+export type AgentRunRecordsPageInput = z.infer<typeof AgentRunRecordsPageInputSchema>
+
+/** Chat projection input. The window is taken from the tail; "load earlier"
+ * widens `limit` instead of using a cursor so an insert during streaming can
+ * never shift a page boundary. */
+export const AgentConversationRecordsInputSchema = z.strictObject({
+  conversationId: IdSchema,
+  limit: z.int().min(1).max(2_000).default(500)
+})
+export type AgentConversationRecordsInput = z.infer<typeof AgentConversationRecordsInputSchema>
+
+/** Incremental ledger push (Core -> Main -> renderer). This is the only new
+ * send direction in the Agent stack; it is validated with this schema at every
+ * hop and is scoped to the runs a renderer explicitly subscribed to. */
+export const AgentLedgerPushSchema = z.strictObject({
+  runId: IdSchema,
+  run: AgentRunRecordSchema,
+  records: z.array(AgentRunRecordEntrySchema).max(500)
+})
+export type AgentLedgerPush = z.infer<typeof AgentLedgerPushSchema>
+
+export const AgentLedgerSubscriptionInputSchema = z.strictObject({
+  runId: IdSchema,
+  action: z.enum(['subscribe', 'unsubscribe']).default('subscribe')
+})
+export type AgentLedgerSubscriptionInput = z.infer<typeof AgentLedgerSubscriptionInputSchema>
+
 export const AgentApprovalSchema = z.strictObject({
   id: IdSchema,
   runId: IdSchema,
@@ -382,6 +500,8 @@ export const AgentRpcMethodPayloadSchemas = {
   'agent.runs.list': AgentRunListInputSchema,
   'agent.runs.get': z.strictObject({ runId: IdSchema }),
   'agent.runs.eventsPage': AgentRunEventsInputSchema,
+  'agent.runs.recordsPage': AgentRunRecordsPageInputSchema,
+  'agent.conversations.records': AgentConversationRecordsInputSchema,
   'agent.runs.cancel': z.strictObject({ runId: IdSchema }),
   'agent.runs.retry': z.strictObject({ runId: IdSchema }),
   'agent.approvals.list': z.strictObject({ runId: IdSchema.optional() }),
@@ -412,6 +532,8 @@ export interface WorkbenchAgentApiV1 {
     create(input?: AgentConversationCreateInput): Promise<AgentConversation>
     get(conversationId: string): Promise<AgentConversation>
     messages(input: AgentConversationMessagesInput): Promise<AgentMessage[]>
+    /** Tail window of the conversation's run-ledger records (chat projection). */
+    records(input: AgentConversationRecordsInput): Promise<AgentRunRecordEntry[]>
     archive(conversationId: string, expectedRevision: number): Promise<void>
     archiveBulk(items: AgentConversationArchiveItem[]): Promise<void>
   }
@@ -431,6 +553,11 @@ export interface WorkbenchAgentApiV1 {
     list(input?: AgentRunListInput): Promise<AgentRunRecord[]>
     get(runId: string): Promise<AgentRunRecord>
     eventsPage(input: AgentRunEventsInput): Promise<AgentEventRecord[]>
+    /** Normalized run ledger; the trajectory view's only data source. */
+    recordsPage(input: AgentRunRecordsPageInput): Promise<AgentRunRecordEntry[]>
+    /** Live ledger deltas. Returns an unsubscribe function; the legacy polling
+     * path stays available as a fallback when this channel is unavailable. */
+    subscribe(runId: string, handler: (push: AgentLedgerPush) => void): () => void
     cancel(runId: string): Promise<void>
     retry(runId: string): Promise<AgentRunRecord>
   }

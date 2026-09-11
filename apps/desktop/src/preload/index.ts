@@ -7,8 +7,11 @@ import type {
   AgentConversationArchiveItem,
   AgentConversationListInput,
   AgentConversationMessagesInput,
+  AgentConversationRecordsInput,
+  AgentLedgerPush,
   AgentRunEventsInput,
   AgentRunListInput,
+  AgentRunRecordsPageInput,
   AgentRunStartInput,
   AgentRuntimeKind,
   AgentRpcMethod,
@@ -29,6 +32,7 @@ import {
   AgentConversationArchiveBulkInputSchema,
   AgentConversationListInputSchema,
   AgentConversationMessagesInputSchema,
+  AgentConversationRecordsInputSchema,
   AgentConversationSchema,
   AgentConnectorSaveInputSchema,
   AgentConnectorSchema,
@@ -38,6 +42,9 @@ import {
   AgentRunEventsInputSchema,
   AgentRunListInputSchema,
   AgentRunRecordSchema,
+  AgentRunRecordEntrySchema,
+  AgentRunRecordsPageInputSchema,
+  AgentLedgerPushSchema,
   AgentRunStartInputSchema,
   AgentRuntimeKindSchema,
   AutomationRuleSaveInputSchema,
@@ -172,6 +179,11 @@ import { z, type ZodType } from 'zod'
 
 const channel = 'workbench:v2:rpc'
 const agentChannel = 'workbench:agent:v1'
+/** Ledger subscription uses its own narrow channel pair: an invoke to register
+ * interest in a run, and a one-way push carrying validated ledger records. It
+ * is deliberately not a generic `on` bridge. */
+const agentLedgerSubscribeChannel = 'workbench:agent:ledger-subscribe'
+const agentLedgerPushChannel = 'workbench:agent:ledger-push'
 
 class WorkbenchApiError extends Error {
   readonly code: string
@@ -226,6 +238,37 @@ async function invokeAgent<T>(
   const response = RpcResponseSchema.parse(await ipcRenderer.invoke(agentChannel, method, payload))
   if (!response.ok) throw new WorkbenchApiError(response.error)
   return output.parse(response.data)
+}
+
+/**
+ * Subscribe to normalized ledger pushes for one run.
+ *
+ * Only `agent-ledger-push` messages are accepted, each one is validated against
+ * the shared schema, and the pushed `runId` must match the run this handler
+ * subscribed to. The unsubscribe function removes the listener and tells Main
+ * to stop forwarding, so a closed conversation cannot keep receiving records.
+ */
+function subscribeAgentLedger(runId: string, handler: (push: AgentLedgerPush) => void): () => void {
+  const id = IdSchema.parse(runId)
+  let active = true
+  const listener = (_event: unknown, payload: unknown): void => {
+    if (!active) return
+    const parsed = AgentLedgerPushSchema.safeParse(payload)
+    if (!parsed.success || parsed.data.runId !== id) return
+    handler(parsed.data)
+  }
+  ipcRenderer.on(agentLedgerPushChannel, listener)
+  void ipcRenderer
+    .invoke(agentLedgerSubscribeChannel, { runId: id, action: 'subscribe' })
+    .catch(() => undefined)
+  return () => {
+    if (!active) return
+    active = false
+    ipcRenderer.removeListener(agentLedgerPushChannel, listener)
+    void ipcRenderer
+      .invoke(agentLedgerSubscribeChannel, { runId: id, action: 'unsubscribe' })
+      .catch(() => undefined)
+  }
 }
 
 const VoidResultSchema = z.null().transform(() => undefined)
@@ -671,6 +714,11 @@ const agentApi: WorkbenchAgentApiV1 = {
       AgentConversationMessagesInputSchema.parse(input),
       z.array(AgentMessageSchema)
     ),
+    records: (input: AgentConversationRecordsInput) => invokeAgent(
+      'agent.conversations.records',
+      AgentConversationRecordsInputSchema.parse(input),
+      z.array(AgentRunRecordEntrySchema)
+    ),
     archive: async (conversationId, expectedRevision) => {
       await invokeAgent(
         'agent.conversations.archive',
@@ -730,6 +778,12 @@ const agentApi: WorkbenchAgentApiV1 = {
       AgentRunEventsInputSchema.parse(input),
       z.array(AgentEventSchema)
     ),
+    recordsPage: (input: AgentRunRecordsPageInput) => invokeAgent(
+      'agent.runs.recordsPage',
+      AgentRunRecordsPageInputSchema.parse(input),
+      z.array(AgentRunRecordEntrySchema)
+    ),
+    subscribe: subscribeAgentLedger,
     cancel: async (runId) => {
       await invokeAgent('agent.runs.cancel', { runId: IdSchema.parse(runId) }, VoidResultSchema)
     },

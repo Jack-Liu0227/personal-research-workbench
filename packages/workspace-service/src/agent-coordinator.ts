@@ -9,9 +9,14 @@ import type {
   AgentConversationArchiveItem,
   AgentConversationCreateInput,
   AgentConversationMessagesInput,
+  AgentConversationRecordsInput,
   AgentEventRecord,
   AgentInboxItem,
+  AgentLedgerPush,
   AgentRunRecord,
+  AgentRunRecordDraft,
+  AgentRunRecordEntry,
+  AgentRunRecordsPageInput,
   AgentRunStartInput,
   AgentRuntimeKind,
   AutomationRule,
@@ -25,6 +30,8 @@ import {
   AgentConversationArchiveBulkInputSchema,
   AgentConversationCreateInputSchema,
   AgentConversationMessagesInputSchema,
+  AgentConversationRecordsInputSchema,
+  AgentRunRecordsPageInputSchema,
   AgentRunStartInputSchema,
   AutomationRuleSaveInputSchema,
   ProjectIdSchema
@@ -34,7 +41,6 @@ import {
   createDefaultAgentRuntimeAdapters,
   type AgentRuntimeAdapter,
   type AgentRuntimeCapabilities,
-  type AgentRuntimeEvent,
   type AgentRuntimeHandle
 } from '@prw/agent-runtime'
 import { previewSchedule } from '@prw/ai-runtime'
@@ -49,6 +55,10 @@ export interface AgentCoordinatorOptions {
   readonly now?: () => Date
   /** Optional connector-owned sink for completed scheduled output. */
   readonly persistScheduledOutput?: ((input: { readonly scheduleId: string; readonly run: AgentRunRecord; readonly content: string; readonly outputFolder?: string; readonly skillKey?: string | null }) => Promise<void>) | undefined
+  /** Optional sink for normalized ledger records. The desktop host forwards
+   * each batch to the renderer as a narrow push message; without a sink the
+   * ledger is still persisted and readable through `agent.runs.recordsPage`. */
+  readonly publishLedger?: ((push: AgentLedgerPush) => void) | undefined
 }
 
 export class AgentCoordinator {
@@ -66,6 +76,10 @@ export class AgentCoordinator {
   // instant, then normal in-process ticks handle only the next occurrence.
   private schedulerReady = false
   private disposed = false
+  /** Records waiting for the next push flush, keyed by run. Batching keeps a
+   * streamed token from turning into its own IPC message. */
+  private readonly ledgerBuffer = new Map<string, AgentRunRecordEntry[]>()
+  private ledgerTimer: ReturnType<typeof setTimeout> | null = null
 
   constructor(
     private readonly repository: WorkbenchRepository,
@@ -228,6 +242,7 @@ export class AgentCoordinator {
         this.repository.appendAgentMessage({ conversationId: input.conversationId, runId: blocked.id, role: 'user', content: input.instructions })
         this.persistConversationSession(input.conversationId)
       }
+      this.recordUserTurn(blocked.id, input.instructions)
       this.repository.appendAgentEvent(blocked.id, 'failed', { message: connector.message || 'runtime unavailable' })
       return this.repository.updateManagedAgentRun({ id: blocked.id, status: 'blocked', error: connector.message || 'runtime unavailable' })
     }
@@ -261,6 +276,7 @@ export class AgentCoordinator {
       this.repository.appendAgentMessage({ conversationId: input.conversationId, runId: run.id, role: 'user', content: input.instructions })
       this.persistConversationSession(input.conversationId)
     }
+    this.recordUserTurn(run.id, input.instructions)
     // The workspace MCP service is exposed through PRW_SERVICE_INFO. Do not
     // synthesize a runtime-specific config file here: Pi and Codex use
     // different config schemas, and an invalid file would make a healthy
@@ -315,6 +331,18 @@ export class AgentCoordinator {
 
   listEvents(runId: string, afterSeq = 0, limit = 100): AgentEventRecord[] {
     return this.repository.listAgentEvents(runId, afterSeq, limit)
+  }
+
+  /** Normalized ledger page for one run. `beforeSeq` walks backwards for the
+   * trajectory's "load earlier", `afterSeq` fills a gap, and neither returns
+   * the tail window. */
+  listRunRecords(input: AgentRunRecordsPageInput): AgentRunRecordEntry[] {
+    return this.repository.listAgentRunRecords(AgentRunRecordsPageInputSchema.parse(input))
+  }
+
+  /** Ledger projection for a whole conversation, used by the chat tab. */
+  listConversationRecords(input: AgentConversationRecordsInput): AgentRunRecordEntry[] {
+    return this.repository.listAgentConversationRecords(AgentConversationRecordsInputSchema.parse(input))
   }
 
   async cancel(runId: string): Promise<void> {
@@ -556,6 +584,11 @@ export class AgentCoordinator {
 
   dispose(): void {
     this.disposed = true
+    if (this.ledgerTimer) {
+      clearTimeout(this.ledgerTimer)
+      this.ledgerTimer = null
+    }
+    this.ledgerBuffer.clear()
     for (const [runId, handle] of this.handles.entries()) {
       try {
         this.repository.appendAgentEvent(runId, 'canceled', { message: 'workspace service stopped' })
@@ -671,25 +704,30 @@ export class AgentCoordinator {
   }
 
   private async consume(runId: string, handle: AgentRuntimeHandle): Promise<void> {
-    let output = ''
     let finalKind: 'completed' | 'failed' | 'canceled' = 'completed'
     let failureMessage: string | null = null
+    // Assistant text is kept per ledger record so a streamed message is stored
+    // once and the run's `output` is the concatenation of the final snapshots.
+    const assistantText = new Map<string, string>()
     try {
       for await (const event of handle.events) {
-        const kind = mapEventKind(event)
-        this.repository.appendAgentEvent(runId, kind, event.payload)
-        const text = textFromPayload(event.payload)
-        if (text && shouldAppendAgentText(kind, event.payload)) {
-          output = mergeStreamText(output, text, event.payload).slice(0, 100_000)
+        for (const draft of event.records ?? []) {
+          this.recordLedger(runId, draft)
+          if (draft.kind === 'assistant' && draft.detail) assistantText.set(draft.recordKey, draft.detail)
         }
-        if (kind === 'failed') {
+        // `agent_run_events` stays the coarse lifecycle log (used by run
+        // diagnostics and the inbox projection). Everything else lives in the
+        // normalized ledger, so it is not duplicated per payload.
+        if (lifecycleEventKinds.has(event.kind)) this.repository.appendAgentEvent(runId, event.kind, event.payload)
+        if (event.kind === 'failed') {
           finalKind = 'failed'
           const payload = event.payload && typeof event.payload === 'object' ? event.payload as Record<string, unknown> : null
           failureMessage = typeof payload?.message === 'string' ? payload.message : null
         }
-        if (kind === 'canceled') finalKind = 'canceled'
+        if (event.kind === 'canceled') finalKind = 'canceled'
       }
       if (this.disposed) return
+      const output = [...assistantText.values()].join('\n\n')
       const cleanOutput = finalKind === 'failed'
         ? sanitizeAgentText(failureMessage || output.trim() || 'Agent runtime 执行失败，请检查设置中的 runtime 配置。')
         : sanitizeAgentText(output.trim())
@@ -749,6 +787,64 @@ export class AgentCoordinator {
       }
     } finally {
       this.handles.delete(runId)
+      // Push the closing records together with the settled run status.
+      this.flushLedger()
+    }
+  }
+
+  /** Persist one normalized record and queue it for the next push. */
+  private recordLedger(runId: string, draft: AgentRunRecordDraft): void {
+    const entry = this.repository.upsertAgentRunRecord(runId, draft)
+    const buffered = this.ledgerBuffer.get(runId)
+    if (buffered) buffered.push(entry)
+    else this.ledgerBuffer.set(runId, [entry])
+    this.scheduleLedgerFlush()
+  }
+
+  private recordUserTurn(runId: string, content: string): void {
+    this.recordLedger(runId, {
+      recordKey: 'run:user',
+      kind: 'user',
+      status: 'info',
+      turn: 0,
+      step: 0,
+      title: '你',
+      detail: content,
+      startedAt: this.now().toISOString()
+    })
+  }
+
+  private scheduleLedgerFlush(): void {
+    if (!this.options.publishLedger || this.ledgerTimer) return
+    this.ledgerTimer = setTimeout(() => {
+      this.ledgerTimer = null
+      this.flushLedger()
+    }, ledgerFlushIntervalMs)
+    this.ledgerTimer.unref?.()
+  }
+
+  /** Collapse everything buffered since the last flush into one push per run.
+   * A run that streams dozens of records per second therefore produces at most
+   * ten renderer messages per second. */
+  private flushLedger(): void {
+    const publish = this.options.publishLedger
+    if (!publish) {
+      this.ledgerBuffer.clear()
+      return
+    }
+    if (this.ledgerTimer) {
+      clearTimeout(this.ledgerTimer)
+      this.ledgerTimer = null
+    }
+    const buffered = [...this.ledgerBuffer.entries()]
+    this.ledgerBuffer.clear()
+    for (const [runId, records] of buffered) {
+      if (records.length === 0) continue
+      try {
+        publish({ runId, records: ledgerPushBatch(records), run: this.repository.getManagedAgentRun(runId) })
+      } catch {
+        // A run can be deleted while its process is still draining events.
+      }
     }
   }
 }
@@ -799,101 +895,42 @@ function runtimeProxyEnvironment(repository: WorkbenchRepository, connector: Age
   return environment
 }
 
-function mapEventKind(event: AgentRuntimeEvent): import('@prw/contracts').AgentEventKind {
-  return event.kind
-}
-
-function textFromPayload(payload: unknown, depth = 0): string {
-  if (typeof payload === 'string') return payload.replace(/^\[stderr\]\s*/u, '')
-  if (!payload || typeof payload !== 'object' || depth > 3) return ''
-  if (Array.isArray(payload)) {
-    return payload.map((entry) => textFromPayload(entry, depth + 1)).filter(Boolean).join('')
-  }
-  const record = payload as Record<string, unknown>
-  // Pi's JSON stream wraps deltas in `assistantMessageEvent`; Codex commonly
-  // puts them under `item`. Read both envelopes before falling back to the
-  // older flat text/output shapes.
-  for (const key of ['delta', 'text_delta', 'text', 'output', 'content']) {
-    if (typeof record[key] === 'string') return record[key]
-  }
-  for (const key of ['assistantMessageEvent', 'event', 'item', 'message', 'data', 'result']) {
-    const nested = textFromPayload(record[key], depth + 1)
-    if (nested) return nested
-  }
-  /*
-   * A `content` array is handled after the scalar branch so Pi's assistant
-   * message_end payload (`message.content[{text: ...}]`) is reconstructed.
-   */
-  if (Array.isArray(record.content)) {
-    const content = record.content.map((entry) => textFromPayload(entry, depth + 1)).filter(Boolean).join('')
-    if (content) return content
-  }
-  /* Keep the legacy `message` field support for runtimes that emit a plain
-   * string there; object messages were traversed above. */
-  if (typeof record.message === 'string') return record.message
-  for (const key of ['text', 'output']) {
-    if (typeof record[key] === 'string') return record[key]
-  }
-  return ''
-}
-
-/** Keep the persisted conversation focused on assistant text. Codex JSON
- * envelopes can report diagnostics as `item.completed` with `item.type=error`
- * on stdout, so filtering stderr alone is not sufficient. Pi's message
- * envelopes continue to be accepted by the assistant-message classification.
+/**
+ * Event kinds that stay in `agent_run_events`. The table is closed on purpose:
+ * everything else (progress, assistant text, tool activity) is represented by
+ * the normalized ledger, so adding a renderer-visible kind means adding it here
+ * and giving it a ledger mapping in the runtime adapter.
  */
-function shouldAppendAgentText(kind: string, payload: unknown): boolean {
-  if (!payload || typeof payload !== 'object') return kind === 'assistant_message'
-  const record = payload as Record<string, unknown>
-  const message = record.message && typeof record.message === 'object' ? record.message as Record<string, unknown> : null
-  // Pi emits message_start/message_end for both sides of the turn. The user
-  // echo is already rendered from the persisted user message and must not be
-  // duplicated into the assistant output.
-  if (typeof message?.role === 'string' && message.role !== 'assistant') return false
-  const assistantEvent = record.assistantMessageEvent && typeof record.assistantMessageEvent === 'object'
-    ? record.assistantMessageEvent as Record<string, unknown>
-    : null
-  if (assistantEvent) {
-    const eventType = typeof assistantEvent.type === 'string' ? assistantEvent.type : ''
-    // Pi emits message_start/message_end for the user as well. Only text
-    // events (and the final assistant content) belong in the transcript.
-    if (/user|tool|reasoning|thinking/iu.test(eventType)) return false
-  }
-  if (kind === 'assistant_message') return true
-  if (kind !== 'progress') return false
-  const item = record.item && typeof record.item === 'object' ? record.item as Record<string, unknown> : null
-  if (!item) return false
-  const itemType = typeof item.type === 'string' ? item.type : ''
-  return /agent_message|assistant_message|text/iu.test(itemType) && !/error|diagnostic/iu.test(itemType)
-}
+const lifecycleEventKinds: ReadonlySet<import('@prw/contracts').AgentEventKind> = new Set([
+  'started',
+  'heartbeat',
+  'completed',
+  'failed',
+  'canceled'
+])
 
-/** Merge a runtime stream without duplicating cumulative snapshots. Pi emits
- * small `text_delta` chunks followed by a complete `text_end`/`message_end`
- * snapshot; Codex versions vary between deltas and full item text. */
-function mergeStreamText(current: string, chunk: string, payload: unknown): string {
-  const normalized = chunk.replace(/^\s+$/u, '')
-  if (!normalized) return current
-  const record = payload && typeof payload === 'object' && !Array.isArray(payload)
-    ? payload as Record<string, unknown>
-    : null
-  const nested = record?.assistantMessageEvent && typeof record.assistantMessageEvent === 'object'
-    ? record.assistantMessageEvent as Record<string, unknown>
-    : null
-  const isDelta = typeof record?.delta === 'string'
-    || typeof record?.text_delta === 'string'
-    || typeof record?.partial === 'string'
-    || typeof nested?.delta === 'string'
-    || nested?.type === 'text_delta'
-  if (isDelta) return `${current}${chunk}`
-  if (!current) return chunk
-  if (chunk === current || current.endsWith(chunk)) return current
-  if (chunk.startsWith(current)) return chunk
-  if (current.startsWith(chunk)) return current
-  // A final message can differ only by a trailing newline from its deltas.
-  const trimmedCurrent = current.trimEnd()
-  const trimmedChunk = chunk.trimEnd()
-  if (trimmedChunk === trimmedCurrent || trimmedChunk.startsWith(trimmedCurrent)) return trimmedChunk
-  return `${current}${chunk}`
+/** Upper bound on how long a ledger record waits before it reaches the
+ * renderer. Streaming runs therefore push at most ten batches per second. */
+const ledgerFlushIntervalMs = 100
+/** A push carries at most this many records... */
+const ledgerPushRecordLimit = 500
+/** ...and at most this many characters of record text. A single record may hold
+ * 64KB, so a count-only cap would still allow a multi-megabyte structured clone
+ * per push. The newest records are what a live view needs. */
+const ledgerPushCharLimit = 2_000_000
+
+function ledgerPushBatch(records: readonly AgentRunRecordEntry[]): AgentRunRecordEntry[] {
+  const batch: AgentRunRecordEntry[] = []
+  let characters = 0
+  for (let index = records.length - 1; index >= 0; index -= 1) {
+    const entry = records[index]
+    if (!entry) continue
+    if (batch.length >= ledgerPushRecordLimit) break
+    characters += (entry.detail?.length ?? 0) + (entry.inputText?.length ?? 0) + (entry.outputText?.length ?? 0)
+    if (batch.length > 0 && characters > ledgerPushCharLimit) break
+    batch.unshift(entry)
+  }
+  return batch
 }
 
 function sanitizeAgentText(value: string): string {

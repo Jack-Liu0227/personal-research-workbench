@@ -1,6 +1,8 @@
 import type {
   AgentRun,
   AgentEventKind,
+  AgentRecordKind,
+  AgentRecordStatus,
   AgentConversation,
   AgentMessage,
   AgentRuntimeKind,
@@ -706,6 +708,42 @@ export const agentRunEvents = sqliteTable(
   ]
 )
 
+/** Normalized run ledger (migration 22). One row per provider-neutral record;
+ * `recordKey` gives the adapter a stable identity so streamed text grows in
+ * place instead of appending duplicate rows, while `seq` stays fixed once the
+ * row is inserted so the trajectory can use it as a stable anchor. */
+export const agentRunRecords = sqliteTable(
+  'agent_run_records',
+  {
+    id: text('id').primaryKey(),
+    runId: text('run_id').notNull().references(() => agentRuns.id, { onDelete: 'cascade' }),
+    seq: integer('seq').notNull(),
+    recordKey: text('record_key').notNull(),
+    kind: text('kind').$type<AgentRecordKind>().notNull(),
+    status: text('status').$type<AgentRecordStatus>().notNull().default('info'),
+    turn: integer('turn').notNull().default(0),
+    step: integer('step').notNull().default(0),
+    title: text('title').notNull().default(''),
+    detail: text('detail').notNull().default(''),
+    inputText: text('input_text'),
+    outputText: text('output_text'),
+    toolName: text('tool_name'),
+    callId: text('call_id'),
+    parentId: text('parent_id'),
+    startedAt: text('started_at'),
+    finishedAt: text('finished_at'),
+    durationMs: integer('duration_ms'),
+    usageJson: text('usage_json'),
+    truncated: integer('truncated', { mode: 'boolean' }).notNull().default(false),
+    createdAt: text('created_at').notNull()
+  },
+  (table) => [
+    uniqueIndex('agent_run_records_run_seq_idx').on(table.runId, table.seq),
+    uniqueIndex('agent_run_records_run_key_idx').on(table.runId, table.recordKey),
+    index('agent_run_records_run_created_idx').on(table.runId, table.createdAt)
+  ]
+)
+
 export const agentInboxItems = sqliteTable(
   'agent_inbox_items',
   {
@@ -794,6 +832,7 @@ export type AgentProxyProfileRow = typeof agentProxyProfiles.$inferSelect
 export type AgentProxyBindingRow = typeof agentProxyBindings.$inferSelect
 export type AgentBindingRow = typeof agentBindings.$inferSelect
 export type AgentRunEventRow = typeof agentRunEvents.$inferSelect
+export type AgentRunRecordRow = typeof agentRunRecords.$inferSelect
 export type AgentInboxItemRow = typeof agentInboxItems.$inferSelect
 export type AgentConversationRow = typeof agentConversations.$inferSelect
 export type AgentMessageRow = typeof agentMessages.$inferSelect

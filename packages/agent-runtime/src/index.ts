@@ -4,7 +4,8 @@ import { existsSync, readFileSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { basename, dirname, join } from 'node:path'
 import { createInterface } from 'node:readline'
-import type { AgentRuntimeKind, AgentRuntimeTransport, AgentToolProfile } from '@prw/contracts'
+import type { AgentRunRecordDraft, AgentRuntimeKind, AgentRuntimeTransport, AgentToolProfile } from '@prw/contracts'
+import { createLedgerNormalizer } from './ledger/index.js'
 
 export interface AgentRuntimeCapabilities {
   readonly kind: AgentRuntimeKind
@@ -50,6 +51,10 @@ export interface AgentRuntimeEvent {
   readonly kind: 'started' | 'heartbeat' | 'progress' | 'assistant_message' | 'tool_call' | 'completed' | 'failed' | 'canceled'
   readonly payload: unknown
   readonly createdAt: string
+  /** Normalized ledger records for this payload. The adapter parses the CLI's
+   * own stream so the renderer never has to guess at provider JSON; an empty or
+   * missing list means the payload carried no user-visible record. */
+  readonly records?: readonly AgentRunRecordDraft[]
 }
 
 export interface AgentRuntimeHandle {
@@ -174,13 +179,16 @@ abstract class CliRuntimeAdapter implements AgentRuntimeAdapter {
     let diagnostic = ''
     let timeout: ReturnType<typeof setTimeout> | undefined
     const startedAt = new Date().toISOString()
+    const ledger = createLedgerNormalizer(this.kind)
     queue.push({ externalRunId, kind: 'started', payload: { command: this.kind }, createdAt: startedAt })
 
     const finish = (kind: AgentRuntimeEvent['kind'], payload: unknown): void => {
       if (settled) return
       settled = true
       if (timeout) clearTimeout(timeout)
-      queue.push({ externalRunId, kind, payload, createdAt: new Date().toISOString() })
+      const createdAt = new Date().toISOString()
+      const records = ledger.finish(kind === 'completed' ? 'completed' : kind === 'canceled' ? 'canceled' : 'failed', createdAt)
+      queue.push({ externalRunId, kind, payload, createdAt, ...(records.length > 0 ? { records } : {}) })
       queue.end()
     }
 
@@ -201,17 +209,26 @@ abstract class CliRuntimeAdapter implements AgentRuntimeAdapter {
         }))
         return
       }
+      const createdAt = new Date().toISOString()
       // CLI diagnostics (MCP auth notices, skill warnings, reconnect details)
-      // belong to the runtime log, never to the assistant transcript. The
-      // service intentionally drops them from the event stream so paths and
-      // provider details cannot leak into the user-facing conversation. A
-      // non-zero process exit is reported separately as a generic failure.
+      // never belong to the assistant transcript, but dropping them entirely
+      // used to leave a failed run with only a generic message. They are now
+      // ledger records (redacted and clipped when persisted) so the trajectory
+      // can show the CLI's own reason.
       if (isStderr) {
         diagnostic = `${diagnostic} ${trimmed}`.trim().slice(-2_000)
+        const records = ledger.diagnostic(trimmed, createdAt)
+        queue.push({ externalRunId, kind: 'progress', payload: { stderr: trimmed }, createdAt, ...(records.length > 0 ? { records } : {}) })
         return
       }
-      const kind = classifyPayload(payload)
-      queue.push({ externalRunId, kind, payload, createdAt: new Date().toISOString() })
+      const records = ledger.accept(payload, createdAt)
+      queue.push({
+        externalRunId,
+        kind: classifyPayload(payload),
+        payload,
+        createdAt,
+        ...(records.length > 0 ? { records } : {})
+      })
     }
     createInterface({ input: child.stdout }).on('line', parseLine)
     createInterface({ input: child.stderr }).on('line', (line) => parseLine(`[stderr] ${line}`))

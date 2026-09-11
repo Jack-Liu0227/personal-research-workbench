@@ -2,6 +2,11 @@ import { mkdirSync } from 'node:fs'
 import { randomUUID } from 'node:crypto'
 import { dirname, resolve } from 'node:path'
 import type {
+  AgentRunRecordDraft,
+  AgentRunRecordEntry,
+  AgentRunRecordsPageInput,
+  AgentConversationRecordsInput,
+  AgentUsage,
   AgentApproval,
   AgentBinding,
   AgentBindingSaveInput,
@@ -91,6 +96,10 @@ import {
   AgentConnectorSaveInputSchema,
   AgentEventSchema,
   AgentInboxItemSchema,
+  AgentRunRecordEntrySchema,
+  AgentRunRecordsPageInputSchema,
+  AgentConversationRecordsInputSchema,
+  AgentUsageSchema,
   AgentMessageSchema,
   AgentRunRecordSchema as ManagedAgentRunSchema,
   ConfirmationContextSchema,
@@ -152,12 +161,14 @@ import {
   agentProxyProfiles, agentProxyBindings,
   agentBindings,
   agentRunEvents,
+  agentRunRecords,
   agentInboxItems,
   agentConversations,
   agentMessages,
   agentRuns,
   workspaceKnowledgeEngines,
   type BoardColumnRow,
+  type AgentRunRecordRow,
   type CalendarEventRow,
   type CalendarMarkerRow,
   type LiteratureStagingRow,
@@ -172,6 +183,9 @@ import * as schema from './schema.js'
 
 const sortStep = 1_024
 const minimumSortGap = 0.000_001
+/** One ledger field may not exceed this many characters; the record carries a
+ * `truncated` flag instead of silently shortening the value. */
+const agentRecordTextLimit = 65_536
 
 export interface WorkbenchDatabaseOptions {
   readonly filePath: string
@@ -562,6 +576,50 @@ function toAgentEvent(row: { id: string; runId: string; seq: number; kind: strin
   })
 }
 
+/** Ledger text is redacted and clipped at both write and read time: a legacy
+ * row can predate write-time redaction, so presentation must never rely on the
+ * stored value already being sanitized. */
+function clipAgentRecordText(value: string | null | undefined): { readonly text: string | null; readonly truncated: boolean } {
+  if (value === null || value === undefined) return { text: null, truncated: false }
+  const redacted = redactAgentText(value) ?? ''
+  if (redacted.length <= agentRecordTextLimit) return { text: redacted, truncated: false }
+  return { text: redacted.slice(0, agentRecordTextLimit), truncated: true }
+}
+
+/** Usage is reported by the CLI in different shapes per runtime. An unexpected
+ * shape becomes "not reported" instead of failing the whole record. */
+function sanitizeAgentUsage(value: unknown): AgentUsage | null {
+  if (!value || typeof value !== 'object') return null
+  const parsed = AgentUsageSchema.safeParse(value)
+  return parsed.success ? parsed.data : null
+}
+
+function toAgentRunRecordEntry(row: AgentRunRecordRow): AgentRunRecordEntry {
+  return AgentRunRecordEntrySchema.parse({
+    id: row.id,
+    runId: row.runId,
+    seq: row.seq,
+    recordKey: row.recordKey,
+    kind: row.kind,
+    status: row.status,
+    turn: row.turn,
+    step: row.step,
+    title: redactAgentText(row.title) ?? '',
+    detail: redactAgentText(row.detail) ?? '',
+    inputText: row.inputText === null ? null : redactAgentText(row.inputText),
+    outputText: row.outputText === null ? null : redactAgentText(row.outputText),
+    toolName: row.toolName === null ? null : redactAgentText(row.toolName),
+    callId: row.callId === null ? null : redactAgentText(row.callId),
+    parentId: row.parentId ?? null,
+    startedAt: row.startedAt ?? null,
+    finishedAt: row.finishedAt ?? null,
+    durationMs: row.durationMs ?? null,
+    usage: row.usageJson === null ? null : sanitizeAgentUsage(parseJsonUnknown(row.usageJson)),
+    truncated: row.truncated,
+    createdAt: row.createdAt
+  })
+}
+
 function toAgentInboxItem(row: typeof agentInboxItems.$inferSelect): AgentInboxItem {
   return AgentInboxItemSchema.parse({
     id: row.id,
@@ -591,14 +649,26 @@ function redactAgentPayload(value: unknown): unknown {
   return value
 }
 
+/** A JSON member whose key looks secret, with a quoted string value. Scalars are
+ * deliberately left alone: a secret is a string, and masking `"max_tokens": 4096`
+ * would hide real tool input. */
+const SECRET_JSON_PAIR = /("(?:[^"\\]|\\.)*?(?:token|secret|api[_-]?key|authorization|password|credential|cookie)(?:[^"\\]|\\.)*?"\s*:\s*)"(?:[^"\\]|\\.)*"/giu
+
 /** Hide credentials and local filesystem paths on every read surface too.
  * Older runs can predate write-time redaction, so presentation must not rely
  * on the stored payload having already been sanitized.
+ *
+ * The second rule exists because tool arguments, tool results and unrecognized
+ * CLI events reach the ledger as JSON *strings*, and the assignment rule below
+ * cannot see them: in `{"api_key":"..."}` a quote sits between the key and the
+ * colon. Without it a credential-shaped JSON field would be stored verbatim and
+ * rendered in the tool card and the trajectory inspector.
  */
 function redactAgentText(value: string | null): string | null {
   if (value === null) return null
   return value
     .replace(/Bearer\s+[^\s]+/giu, 'Bearer [redacted]')
+    .replace(SECRET_JSON_PAIR, '$1"[redacted]"')
     .replace(/((?:token|api[_-]?key|secret|password|authorization)[=:]\s*)[^\s]+/giu, '$1[redacted]')
     .replace(/(?<![A-Za-z0-9])(?:[A-Za-z]:\\|\\\\)[^\s"'<>]+/gu, '[path]')
     .replace(/(?<![A-Za-z0-9])\/(?:Users|home|tmp|var|opt|workspace)\/[^\s"'<>]+/gu, '[path]')
@@ -2757,6 +2827,119 @@ export class WorkbenchRepository {
     return this.database.select().from(agentRunEvents)
       .where(and(eq(agentRunEvents.runId, runId), gt(agentRunEvents.seq, parsedAfter)))
       .orderBy(asc(agentRunEvents.seq)).limit(parsedLimit).all().map(toAgentEvent)
+  }
+
+  /** Insert or update one normalized ledger record.
+   *
+   * `recordKey` is the adapter's stable identity, so a streamed record grows in
+   * place instead of appending a row per delta; `seq` is assigned on first
+   * insert and never moves, which is what makes it usable as the trajectory's
+   * `#seq` anchor. Unspecified draft fields keep their stored value so a late
+   * lifecycle update cannot erase the start of a record. */
+  upsertAgentRunRecord(runId: string, draft: AgentRunRecordDraft): AgentRunRecordEntry {
+    const run = this.database.select({ id: agentRuns.id }).from(agentRuns).where(eq(agentRuns.id, runId)).get()
+    if (!run) throw new WorkbenchDatabaseError('NOT_FOUND', 'agent run not found', { details: { id: runId } })
+    const recordKey = draft.recordKey.slice(0, 512)
+    if (recordKey.length === 0) throw new WorkbenchDatabaseError('VALIDATION_FAILED', 'agent run record requires a recordKey')
+    const title = clipAgentRecordText(draft.title ?? '')
+    const detail = clipAgentRecordText(draft.detail ?? '')
+    const inputText = clipAgentRecordText(draft.inputText)
+    const outputText = clipAgentRecordText(draft.outputText)
+    const usage = sanitizeAgentUsage(draft.usage)
+    const fields = {
+      kind: draft.kind,
+      // `turn`/`step` are omitted by the closing drafts the normalizer emits for
+      // records a CLI left open, so they follow the same "unspecified keeps the
+      // stored value" rule as the fields below instead of defaulting to 0.
+      turn: draft.turn === undefined ? null : z.int().nonnegative().parse(draft.turn),
+      step: draft.step === undefined ? null : z.int().nonnegative().parse(draft.step),
+      title: (title.text ?? '').slice(0, 500),
+      detail: (detail.text ?? '').slice(0, agentRecordTextLimit),
+      inputText: inputText.text,
+      outputText: outputText.text,
+      toolName: draft.toolName ? redactAgentText(draft.toolName.slice(0, 200)) : null,
+      callId: draft.callId ? redactAgentText(draft.callId.slice(0, 200)) : null,
+      // Not redacted, unlike the display fields above: `parentId` is an opaque
+      // cross-reference to another row's `recordKey`, which is stored raw because
+      // it is the upsert key. Redacting only one side would stop subtool nesting
+      // from matching. The parent's own title/detail are still redacted.
+      parentId: draft.parentId ? draft.parentId.slice(0, 512) : null,
+      startedAt: draft.startedAt ?? null,
+      finishedAt: draft.finishedAt ?? null,
+      durationMs: draft.durationMs === null || draft.durationMs === undefined ? null : Math.max(0, Math.round(draft.durationMs)),
+      usageJson: usage === null ? null : JSON.stringify(usage),
+      truncated: title.truncated || detail.truncated || inputText.truncated || outputText.truncated
+    }
+    return this.database.transaction((transaction) => {
+      const existing = transaction.select().from(agentRunRecords)
+        .where(and(eq(agentRunRecords.runId, runId), eq(agentRunRecords.recordKey, recordKey))).get()
+      if (existing) {
+        const updated = transaction.update(agentRunRecords).set({
+          ...fields,
+          status: draft.status ?? existing.status,
+          turn: fields.turn ?? existing.turn,
+          step: fields.step ?? existing.step,
+          title: fields.title.length > 0 ? fields.title : existing.title,
+          detail: fields.detail.length > 0 ? fields.detail : existing.detail,
+          inputText: fields.inputText ?? existing.inputText,
+          outputText: fields.outputText ?? existing.outputText,
+          toolName: fields.toolName ?? existing.toolName,
+          callId: fields.callId ?? existing.callId,
+          parentId: fields.parentId ?? existing.parentId,
+          startedAt: fields.startedAt ?? existing.startedAt,
+          finishedAt: fields.finishedAt ?? existing.finishedAt,
+          durationMs: fields.durationMs ?? existing.durationMs,
+          usageJson: fields.usageJson ?? existing.usageJson,
+          truncated: fields.truncated || existing.truncated
+        }).where(eq(agentRunRecords.id, existing.id)).returning().get()
+        return toAgentRunRecordEntry(updated!)
+      }
+      const latest = transaction.select({ seq: agentRunRecords.seq }).from(agentRunRecords)
+        .where(eq(agentRunRecords.runId, runId)).orderBy(desc(agentRunRecords.seq)).limit(1).get()
+      const row = {
+        id: uuidv7(),
+        runId,
+        seq: (latest?.seq ?? -1) + 1,
+        recordKey,
+        status: draft.status ?? ('info' as const),
+        ...fields,
+        turn: fields.turn ?? 0,
+        step: fields.step ?? 0,
+        createdAt: this.now().toISOString()
+      }
+      transaction.insert(agentRunRecords).values(row).run()
+      return toAgentRunRecordEntry(row)
+    })
+  }
+
+  /** Trajectory window. `afterSeq` tops up a live run, `beforeSeq` walks older
+   * rows, and omitting both returns the newest `limit` rows. */
+  listAgentRunRecords(input: AgentRunRecordsPageInput): AgentRunRecordEntry[] {
+    const parsed = AgentRunRecordsPageInputSchema.parse(input)
+    if (parsed.afterSeq !== null) {
+      return this.database.select().from(agentRunRecords)
+        .where(and(eq(agentRunRecords.runId, parsed.runId), gt(agentRunRecords.seq, parsed.afterSeq)))
+        .orderBy(asc(agentRunRecords.seq)).limit(parsed.limit).all().map(toAgentRunRecordEntry)
+    }
+    const ascending = this.database.select().from(agentRunRecords)
+      .where(parsed.beforeSeq === null
+        ? eq(agentRunRecords.runId, parsed.runId)
+        : and(eq(agentRunRecords.runId, parsed.runId), lt(agentRunRecords.seq, parsed.beforeSeq)))
+      .orderBy(desc(agentRunRecords.seq)).limit(parsed.limit).all()
+    return ascending.reverse().map(toAgentRunRecordEntry)
+  }
+
+  /** Chat projection: the newest `limit` records across every run of one
+   * conversation, returned oldest-first. */
+  listAgentConversationRecords(input: AgentConversationRecordsInput): AgentRunRecordEntry[] {
+    const parsed = AgentConversationRecordsInputSchema.parse(input)
+    const rows = this.database.select({ record: agentRunRecords })
+      .from(agentRunRecords)
+      .innerJoin(agentRuns, eq(agentRunRecords.runId, agentRuns.id))
+      .where(eq(agentRuns.conversationId, parsed.conversationId))
+      .orderBy(desc(agentRuns.createdAt), desc(agentRunRecords.seq))
+      .limit(parsed.limit).all()
+    return rows.reverse().map((row) => toAgentRunRecordEntry(row.record))
   }
 
   createAgentInboxItem(input: { readonly runId: string | null; readonly artifactId: string | null; readonly title: string; readonly body: string; readonly kind: string }): AgentInboxItem {

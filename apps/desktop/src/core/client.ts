@@ -1,6 +1,6 @@
 import { randomUUID } from 'node:crypto'
-import type { AgentRpcMethod, AgentRpcRequest, AppError, RpcRequest, RpcResponse } from '@prw/contracts'
-import { AgentRpcRequestSchema, RpcRequestSchema, RpcResponseSchema } from '@prw/contracts'
+import type { AgentLedgerPush, AgentRpcMethod, AgentRpcRequest, AppError, RpcRequest, RpcResponse } from '@prw/contracts'
+import { AgentLedgerPushSchema, AgentRpcRequestSchema, RpcRequestSchema, RpcResponseSchema } from '@prw/contracts'
 import { utilityProcess, type UtilityProcess } from 'electron'
 import { appError } from './errors.js'
 
@@ -51,6 +51,7 @@ export class CoreRpcClient {
   private ready = false
   private disposed = false
   private shutdownTimer: ReturnType<typeof setTimeout> | undefined
+  private readonly ledgerListeners = new Set<(push: AgentLedgerPush) => void>()
 
   constructor(options: CoreRpcClientOptions) {
     this.requestTimeoutMs = options.requestTimeoutMs ?? 30_000
@@ -90,6 +91,15 @@ export class CoreRpcClient {
         this.shutdownTimer = undefined
         return
       }
+      if (isAgentLedgerMessage(message)) {
+        // The ledger push is not an RPC response: it has no request id and must
+        // never resolve a pending request. Every message is validated before a
+        // listener sees it.
+        const parsed = AgentLedgerPushSchema.safeParse(message.push)
+        if (!parsed.success) return
+        for (const listener of this.ledgerListeners) listener(parsed.data)
+        return
+      }
 
       const parsed = RpcResponseSchema.safeParse(message)
       if (!parsed.success) return
@@ -115,6 +125,14 @@ export class CoreRpcClient {
 
   async waitUntilReady(): Promise<void> {
     await this.readyPromise
+  }
+
+  /** Subscribe to normalized ledger pushes from the Core process. Returns an
+   * unsubscribe function; Main keeps at most one subscription per renderer
+   * window and drops them when the window closes. */
+  onLedgerPush(listener: (push: AgentLedgerPush) => void): () => void {
+    this.ledgerListeners.add(listener)
+    return () => { this.ledgerListeners.delete(listener) }
   }
 
   request(method: RpcRequest['method'], payload: unknown): Promise<RpcResponse> {
@@ -179,6 +197,7 @@ export class CoreRpcClient {
     if (this.disposed) return
     this.disposed = true
     this.ready = false
+    this.ledgerListeners.clear()
     this.resolveAllWithError(
       appError('CORE_UNAVAILABLE', 'The local data service has been stopped.', true)
     )
@@ -288,4 +307,12 @@ function isShutdownCompleteMessage(message: unknown): message is { type: 'shutdo
     && message !== null
     && 'type' in message
     && message.type === 'shutdown-complete'
+}
+
+function isAgentLedgerMessage(message: unknown): message is { type: 'agent-ledger'; push: unknown } {
+  return typeof message === 'object'
+    && message !== null
+    && 'type' in message
+    && message.type === 'agent-ledger'
+    && 'push' in message
 }

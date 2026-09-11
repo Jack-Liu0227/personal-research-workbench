@@ -1,8 +1,10 @@
 import { randomUUID } from 'node:crypto'
 import { dirname, isAbsolute, join, relative, resolve, sep } from 'node:path'
 import { mkdir, writeFile } from 'node:fs/promises'
-import type { AgentRpcMethod, RpcRequest, RpcResponse } from '@prw/contracts'
+import type { AgentLedgerPush, AgentRpcMethod, RpcRequest, RpcResponse } from '@prw/contracts'
 import {
+  AgentLedgerPushSchema,
+  AgentLedgerSubscriptionInputSchema,
   AgentRpcRequestSchema,
   RpcRequestSchema,
   IntegrationProfileSchema,
@@ -33,7 +35,7 @@ import {
   SystemSaveTextFileInputSchema,
   SystemSaveTextFileResultSchema
 } from '@prw/contracts'
-import { app, BrowserWindow, dialog, ipcMain, shell, type IpcMainInvokeEvent } from 'electron'
+import { app, BrowserWindow, dialog, ipcMain, shell, type IpcMainInvokeEvent, type WebContents } from 'electron'
 import { z, ZodError } from 'zod'
 import type { CredentialRpcCredential } from '../core/client.js'
 import { appError } from '../core/errors.js'
@@ -45,6 +47,10 @@ import {
 
 export const WORKBENCH_RPC_CHANNEL = 'workbench:v2:rpc'
 export const WORKBENCH_AGENT_RPC_CHANNEL = 'workbench:agent:v1'
+/** Renderer registers interest in one run's ledger; Main forwards validated
+ * pushes back on a separate, one-way channel. */
+export const WORKBENCH_AGENT_LEDGER_SUBSCRIBE_CHANNEL = 'workbench:agent:ledger-subscribe'
+export const WORKBENCH_AGENT_LEDGER_PUSH_CHANNEL = 'workbench:agent:ledger-push'
 
 interface RegisterRpcOptions {
   readonly client: CoreRpcTransport
@@ -56,6 +62,10 @@ interface RegisterRpcOptions {
 export interface CoreRpcTransport {
   request(method: RpcRequest['method'], payload: unknown): Promise<RpcResponse>
   requestAgent?(method: AgentRpcMethod, payload: unknown): Promise<RpcResponse>
+  /** Subscribe to normalized ledger pushes originating in the Core process.
+   * Main is the only subscriber; it forwards to window webContents that asked
+   * for the specific run. */
+  onLedgerPush?(listener: (push: AgentLedgerPush) => void): () => void
   /** Main-only credential transport.  The implementation wraps the public
    * request in a typed side-channel envelope; credentials must never be put in
    * the public payload passed to request(). */
@@ -484,7 +494,54 @@ export function registerRpcHandler(options: RegisterRpcOptions): () => void {
     }
   )
 
+  // Ledger subscriptions are tracked per renderer window (`webContents.id`).
+  // Main forwards only pushes whose run was actually requested by that window,
+  // and a window's subscriptions disappear with the window.
+  const ledgerSubscriptions = new Map<number, { readonly webContents: WebContents; readonly runIds: Set<string> }>()
+  const disposeLedgerPush = options.client.onLedgerPush?.((push) => {
+    for (const subscription of ledgerSubscriptions.values()) {
+      if (!subscription.runIds.has(push.runId)) continue
+      if (subscription.webContents.isDestroyed()) continue
+      subscription.webContents.send(WORKBENCH_AGENT_LEDGER_PUSH_CHANNEL, push)
+    }
+  })
+  ipcMain.handle(
+    WORKBENCH_AGENT_LEDGER_SUBSCRIBE_CHANNEL,
+    (event: IpcMainInvokeEvent, payload: unknown): { readonly ok: boolean } => {
+      if (!isTrustedSender(event, options.getWindow(), options.developmentUrl)) return { ok: false }
+      const parsed = AgentLedgerSubscriptionInputSchema.safeParse(payload)
+      if (!parsed.success) return { ok: false }
+      const senderId = event.sender.id
+      let subscription = ledgerSubscriptions.get(senderId)
+      if (!subscription) {
+        const created = { webContents: event.sender, runIds: new Set<string>() }
+        subscription = created
+        ledgerSubscriptions.set(senderId, created)
+        event.sender.once('destroyed', () => { ledgerSubscriptions.delete(senderId) })
+        // A reload reuses the same `webContents.id`, so the previous document's
+        // subscriptions would otherwise keep pushing into the new document.
+        // `isSameDocument` must be excluded: fragment/history navigation (the
+        // calendar sets `window.location.hash`) fires this event too, and
+        // clearing there would silently stop live pushes for the rest of a run.
+        event.sender.on('did-start-navigation', (details: { readonly isMainFrame: boolean; readonly isSameDocument: boolean }) => {
+          if (details.isMainFrame && !details.isSameDocument) created.runIds.clear()
+        })
+      }
+      if (parsed.data.action === 'subscribe') {
+        // Bound the set so a renderer bug cannot accumulate run ids forever.
+        if (subscription.runIds.size >= 200) return { ok: false }
+        subscription.runIds.add(parsed.data.runId)
+      } else {
+        subscription.runIds.delete(parsed.data.runId)
+      }
+      return { ok: true }
+    }
+  )
+
   return () => {
+    disposeLedgerPush?.()
+    ledgerSubscriptions.clear()
+    ipcMain.removeHandler(WORKBENCH_AGENT_LEDGER_SUBSCRIBE_CHANNEL)
     ipcMain.removeHandler(WORKBENCH_RPC_CHANNEL)
     ipcMain.removeHandler(WORKBENCH_AGENT_RPC_CHANNEL)
   }

@@ -48,7 +48,11 @@ export function startWorkspaceService(options: WorkspaceServiceHostOptions): voi
     agent: new AgentCoordinator(repository, {
       runRoot: join(dirname(options.databasePath), 'agent-runs'),
       serviceInfoPath: options.serviceInfoPath,
-      persistScheduledOutput: (input) => persistScheduledOutput(integrations, input)
+      persistScheduledOutput: (input) => persistScheduledOutput(integrations, input),
+      // Normalized ledger records leave the Core process over the same parent
+      // port as RPC responses. The desktop Main process decides which renderer
+      // window subscribed to which run before forwarding anything.
+      publishLedger: (push) => options.parentPort.postMessage({ type: 'agent-ledger', push })
     })
   }
   const scheduleTimer = setInterval(() => { void services.agent.tickSchedules() }, 30_000)

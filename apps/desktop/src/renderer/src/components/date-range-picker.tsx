@@ -9,7 +9,7 @@ export type DateRangePickerValue = {
   toTime: string
 }
 
-export type DateRangeQuickPreset = 'today' | 'next7' | 'thisWeek' | 'next30' | 'thisMonth'
+export type DateRangeQuickPreset = 'today' | 'last7' | 'thisWeek' | 'last30' | 'thisMonth'
 
 type DateRangePickerProps = DateRangePickerValue & {
   onChange: (value: DateRangePickerValue) => void
@@ -23,9 +23,9 @@ type DateRangePickerProps = DateRangePickerValue & {
 const weekdayLabels = ['日', '一', '二', '三', '四', '五', '六']
 const quickPresetLabels: Record<DateRangeQuickPreset, string> = {
   today: '今天',
-  next7: '近 7 天',
+  last7: '近 7 天',
   thisWeek: '本周',
-  next30: '近 30 天',
+  last30: '近 30 天',
   thisMonth: '本月'
 }
 
@@ -41,6 +41,22 @@ function todayKey(timezone?: string): string {
   const get = (name: string) => parts.find((part) => part.type === name)?.value ?? ''
   const value = `${get('year')}-${get('month')}-${get('day')}`
   return isDateKey(value) ? value : new Date().toISOString().slice(0, 10)
+}
+
+// Current wall-clock time (HH:mm:ss) in the workspace timezone. Presets that
+// end "now" must use this instead of a hard-coded 23:59:59 so the filter never
+// reaches into the future.
+function nowTimeKey(timezone?: string): string {
+  const parts = new Intl.DateTimeFormat('en-GB', {
+    ...(timezone ? { timeZone: timezone } : {}),
+    hour: '2-digit',
+    minute: '2-digit',
+    second: '2-digit',
+    hourCycle: 'h23'
+  }).formatToParts(new Date())
+  const get = (name: string) => parts.find((part) => part.type === name)?.value ?? ''
+  const value = `${get('hour')}:${get('minute')}:${get('second')}`
+  return /^\d{2}:\d{2}:\d{2}$/u.test(value) ? value : new Date().toTimeString().slice(0, 8)
 }
 
 function isDateKey(value: string): boolean { return /^\d{4}-\d{2}-\d{2}$/u.test(value) }
@@ -105,8 +121,10 @@ function defaultValue(timezone?: string): DateRangePickerValue {
 function quickValue(preset: DateRangeQuickPreset, timezone?: string): DateRangePickerValue {
   const today = todayKey(timezone)
   if (preset === 'today') return { ...defaultValue(timezone), from: today, to: today }
-  if (preset === 'next7') return { ...defaultValue(timezone), from: today, to: addDays(today, 6) }
-  if (preset === 'next30') return { ...defaultValue(timezone), from: today, to: addDays(today, 29) }
+  // "近 N 天" is a look-back window: it counts backwards from the current
+  // moment (今天 00:00:00 → 现在) and always ends at "now", never today+N.
+  if (preset === 'last7') return { ...defaultValue(timezone), from: addDays(today, -6), to: today, fromTime: '00:00:00', toTime: nowTimeKey(timezone) }
+  if (preset === 'last30') return { ...defaultValue(timezone), from: addDays(today, -29), to: today, fromTime: '00:00:00', toTime: nowTimeKey(timezone) }
   if (preset === 'thisMonth') {
     const first = monthKey(dateFromKey(today))
     return { ...defaultValue(timezone), from: first, to: endOfMonth(first) }
@@ -203,7 +221,7 @@ export function DateRangePicker({ from, to, fromTime, toTime, onChange, onQuickP
         <label><Clock3 aria-hidden="true" /><span className="sr-only">结束时间</span><input aria-label="结束时间" onChange={(event) => change({ toTime: normalizedTime(event.target.value, '23:59:59') })} step="1" type="time" value={value.toTime} /></label>
       </div>
       <div className="date-range-quick" aria-label="快捷日期范围">{(Object.keys(quickPresetLabels) as DateRangeQuickPreset[]).map((preset) => <button key={preset} onClick={() => { chooseQuickPreset(preset); setOpen(false) }} type="button">{quickPresetLabels[preset]}</button>)}</div>
-      <div className="date-range-popover-footer"><span>{from && to ? '按截止时间筛选，结束边界包含所选日期的最后一秒。' : '先选择开始日期，再选择结束日期。'}</span><div><button className="date-range-clear" onClick={() => { onClear?.(); if (!onClear) onChange({ from: '', to: '', fromTime: '00:00:00', toTime: '23:59:59' }) }} type="button">清除</button><button className="date-range-apply" disabled={!from || !to} onClick={() => setOpen(false)} type="button">应用范围</button></div></div>
+      <div className="date-range-popover-footer"><span>{from && to ? '结束边界包含所选结束时间；近 7 天 / 近 30 天为截止到当前时刻向前回看的区间。' : '先选择开始日期，再选择结束日期。'}</span><div><button className="date-range-clear" onClick={() => { onClear?.(); if (!onClear) onChange({ from: '', to: '', fromTime: '00:00:00', toTime: '23:59:59' }) }} type="button">清除</button><button className="date-range-apply" disabled={!from || !to} onClick={() => setOpen(false)} type="button">应用范围</button></div></div>
     </div> : null}
   </div>
 }

@@ -166,6 +166,20 @@ async function main() {
     assert(await conversationItems.count() === 0, 'Opening the app created an unexpected conversation')
     console.log(`agent selectors: ok (Codex options=${codexModels}, Pi options=${piModels})`)
 
+    // The Agent page exposes two projections of the normalized ledger. The
+    // trajectory tab must render its empty state without a run, and switching
+    // tabs must not create a conversation or duplicate the runtime controls.
+    assert(await page.getByRole('button', { name: '对话', exact: true }).count() === 1, 'Agent conversation tab missing')
+    assert(await page.getByRole('button', { name: '轨迹' }).count() === 1, 'Agent trajectory tab missing')
+    await page.getByRole('button', { name: '轨迹' }).first().click()
+    await page.getByRole('heading', { name: '还没有运行轨迹' }).waitFor({ state: 'visible', timeout: 20_000 })
+    await page.screenshot({ path: path.join(userData, 'agent-trajectory-empty-smoke.png'), fullPage: true })
+    await page.getByRole('button', { name: '对话', exact: true }).first().click()
+    await page.getByRole('heading', { name: '准备好开始了吗？' }).waitFor({ state: 'visible', timeout: 20_000 })
+    assert(await page.locator('select[aria-label="模型"]').count() === 1, 'Agent tabs duplicated the model selector')
+    assert(await conversationItems.count() === 0, 'Switching Agent tabs created an unexpected conversation')
+    console.log('agent conversation/trajectory tabs: ok')
+
     // Literature keeps its live import preview in the local right Inspector.
     await clickNav(page, '文献检索')
     await page.getByText('INSPECTOR / PAPER', { exact: true }).waitFor({ state: 'visible', timeout: 20_000 })

@@ -1,13 +1,17 @@
-import { ArrowUp, Bot, Check, ChevronDown, ChevronRight, Clock3, FolderOpen, MessageSquare, PanelLeftClose, PanelLeftOpen, Plus, Sparkles, Square, Trash2, UserRound, Wrench } from 'lucide-react'
+import { ArrowUp, Bot, Check, ChevronDown, Clock3, FolderOpen, MessageSquare, PanelLeftClose, PanelLeftOpen, Plus, Sparkles, Square, Trash2 } from 'lucide-react'
 import { useEffect, useMemo, useRef, useState } from 'react'
-import type { AgentConversation, AgentConversationArchiveItem, AgentEventRecord, AgentMessage, AgentPermissionMode, AgentRunRecord, AgentRuntimeKind, Project } from '@prw/contracts'
+import type { AgentConversation, AgentConversationArchiveItem, AgentPermissionMode, AgentRunRecord, AgentRunRecordEntry, AgentRuntimeKind, Project } from '@prw/contracts'
 import { ProjectIdSchema } from '@prw/contracts'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { Button, Input, Textarea } from '../components/ui'
-import { InlineLoadingState, PanelSkeleton } from '../components/states'
-import { MarkdownPreview } from '../components/markdown-editor'
-import { cn } from '../lib/utils'
-import { getWorkbenchAgentApi } from '../lib/workbench'
+import { Button, Input, Textarea } from '../../components/ui'
+import { InlineLoadingState, PanelSkeleton } from '../../components/states'
+import { cn } from '../../lib/utils'
+import { getWorkbenchAgentApi } from '../../lib/workbench'
+import { ResearchTabs } from '../research/shared'
+import { ConversationView } from './conversation-view'
+import { StatsRow, StepStrip, type RealtimeState } from './progress'
+import { TrajectoryView } from './trajectory-view'
+import { mergeRecords, runStats, safeDisplayTitle } from './ledger'
 
 const runtimeLabels: Record<AgentRuntimeKind, string> = { codex: 'Codex', pi: 'Pi' }
 const runtimeDefaults: Record<AgentRuntimeKind, { model: string; permission: string; thinking: string }> = {
@@ -19,15 +23,22 @@ const promptExamples = [
   '检索这个项目的最新文献，输出可核验的研究摘要',
   '把当前项目拆成下一步可执行的任务清单'
 ]
+const trajectoryPageSize = 300
 
+type AgentView = 'conversation' | 'trajectory'
 type HistoryFilter = 'all' | 'codex' | 'pi' | 'project'
 
 function readStoredBoolean(key: string): boolean {
   try { return localStorage.getItem(key) === 'true' } catch { return false }
 }
 
+function readStoredView(): AgentView {
+  try { return localStorage.getItem('workbench-agent-view') === 'trajectory' ? 'trajectory' : 'conversation' } catch { return 'conversation' }
+}
+
 export function AgentPage({ projects }: { projects: Project[] }): React.JSX.Element {
   const queryClient = useQueryClient()
+  const [view, setView] = useState<AgentView>(readStoredView)
   const [runtime, setRuntime] = useState<AgentRuntimeKind>('codex')
   const [model, setModel] = useState(runtimeDefaults.codex.model)
   const [thinking, setThinking] = useState('')
@@ -41,11 +52,21 @@ export function AgentPage({ projects }: { projects: Project[] }): React.JSX.Elem
   const [selectedHistoryIds, setSelectedHistoryIds] = useState<Set<string>>(new Set())
   const [historyCollapsed, setHistoryCollapsed] = useState(() => readStoredBoolean('workbench-agent-history-collapsed'))
   const [activeRun, setActiveRun] = useState<AgentRunRecord | null>(null)
-  const messagesEndRef = useRef<HTMLDivElement | null>(null)
+  // Streaming overlay. The ledger queries stay the durable projection; pushed
+  // records only exist to make the last throttle window of a run visible now.
+  const [pushedRecords, setPushedRecords] = useState<AgentRunRecordEntry[]>([])
+  const [realtime, setRealtime] = useState<RealtimeState>('unsupported')
+  const [earlierRecords, setEarlierRecords] = useState<AgentRunRecordEntry[]>([])
+  const [loadingEarlier, setLoadingEarlier] = useState(false)
+  const recordsEndRef = useRef<HTMLDivElement | null>(null)
 
   useEffect(() => {
     try { localStorage.setItem('workbench-agent-history-collapsed', String(historyCollapsed)) } catch { /* optional renderer storage */ }
   }, [historyCollapsed])
+
+  useEffect(() => {
+    try { localStorage.setItem('workbench-agent-view', view) } catch { /* optional renderer storage */ }
+  }, [view])
 
   // Keep all active conversations available to the embedded history rail. The
   // project selector filters visually, but never hides an intentionally opened
@@ -68,14 +89,6 @@ export function AgentPage({ projects }: { projects: Project[] }): React.JSX.Elem
     return filtered.filter((item) => item.projectId === projectId || item.id === conversationId)
   }, [conversationId, conversations.data, historyFilter, projectId])
   const groupedConversations = useMemo(() => groupConversations(visibleConversations), [visibleConversations])
-  const messages = useQuery({
-    queryKey: ['agent-messages', conversationId],
-    queryFn: () => getWorkbenchAgentApi().conversations.messages({ conversationId: conversationId!, limit: 500 }),
-    enabled: Boolean(conversationId),
-    // Persisted messages are the durable transcript; a short poll keeps a
-    // completed turn from flashing twice while the event stream is arriving.
-    refetchInterval: conversationId ? 750 : false
-  })
   const runs = useQuery({
     queryKey: ['agent-runs', conversationId],
     queryFn: () => getWorkbenchAgentApi().runs.list({ page: { limit: 100 } }),
@@ -83,21 +96,33 @@ export function AgentPage({ projects }: { projects: Project[] }): React.JSX.Elem
     refetchInterval: conversationId ? 1_000 : false
   })
   const listedRun = useMemo(() => {
-    const fromList = (runs.data ?? [])
+    return (runs.data ?? [])
       .filter((run) => run.conversationId === conversationId)
       .sort((left, right) => Date.parse(right.createdAt) - Date.parse(left.createdAt))[0] ?? null
-    return fromList
   }, [conversationId, runs.data])
   const latestRun = useMemo(() => {
     // The start response is refreshed by the short-lived run poll below and
     // therefore carries the authoritative terminal state during this view.
     return activeRun?.conversationId === conversationId ? activeRun : listedRun
   }, [activeRun, conversationId, listedRun])
-  const events = useQuery({
-    queryKey: ['agent-events', latestRun?.id],
-    queryFn: () => getWorkbenchAgentApi().runs.eventsPage({ runId: latestRun!.id, afterSeq: 0, limit: 500 }),
-    enabled: Boolean(latestRun?.id),
-    refetchInterval: latestRun && !isTerminalRun(latestRun.status) ? 250 : false
+  const isRunActive = Boolean(latestRun && !isTerminalRun(latestRun.status))
+  const latestRunId = latestRun?.id ?? null
+  // Chat is a tail window projection of the ledger. "Load earlier" widens the
+  // window instead of using a cursor, so an insert while streaming can never
+  // shift a page boundary.
+  const ledger = useQuery({
+    queryKey: ['agent-records', conversationId],
+    queryFn: () => getWorkbenchAgentApi().conversations.records({ conversationId: conversationId!, limit: 1_000 }),
+    enabled: Boolean(conversationId),
+    refetchInterval: conversationId && isRunActive ? 1_500 : false,
+    placeholderData: (previous) => previous
+  })
+  const trajectory = useQuery({
+    queryKey: ['agent-run-records', latestRunId],
+    queryFn: () => getWorkbenchAgentApi().runs.recordsPage({ runId: latestRunId!, beforeSeq: null, afterSeq: null, limit: trajectoryPageSize }),
+    enabled: Boolean(latestRunId) && view === 'trajectory',
+    refetchInterval: view === 'trajectory' && isRunActive ? 1_500 : false,
+    placeholderData: (previous) => previous
   })
   const connectors = useQuery({
     queryKey: ['agent-connectors'],
@@ -122,9 +147,56 @@ export function AgentPage({ projects }: { projects: Project[] }): React.JSX.Elem
     if (detectedThinking && thinking.trim().length === 0) setThinking(detectedThinking)
   }, [connectors.data, connectors.isLoading, model, runtime, thinking])
 
+  // Incremental ledger subscription. It is scoped to the running run only and
+  // degrades to the polling queries above when the channel or the preload
+  // subscription API is unavailable.
   useEffect(() => {
-    messagesEndRef.current?.scrollIntoView({ block: 'end' })
-  }, [conversationId, events.data?.length, messages.data?.length])
+    setPushedRecords([])
+    setRealtime('unsupported')
+    if (!latestRunId || !isRunActive) return
+    const api = getWorkbenchAgentApi()
+    const subscribe = api.runs.subscribe
+    if (typeof subscribe !== 'function') return
+    let disposed = false
+    setRealtime('subscribed')
+    let unsubscribe: (() => void) | undefined
+    try {
+      unsubscribe = subscribe.call(api.runs, latestRunId, (push) => {
+        if (disposed) return
+        setRealtime('live')
+        setPushedRecords((current) => mergeRecords(current, push.records))
+        setActiveRun((current) => current && current.id === push.run.id && current.status === push.run.status ? current : push.run)
+      })
+    } catch {
+      setRealtime('unsupported')
+      return
+    }
+    return () => {
+      disposed = true
+      unsubscribe?.()
+    }
+  }, [isRunActive, latestRunId])
+
+  useEffect(() => {
+    setEarlierRecords([])
+  }, [latestRunId])
+
+  const conversationRecords = useMemo(() => mergeRecords(ledger.data ?? [], pushedRecords), [ledger.data, pushedRecords])
+  const latestRunRecords = useMemo(
+    () => conversationRecords.filter((record) => record.runId === latestRunId),
+    [conversationRecords, latestRunId]
+  )
+  const stats = useMemo(() => runStats(latestRunRecords), [latestRunRecords])
+  const trajectoryRecords = useMemo(
+    () => mergeRecords([...earlierRecords, ...(trajectory.data ?? [])], pushedRecords.filter((record) => record.runId === latestRunId)),
+    [earlierRecords, latestRunId, pushedRecords, trajectory.data]
+  )
+  const oldestTrajectorySeq = trajectoryRecords[0]?.seq
+  const hasEarlier = oldestTrajectorySeq !== undefined && oldestTrajectorySeq > 0
+
+  useEffect(() => {
+    recordsEndRef.current?.scrollIntoView({ block: 'end' })
+  }, [conversationId, conversationRecords.length, view])
 
   useEffect(() => {
     const runId = activeRun?.conversationId === conversationId ? activeRun.id : null
@@ -138,8 +210,8 @@ export function AgentPage({ projects }: { projects: Project[] }): React.JSX.Elem
         setActiveRun(fresh)
         if (isTerminalRun(fresh.status) && timer) clearInterval(timer)
       } catch {
-        // The event/message queries still provide the persisted view if a
-        // transient IPC request is interrupted during shutdown or reload.
+        // The ledger queries still provide the persisted view if a transient
+        // IPC request is interrupted during shutdown or reload.
       }
     }
     timer = setInterval(() => { void poll() }, 500)
@@ -168,7 +240,8 @@ export function AgentPage({ projects }: { projects: Project[] }): React.JSX.Elem
       setInstructions('')
       setFeedback('已发送给 Agent；运行状态会持续保存到本地工作区。')
       void queryClient.invalidateQueries({ queryKey: ['agent-conversations'] })
-      void queryClient.invalidateQueries({ queryKey: ['agent-messages'] })
+      void queryClient.invalidateQueries({ queryKey: ['agent-records'] })
+      void queryClient.invalidateQueries({ queryKey: ['agent-run-records'] })
       void queryClient.invalidateQueries({ queryKey: ['agent-runs'] })
     },
     onError: (error) => setFeedback(error instanceof Error ? error.message : 'Agent 启动失败。')
@@ -253,14 +326,25 @@ export function AgentPage({ projects }: { projects: Project[] }): React.JSX.Elem
     },
     onError: (error) => setFeedback(error instanceof Error ? error.message : '停止 Agent 失败。')
   })
-  const isRunActive = Boolean(latestRun && !isTerminalRun(latestRun.status))
   const send = () => { if (!startMutation.isPending && !isRunActive) startMutation.mutate() }
   const stop = () => { if (latestRun && isRunActive && !cancelMutation.isPending) cancelMutation.mutate(latestRun.id) }
-  const toggleHistorySelection = (conversationIdToToggle: string) => {
+  const loadEarlier = async (): Promise<void> => {
+    if (!latestRunId || oldestTrajectorySeq === undefined || loadingEarlier) return
+    setLoadingEarlier(true)
+    try {
+      const older = await getWorkbenchAgentApi().runs.recordsPage({ runId: latestRunId, beforeSeq: oldestTrajectorySeq, afterSeq: null, limit: trajectoryPageSize })
+      setEarlierRecords((current) => mergeRecords(older, current))
+    } catch (error) {
+      setFeedback(error instanceof Error ? error.message : '读取更早的运行记录失败。')
+    } finally {
+      setLoadingEarlier(false)
+    }
+  }
+  const toggleHistorySelection = (idToToggle: string) => {
     setSelectedHistoryIds((current) => {
       const next = new Set(current)
-      if (next.has(conversationIdToToggle)) next.delete(conversationIdToToggle)
-      else next.add(conversationIdToToggle)
+      if (next.has(idToToggle)) next.delete(idToToggle)
+      else next.add(idToToggle)
       return next
     })
   }
@@ -283,13 +367,6 @@ export function AgentPage({ projects }: { projects: Project[] }): React.JSX.Elem
     if (archiveMutation.isPending || archiveManyMutation.isPending) return
     if (window.confirm(`确认删除对话“${safeDisplayTitle(conversation.title)}”吗？此操作不可撤销。`)) archiveMutation.mutate(conversation)
   }
-  const transcript = messages.data ?? []
-  const activeRunAssistantMessages = latestRun
-    ? transcript.filter((message) => message.runId === latestRun.id && message.role === 'assistant')
-    : []
-  const transcriptBeforeLiveRun = latestRun
-    ? transcript.filter((message) => !(message.runId === latestRun.id && message.role === 'assistant'))
-    : transcript
 
   return <div className={cn('agent-thread-shell', historyCollapsed && 'agent-thread-shell-history-collapsed')}>
     {feedback ? <p aria-live="polite" className="agent-feedback" role="status">{feedback}</p> : null}
@@ -320,8 +397,8 @@ export function AgentPage({ projects }: { projects: Project[] }): React.JSX.Elem
         </div>)}
       </div>
       <div className="agent-history-footnote"><Clock3 aria-hidden="true" className="size-3" /><span>历史记录保存在本地工作区 · 每个对话一个 session 文件</span></div>
-       </>}
-     </aside>
+      </>}
+    </aside>
 
     <section aria-labelledby="agent-thread-title" className="agent-thread">
       <header className="agent-thread-header">
@@ -329,7 +406,7 @@ export function AgentPage({ projects }: { projects: Project[] }): React.JSX.Elem
           <Sparkles aria-hidden="true" className="size-4 text-primary" />
           <div><h1 id="agent-thread-title">{selectedConversation ? safeDisplayTitle(selectedConversation.title) : 'Hi，今天有什么安排？'}</h1><p>{selectedConversation ? `${runtimeLabels[runtime]} · ${assistantKey || 'researcher'}` : '选择一个 runtime，开始你的科研工作流'}</p></div>
         </div>
-        <div className="agent-runtime-bar" aria-label="选择 Agent runtime" role="group">
+        <div aria-label="选择 Agent runtime" className="agent-runtime-bar" role="group">
           {(['codex', 'pi'] as AgentRuntimeKind[]).map((item) => {
             const connector = connectors.data?.find((candidate) => candidate.runtime === item)
             const active = runtime === item
@@ -337,24 +414,39 @@ export function AgentPage({ projects }: { projects: Project[] }): React.JSX.Elem
           })}
           <span className="agent-runtime-divider" />
           {connectors.isFetching ? <InlineLoadingState label="正在探测 runtime…" /> : connectors.error ? <span className="agent-runtime-probe-error" role="status">runtime 探测失败，可在设置中重试</span> : null}
-           <label className="agent-model-select"><span className="sr-only">模型</span><select aria-label="模型" onChange={(event) => setModel(event.target.value)} value={model}><option value="">跟随 CLI 模型</option>{[...new Set([model, ...(activeConnector?.modelOptions ?? [])].filter(Boolean))].map((option) => <option key={option} value={option}>{option}</option>)}</select><ChevronDown aria-hidden="true" className="agent-select-chevron" /></label>
-           <label className="agent-thinking-select"><span className="sr-only">思考深度</span><select aria-label="思考深度" onChange={(event) => setThinking(event.target.value)} value={thinking}><option value="">跟随 CLI 配置</option>{[...new Set([...(activeConnector?.thinkingOptions ?? []), activeConnector?.localThinkingLevel].filter((value): value is string => Boolean(value)))].map((option) => <option key={option} value={option}>{option}</option>)}</select><ChevronDown aria-hidden="true" className="agent-select-chevron" /></label>
-           <label className="agent-permission-select"><span className="sr-only">权限模式</span><select aria-label="权限模式" disabled={permissionOptions.length === 0} onChange={(event) => setPermissionMode(event.target.value as AgentPermissionMode)} value={permissionOptions.includes(permissionMode) ? permissionMode : ''}><option value="">跟随 CLI 配置</option>{permissionOptions.map((option) => <option key={option} value={option}>{permissionLabel(option)}</option>)}</select><ChevronDown aria-hidden="true" className="agent-select-chevron" /></label><span className="agent-runtime-permission" title={localPermission}>{localPermission}</span>
+          <label className="agent-model-select"><span className="sr-only">模型</span><select aria-label="模型" onChange={(event) => setModel(event.target.value)} value={model}><option value="">跟随 CLI 模型</option>{[...new Set([model, ...(activeConnector?.modelOptions ?? [])].filter(Boolean))].map((option) => <option key={option} value={option}>{option}</option>)}</select><ChevronDown aria-hidden="true" className="agent-select-chevron" /></label>
+          <label className="agent-thinking-select"><span className="sr-only">思考深度</span><select aria-label="思考深度" onChange={(event) => setThinking(event.target.value)} value={thinking}><option value="">跟随 CLI 配置</option>{[...new Set([...(activeConnector?.thinkingOptions ?? []), activeConnector?.localThinkingLevel].filter((value): value is string => Boolean(value)))].map((option) => <option key={option} value={option}>{option}</option>)}</select><ChevronDown aria-hidden="true" className="agent-select-chevron" /></label>
+          <label className="agent-permission-select"><span className="sr-only">权限模式</span><select aria-label="权限模式" disabled={permissionOptions.length === 0} onChange={(event) => setPermissionMode(event.target.value as AgentPermissionMode)} value={permissionOptions.includes(permissionMode) ? permissionMode : ''}><option value="">跟随 CLI 配置</option>{permissionOptions.map((option) => <option key={option} value={option}>{permissionLabel(option)}</option>)}</select><ChevronDown aria-hidden="true" className="agent-select-chevron" /></label><span className="agent-runtime-permission" title={localPermission}>{localPermission}</span>
         </div>
       </header>
 
-      <div aria-label="当前会话消息" className="agent-thread-messages" role="log">
-        {!conversationId ? <div className="agent-thread-empty"><div className="agent-thread-empty-icon"><Bot aria-hidden="true" className="size-5" /></div><h2>准备好开始了吗？</h2><p>输入问题、上传上下文，或从下方指令开始。</p></div> : null}
-        {conversationId && messages.isLoading ? <PanelSkeleton lines={5} /> : null}
-        {conversationId && !messages.isLoading && (messages.data ?? []).length === 0 ? <p className="agent-thread-empty-copy">这是一段新对话，发送第一条消息即可开始。</p> : null}
-        {transcriptBeforeLiveRun.map((message) => <MessageRow key={message.id} message={message} runtime={selectedConversation?.runtime ?? runtime} />)}
-        <LiveRunPanel events={events.data ?? []} key={latestRun?.id ?? 'no-run'} messages={transcript} run={latestRun} />
-        {!isRunActive ? activeRunAssistantMessages.map((message) => <MessageRow key={message.id} message={message} runtime={selectedConversation?.runtime ?? runtime} />) : null}
-        <div ref={messagesEndRef} />
+      {/* One tab strip per thread, deliberately below the header so the runtime
+          bar keeps exactly one copy of each select control. */}
+      <div className="agent-thread-tabs">
+        <ResearchTabs
+          items={[{ value: 'conversation' as AgentView, label: '对话' }, { value: 'trajectory' as AgentView, label: '轨迹', count: latestRunRecords.length }]}
+          label="Agent 视图"
+          onChange={setView}
+          value={view}
+        />
+      </div>
+
+      <div aria-label="当前会话消息" className={cn('agent-thread-messages', view === 'trajectory' && 'agent-thread-messages-records')} role="log">
+        {view === 'conversation' ? <>
+          {!conversationId ? <div className="agent-thread-empty"><div className="agent-thread-empty-icon"><Bot aria-hidden="true" className="size-5" /></div><h2>准备好开始了吗？</h2><p>输入问题、上传上下文，或从下方指令开始。</p></div> : null}
+          {conversationId && ledger.isLoading ? <PanelSkeleton lines={5} /> : null}
+          {conversationId && !ledger.isLoading ? <ConversationView isRunning={isRunActive} records={conversationRecords} runtime={selectedConversation?.runtime ?? runtime} /> : null}
+          <div ref={recordsEndRef} />
+        </> : <>
+          {!latestRunId ? <div className="agent-thread-empty"><div className="agent-thread-empty-icon"><Bot aria-hidden="true" className="size-5" /></div><h2>还没有运行轨迹</h2><p>这段对话还没有发起过 Agent 运行。</p></div> : null}
+          {latestRunId ? <TrajectoryView hasEarlier={hasEarlier} isFetching={trajectory.isFetching && trajectoryRecords.length === 0} isRunning={isRunActive} loadingEarlier={loadingEarlier} onLoadEarlier={() => void loadEarlier()} records={trajectoryRecords} /> : null}
+        </>}
       </div>
 
       <div className="agent-composer-dock">
-        {!conversationId && <div className="agent-prompts agent-prompts-above-composer"><p>试试这些指令</p>{promptExamples.map((prompt) => <button key={prompt} onClick={() => setInstructions(prompt)} type="button">{prompt}<ArrowUp aria-hidden="true" className="size-3 opacity-0 transition-opacity group-hover:opacity-100" /></button>)}</div>}
+        <StatsRow isRunning={isRunActive} realtime={realtime} stats={stats} />
+        <StepStrip isRunning={isRunActive} records={latestRunRecords} />
+        {!conversationId && <div className="agent-prompts agent-prompts-above-composer"><p>试试这些指令</p>{promptExamples.map((prompt) => <button key={prompt} onClick={() => setInstructions(prompt)} type="button">{prompt}</button>)}</div>}
         <div className={cn('agent-composer', startMutation.isPending && 'agent-composer-busy')}>
           <Textarea aria-label="发送给 Agent 的消息" className="agent-composer-input" onChange={(event) => setInstructions(event.target.value)} onKeyDown={(event) => { if (event.key === 'Enter' && (event.ctrlKey || event.metaKey)) { event.preventDefault(); send() } }} placeholder="发送消息到工作台 Agent… 输入 / 唤起命令，@ 引用文件，@@ 引用会话，↑/↓ 切换历史消息" value={instructions} />
           <div className="agent-composer-toolbar">
@@ -365,41 +457,6 @@ export function AgentPage({ projects }: { projects: Project[] }): React.JSX.Elem
         <p className="agent-composer-hint">⌘/Ctrl + Enter 发送 · 当前策略：<strong>{permissionMode}</strong> · 模型与思考深度由上方唯一控制区选择</p>
       </div>
     </section>
-  </div>
-}
-
-function MessageRow({ message, runtime }: { message: AgentMessage; runtime: AgentRuntimeKind }): React.JSX.Element {
-  const roleLabel = message.role === 'user' ? '你' : message.role === 'assistant' ? runtimeLabels[runtime] : message.role === 'tool' ? '工具' : '系统'
-  return <article className={cn('agent-message-row', `agent-message-${message.role}`)}><div className="agent-message-meta"><span className="agent-message-avatar">{message.role === 'user' ? <UserRound aria-hidden="true" className="size-3.5" /> : <Bot aria-hidden="true" className="size-3.5" />}</span><strong>{roleLabel}</strong><time dateTime={message.createdAt}>{formatMessageTime(message.createdAt)}</time></div>{message.role === 'assistant' ? <MarkdownPreview source={safeDisplayContent(message.content)} /> : <p>{safeDisplayContent(message.content)}</p>}</article>
-}
-
-function LiveRunPanel({ run, events, messages }: { run: AgentRunRecord | null; events: AgentEventRecord[]; messages: AgentMessage[] }): React.JSX.Element | null {
-  const [stepsExpanded, setStepsExpanded] = useState(false)
-  const [expandedStep, setExpandedStep] = useState<string | null>(null)
-  if (!run) return null
-  const hasPersistedAssistant = messages.some((message) => message.runId === run.id && message.role === 'assistant')
-  const streamText = streamAssistantText(events)
-  const activities = dedupeToolActivities(events.filter((event) => event.kind === 'tool_call' || looksLikeToolEvent(event.payload)))
-  const storageEvent = [...events].reverse().find((event) => {
-    if (event.kind !== 'progress' || !event.payload || typeof event.payload !== 'object') return false
-    const code = (event.payload as Record<string, unknown>).code
-    return typeof code === 'string' && /^OBSIDIAN_DAILY_NOTE_(WRITTEN|SKIPPED)$/u.test(code)
-  })
-  const storageCode = storageEvent && storageEvent.payload && typeof storageEvent.payload === 'object'
-    ? (storageEvent.payload as Record<string, unknown>).code
-    : null
-  const storageMessage = storageEvent && storageEvent.payload && typeof storageEvent.payload === 'object'
-    ? (storageEvent.payload as Record<string, unknown>).message
-    : null
-  const isRunning = !isTerminalRun(run.status)
-  if (!isRunning && hasPersistedAssistant && activities.length === 0 && !storageEvent) return null
-  return <div className="agent-live-run" aria-live="polite">
-    <div className="agent-live-run-header"><span className={cn('agent-live-run-dot', isRunning ? 'agent-live-run-dot-active' : 'agent-live-run-dot-done')} /><strong>{isRunning ? '正在运行' : run.status === 'completed' ? '运行完成' : '运行记录'}</strong><span className="agent-live-run-runtime">{runtimeLabels[run.runtime]}</span>{activities.length > 0 ? <button aria-controls={`agent-steps-${run.id}`} aria-expanded={stepsExpanded} className="agent-live-steps-toggle" onClick={() => setStepsExpanded((current) => !current)} type="button">{stepsExpanded ? <ChevronDown aria-hidden="true" className="size-3.5" /> : <ChevronRight aria-hidden="true" className="size-3.5" />}<span>查看步骤</span><span className="agent-live-steps-count">{activities.length}</span></button> : null}</div>
-    {activities.length > 0 && !stepsExpanded ? <p className="agent-live-steps-summary">{isRunning ? '工具正在运行中，' : '工具调用已完成，'}点击“查看步骤”展开运行明细。</p> : null}
-    {activities.length > 0 && stepsExpanded ? <div className="agent-live-activities" id={`agent-steps-${run.id}`}>{activities.slice(-24).map((event) => { const key = toolActivityKey(event); const expanded = expandedStep === key; return <div className={cn('agent-live-activity', expanded && 'agent-live-activity-expanded')} key={key}><button aria-expanded={expanded} className="agent-live-activity-toggle" onClick={() => setExpandedStep(expanded ? null : key)} type="button"><Wrench aria-hidden="true" className="size-3.5" /><span>{eventLabel(event)}</span><span className="agent-live-activity-state">{toolActivityState(event)}</span>{expanded ? <ChevronDown aria-hidden="true" className="size-3" /> : <ChevronRight aria-hidden="true" className="size-3" />}</button>{expanded ? <pre className="agent-live-activity-detail">{safeEventDetail(event.payload)}</pre> : null}</div> })}</div> : null}
-    {storageEvent && typeof storageMessage === 'string' ? <p className={cn('agent-live-storage-note', storageCode === 'OBSIDIAN_DAILY_NOTE_WRITTEN' ? 'agent-live-storage-note-success' : 'agent-live-storage-note-warning')}>{safeDisplayContent(storageMessage)}</p> : null}
-    {streamText && (!hasPersistedAssistant || isRunning) ? <p className="agent-live-text">{safeDisplayContent(streamText)}{isRunning ? <span className="agent-stream-cursor" aria-hidden="true" /> : null}</p> : null}
-    {isRunning && !streamText && activities.length === 0 ? <p className="agent-live-placeholder">Agent 正在准备上下文…</p> : null}
   </div>
 }
 
@@ -434,127 +491,6 @@ function isTerminalRun(status: AgentRunRecord['status']): boolean {
   return ['completed', 'partial', 'failed', 'canceled', 'blocked', 'missed'].includes(status)
 }
 
-function extractEventText(payload: unknown, depth = 0): string {
-  if (depth > 4) return ''
-  if (typeof payload === 'string') return payload
-  if (!payload || typeof payload !== 'object') return ''
-  if (Array.isArray(payload)) return payload.map((item) => extractEventText(item, depth + 1)).filter(Boolean).join('')
-  const record = payload as Record<string, unknown>
-  for (const key of ['delta', 'text_delta', 'text', 'output']) if (typeof record[key] === 'string') return record[key] as string
-  if (typeof record.content === 'string') return record.content
-  if (Array.isArray(record.content)) return record.content.map((item) => extractEventText(item, depth + 1)).filter(Boolean).join('')
-  for (const key of ['assistantMessageEvent', 'event', 'item', 'message', 'data', 'result']) {
-    const nested = extractEventText(record[key], depth + 1)
-    if (nested) return nested
-  }
-  return ''
-}
-
-/** Normalize the two stream shapes used by Codex/Pi. Some versions emit
- * deltas, while others periodically emit the complete accumulated message;
- * blindly concatenating both is what made assistant text appear twice. */
-function streamAssistantText(events: AgentEventRecord[]): string {
-  let text = ''
-  for (const event of events) {
-    if (!(event.kind === 'assistant_message' || (event.kind === 'progress' && looksLikeAssistantEvent(event.payload)))) continue
-    const chunk = extractEventText(event.payload)
-    if (!chunk) continue
-    const record = event.payload && typeof event.payload === 'object' && !Array.isArray(event.payload) ? event.payload as Record<string, unknown> : null
-    const nested = record?.assistantMessageEvent && typeof record.assistantMessageEvent === 'object'
-      ? record.assistantMessageEvent as Record<string, unknown>
-      : null
-    const isDelta = typeof record?.delta === 'string' || typeof record?.text_delta === 'string' || typeof record?.partial === 'string' || typeof nested?.delta === 'string' || nested?.type === 'text_delta'
-    if (isDelta) {
-      text += chunk
-      continue
-    }
-    if (!text) {
-      text = chunk
-    } else if (chunk.startsWith(text)) {
-      text = chunk
-    } else if (!text.endsWith(chunk)) {
-      text += chunk
-    }
-  }
-  return text
-}
-
-function looksLikeToolEvent(payload: unknown, depth = 0): boolean {
-  if (!payload || typeof payload !== 'object' || depth > 4) return false
-  const record = payload as Record<string, unknown>
-  const type = typeof record.type === 'string' ? record.type : ''
-  if (/tool|function|command_execution|mcp_tool|tool_use/iu.test(type)) return true
-  return ['assistantMessageEvent', 'event', 'item', 'message', 'data', 'result'].some((key) => looksLikeToolEvent(record[key], depth + 1))
-}
-
-function looksLikeAssistantEvent(payload: unknown, depth = 0): boolean {
-  if (!payload || typeof payload !== 'object' || depth > 4) return false
-  const record = payload as Record<string, unknown>
-  const type = typeof record.type === 'string' ? record.type : ''
-  if (/error|diagnostic|turn\.(started|completed)|thread\.started/iu.test(type)) return false
-  if (/agent_message|assistant_message|text_delta|text_end/iu.test(type)) return true
-  if (typeof record.delta === 'string' || typeof record.text === 'string') return true
-  return ['assistantMessageEvent', 'event', 'item', 'message', 'data', 'result'].some((key) => looksLikeAssistantEvent(record[key], depth + 1))
-}
-
-function dedupeToolActivities(events: AgentEventRecord[]): AgentEventRecord[] {
-  const latest = new Map<string, AgentEventRecord>()
-  for (const event of events) latest.set(toolActivityKey(event), event)
-  return [...latest.values()]
-}
-
-function toolActivityKey(event: AgentEventRecord): string {
-  const item = nestedEventRecord(event.payload, 'item')
-  return typeof item?.id === 'string' ? item.id : eventLabel(event)
-}
-
-function toolActivityState(event: AgentEventRecord): string {
-  const item = nestedEventRecord(event.payload, 'item')
-  const status = typeof item?.status === 'string' ? item.status : ''
-  if (/failed|error/iu.test(status)) return '失败'
-  if (/completed|succeeded|success/iu.test(status)) return '完成'
-  if (/progress|running|in_progress/iu.test(status)) return '进行中'
-  return event.kind === 'tool_call' ? '调用' : '步骤'
-}
-
-function nestedEventRecord(payload: unknown, key: string): Record<string, unknown> | null {
-  if (!payload || typeof payload !== 'object') return null
-  const value = (payload as Record<string, unknown>)[key]
-  return value && typeof value === 'object' ? value as Record<string, unknown> : null
-}
-
-function eventLabel(event: AgentEventRecord): string {
-  const payload = event.payload && typeof event.payload === 'object' ? event.payload as Record<string, unknown> : null
-  const nested = payload?.item && typeof payload.item === 'object' ? payload.item as Record<string, unknown> : null
-  const type = typeof nested?.type === 'string' ? nested.type : typeof payload?.type === 'string' ? payload.type : event.kind
-  const command = typeof nested?.command === 'string' ? nested.command : typeof payload?.command === 'string' ? payload.command : null
-  return command ? `${type}: ${command}`.slice(0, 180) : type.replace(/[_.-]+/gu, ' ').replace(/\b\w/gu, (value) => value.toUpperCase())
-}
-
-function safeEventDetail(payload: unknown): string {
-  try {
-    const text = JSON.stringify(payload, (_key, value) => {
-      if (typeof value !== 'string') return value
-      return value.replace(/(Bearer\s+)[^\s]+/giu, '$1[redacted]').replace(/([A-Za-z]:[\\/][^\s"']+)/gu, '[path redacted]').slice(0, 4_000)
-    }, 2)
-    return text?.slice(0, 8_000) ?? ''
-  } catch { return '[detail unavailable]' }
-}
-
-function safeDisplayContent(content: string): string {
-  const normalized = content.trim()
-  if (/return exactly acceptance_redaction_restart_ok/i.test(normalized)) return '这条运行记录已被安全过滤。请重新发送任务以继续。'
-  if (/no api key found|missing bearer|401 unauthorized|authentication required|not authenticated|login required|logged out/i.test(normalized)) return '运行未完成：本机 Agent CLI 尚未完成登录，请在设置中点击“探测”确认登录状态后重试。'
-  if (/reconnecting|request timed out|connection failed|falling back from websockets|waiting for network/i.test(normalized)) return '运行未完成：Agent runtime 连接超时或网络不可用，请检查凭据与网络后重试。'
-  if (/not inside a trusted directory|invalidargument|cannot process argument|codex\.ps1/i.test(normalized)) return '运行未完成：当前工作目录尚未被 runtime 信任，请在设置中检查工作目录后重试。'
-  return content
-}
-
-function safeDisplayTitle(title: string): string {
-  if (/return exactly acceptance_redaction_restart_ok|no api key found|missing bearer|401 unauthorized|not authenticated/i.test(title)) return '已过滤的 Agent 运行记录'
-  return title
-}
-
 function effectiveModel(_runtime: AgentRuntimeKind, value: string, detected: string | null | undefined): string | null {
   const trimmed = value.trim()
   if (trimmed) return trimmed
@@ -568,12 +504,6 @@ function formatConversationDate(value: string): string {
   const now = new Date()
   if (date.toDateString() === now.toDateString()) return date.toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' })
   return date.toLocaleDateString('zh-CN', { month: '2-digit', day: '2-digit' })
-}
-
-function formatMessageTime(value: string): string {
-  const date = new Date(value)
-  if (Number.isNaN(date.getTime())) return ''
-  return date.toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' })
 }
 
 function conversationStatusLabel(status: AgentConversation['status']): string {
@@ -595,3 +525,4 @@ function permissionLabel(value: AgentPermissionMode): string {
   if (value === 'auto') return '自动批准'
   return '完全访问'
 }
+

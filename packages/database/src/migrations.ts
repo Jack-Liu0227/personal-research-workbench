@@ -1068,6 +1068,157 @@ const migrations: readonly Migration[] = [
       ALTER TABLE search_results ADD COLUMN impact_factor_source TEXT;
       ALTER TABLE search_results ADD COLUMN impact_factor_fetched_at TEXT;
     `
+  },
+  {
+    id: 22,
+    name: 'agent_run_records',
+    sql: `
+      CREATE TABLE agent_run_records (
+        id TEXT PRIMARY KEY NOT NULL,
+        run_id TEXT NOT NULL REFERENCES agent_runs(id) ON DELETE CASCADE,
+        seq INTEGER NOT NULL CHECK (seq >= 0),
+        record_key TEXT NOT NULL,
+        kind TEXT NOT NULL CHECK (kind IN (
+          'user', 'assistant', 'reasoning', 'tool', 'subtool', 'system', 'context',
+          'diagnostic', 'compacted', 'error', 'turn_end'
+        )),
+        status TEXT NOT NULL DEFAULT 'info' CHECK (status IN ('info', 'running', 'completed', 'failed', 'canceled')),
+        turn INTEGER NOT NULL DEFAULT 0 CHECK (turn >= 0),
+        step INTEGER NOT NULL DEFAULT 0 CHECK (step >= 0),
+        title TEXT NOT NULL DEFAULT '',
+        detail TEXT NOT NULL DEFAULT '',
+        input_text TEXT,
+        output_text TEXT,
+        tool_name TEXT,
+        call_id TEXT,
+        parent_id TEXT,
+        started_at TEXT,
+        finished_at TEXT,
+        duration_ms INTEGER CHECK (duration_ms IS NULL OR duration_ms >= 0),
+        usage_json TEXT CHECK (usage_json IS NULL OR json_valid(usage_json)),
+        truncated INTEGER NOT NULL DEFAULT 0 CHECK (truncated IN (0, 1)),
+        created_at TEXT NOT NULL,
+        UNIQUE(run_id, seq),
+        UNIQUE(run_id, record_key)
+      ) STRICT;
+      CREATE INDEX agent_run_records_run_created_idx ON agent_run_records(run_id, created_at);
+      CREATE INDEX agent_runs_conversation_created_idx ON agent_runs(conversation_id, created_at);
+
+      /* One-time replay of already persisted history into the normalized ledger.
+         Rows come from three additive sources and are ordered inside each run:
+         user message (0) -> raw run events (1) -> assistant message (2, only for
+         runs that never recorded an assistant_message event). The raw event
+         payload stays available as output_text so nothing detected here is lost,
+         and no existing table is rewritten. */
+      INSERT INTO agent_run_records (
+        id, run_id, seq, record_key, kind, status, turn, step, title, detail,
+        input_text, output_text, tool_name, call_id, parent_id,
+        started_at, finished_at, duration_ms, usage_json, truncated, created_at
+      )
+      SELECT
+        'legacy:' || source.origin_id,
+        source.run_id,
+        ROW_NUMBER() OVER (PARTITION BY source.run_id ORDER BY source.ord, source.source_seq) - 1,
+        'legacy:' || source.origin_id,
+        source.kind,
+        source.status,
+        0,
+        0,
+        source.title,
+        source.detail,
+        NULL,
+        source.output_text,
+        NULL,
+        NULL,
+        NULL,
+        NULL,
+        NULL,
+        NULL,
+        NULL,
+        CASE WHEN source.unclipped_length > 65536 THEN 1 ELSE 0 END,
+        source.created_at
+      FROM (
+        SELECT
+          m.id AS origin_id,
+          m.run_id AS run_id,
+          0 AS ord,
+          m.seq AS source_seq,
+          'user' AS kind,
+          'info' AS status,
+          '你' AS title,
+          substr(m.content, 1, 65536) AS detail,
+          NULL AS output_text,
+          length(m.content) AS unclipped_length,
+          m.created_at AS created_at
+        FROM agent_messages m
+        WHERE m.run_id IS NOT NULL AND m.role = 'user'
+
+        UNION ALL
+
+        SELECT
+          e.id,
+          e.run_id,
+          1,
+          e.seq,
+          CASE e.kind
+            WHEN 'assistant_message' THEN 'assistant'
+            WHEN 'tool_call' THEN 'tool'
+            WHEN 'failed' THEN 'error'
+            WHEN 'canceled' THEN 'error'
+            WHEN 'completed' THEN 'turn_end'
+            WHEN 'started' THEN 'system'
+            ELSE 'context'
+          END,
+          CASE e.kind
+            WHEN 'assistant_message' THEN 'completed'
+            WHEN 'failed' THEN 'failed'
+            WHEN 'canceled' THEN 'canceled'
+            WHEN 'completed' THEN 'completed'
+            ELSE 'info'
+          END,
+          CASE e.kind
+            WHEN 'assistant_message' THEN '历史消息'
+            WHEN 'tool_call' THEN '历史工具调用'
+            ELSE '事件 ' || e.kind
+          END,
+          COALESCE(substr(CASE WHEN json_valid(e.payload_json) THEN COALESCE(
+            json_extract(e.payload_json, '$.text'),
+            json_extract(e.payload_json, '$.message'),
+            json_extract(e.payload_json, '$.delta'),
+            json_extract(e.payload_json, '$.output'),
+            json_extract(e.payload_json, '$.content'),
+            json_extract(e.payload_json, '$.item.text'),
+            json_extract(e.payload_json, '$.assistantMessageEvent.delta'),
+            json_extract(e.payload_json, '$')
+          ) END, 1, 65536), ''),
+          substr(e.payload_json, 1, 65536),
+          length(e.payload_json),
+          e.created_at
+        FROM agent_run_events e
+
+        UNION ALL
+
+        SELECT
+          m.id,
+          m.run_id,
+          2,
+          m.seq,
+          'assistant',
+          'completed',
+          '历史回复',
+          substr(m.content, 1, 65536),
+          NULL,
+          length(m.content),
+          m.created_at
+        FROM agent_messages m
+        WHERE m.run_id IS NOT NULL
+          AND m.role = 'assistant'
+          AND NOT EXISTS (
+            SELECT 1 FROM agent_run_events e
+            WHERE e.run_id = m.run_id AND e.kind = 'assistant_message'
+          )
+      ) AS source;
+    `
   }
 ]
 

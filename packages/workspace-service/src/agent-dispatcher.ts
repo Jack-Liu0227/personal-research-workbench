@@ -5,10 +5,12 @@ import {
   AgentConversationArchiveBulkInputSchema,
   AgentConversationListInputSchema,
   AgentConversationMessagesInputSchema,
+  AgentConversationRecordsInputSchema,
   AgentConnectorSaveInputSchema,
   AgentRpcRequestSchema,
   AgentRunEventsInputSchema,
   AgentRunListInputSchema,
+  AgentRunRecordsPageInputSchema,
   AgentRunStartInputSchema,
   AutomationRuleSaveInputSchema,
   type AgentRpcRequest,
@@ -48,6 +50,7 @@ async function execute(agent: AgentCoordinator, request: AgentRpcRequest): Promi
     case 'agent.conversations.create': return agent.createConversation(AgentConversationCreateInputSchema.parse(request.payload))
     case 'agent.conversations.get': return agent.getConversation(z.object({ conversationId: z.string() }).parse(request.payload).conversationId)
     case 'agent.conversations.messages': return agent.listConversationMessages(AgentConversationMessagesInputSchema.parse(request.payload))
+    case 'agent.conversations.records': return agent.listConversationRecords(AgentConversationRecordsInputSchema.parse(request.payload))
     case 'agent.conversations.archive': { const input = z.object({ conversationId: z.string(), expectedRevision: z.number() }).parse(request.payload); agent.archiveConversation(input.conversationId, input.expectedRevision); return null }
     case 'agent.conversations.archiveBulk': {
       agent.archiveConversations(AgentConversationArchiveBulkInputSchema.parse(request.payload).items)
@@ -78,6 +81,7 @@ async function execute(agent: AgentCoordinator, request: AgentRpcRequest): Promi
       const input = AgentRunEventsInputSchema.parse(request.payload)
       return agent.listEvents(input.runId, input.afterSeq, input.limit)
     }
+    case 'agent.runs.recordsPage': return agent.listRunRecords(AgentRunRecordsPageInputSchema.parse(request.payload))
     case 'agent.runs.cancel': await agent.cancel(z.object({ runId: z.string() }).parse(request.payload).runId); return null
     case 'agent.runs.retry': return agent.retry(z.object({ runId: z.string() }).parse(request.payload).runId)
     case 'agent.approvals.list': return agent.listApprovals(z.object({ runId: z.string().optional() }).parse(request.payload).runId)

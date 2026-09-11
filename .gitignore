@@ -17,3 +17,5 @@ __pycache__/
 .env.*
 !.env.example
 * TO DO list.csv
+# Transpiled copy of electron.vite.config.ts left behind by the build tool.
+apps/desktop/electron.vite.config.*.mjs
