@@ -230,8 +230,9 @@ connectors expose model candidates and three CLI-aligned permission modes. The
 transcript renders assistant deltas while a run is active and exposes
 keyboard-expandable, redacted tool payload details. A project-pinned
 `last30days` 3.22.0 checkout is packaged with the app; the seeded
-`Last 30 days 每日资讯推送` schedule runs at 09:00 Asia/Shanghai after a topic
-is supplied and writes to the safe `每日资讯推送` Obsidian folder. Full-access
+`Last 30 days 每日文献推送` schedule runs at 09:00 Asia/Shanghai after a topic
+is supplied and writes to the safe `每日文献推送` Obsidian folder (a later migration
+normalizes the earlier `每日资讯推送` spelling, which is no longer used anywhere). Full-access
 scheduled runs remain behind the explicit `PRW_ALLOW_FULL_ACCESS_AUTOMATION`
 security gate.
 

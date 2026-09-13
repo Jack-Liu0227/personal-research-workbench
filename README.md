@@ -74,6 +74,8 @@ Windows 本地优先的个人科研工作台。Electron + React 19 桌面端，T
 
 用 cron 表达式管理由 Codex 或 Pi 执行的定时研究任务，可绑定项目、权限模式和时区，随时暂停／启用。**调度只在应用进程存活期间运行**；关闭应用期间不会后台执行，重新打开时每日任务最多补跑一次错过的时间点。
 
+每个到点时间点先写一条 occurrence 记录再推进游标（同一事务），因此重复的 30 秒 tick、重复点击「立即运行」和启动补跑都只会产生一次执行；应用在时间点执行期间被关闭的遗留记录会结算为「错过」并保留原因。页面底部「最近运行」列出每次运行的状态、时间点来源、阻断/失败原因、Artifact 与 Obsidian 投递结果（已写入路径或跳过原因）；失败/阻断的时间点可以按该规则记录的权限与审批策略重试，不会以更高权限重放旧运行。远程通知渠道（Telegram/Email/Webhook）本阶段不启用。
+
 ### 设置
 
 ![设置](docs/assets/screenshots/10-settings.png)
@@ -136,6 +138,15 @@ pnpm typecheck      # 全仓库类型检查
 pnpm build          # 构建 main / preload / renderer
 pnpm package:win    # 构建并用 electron-builder 打出 NSIS x64 安装包
 pnpm test:e2e       # 类打包形态的 Electron 端到端 smoke（隔离用户目录）
+```
+
+last30days skill 的验证脚本（`--network` / `:app` / `:cli` 会真实联网或调用模型，默认不跑）：
+
+```powershell
+pnpm test:last30days           # 解析/诊断/引擎契约（离线，无 --mock）
+pnpm test:last30days:network   # 追加一次真实无 key 联网运行
+pnpm test:last30days:app       # 启动 Electron 验证 skillKey→run/ledger 路径（blocked 诊断，不调用模型）
+pnpm test:last30days:cli       # 真实 Codex/Pi 运行一次 skill（消耗 token，opt-in）
 ```
 
 测试源码已按用户要求删除，`pnpm test` 不再是验收门禁；当前门禁是 `pnpm typecheck` 与 `pnpm build`。`pnpm test:e2e` 用 Playwright 驱动真实 Renderer／Preload／Core 栈并在临时用户目录运行，但仍不是已安装 NSIS 包的安装 smoke。安装包必须在真实 Windows x64 环境完成独立安装／启动／重启／卸载 smoke，仅构建成功不等于发布就绪。

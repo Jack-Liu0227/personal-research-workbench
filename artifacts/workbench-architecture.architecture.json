@@ -1,0 +1,238 @@
+{
+  "schema_version": 1,
+  "diagram_type": "architecture",
+  "meta": {
+    "title": "Personal Research Workbench · 系统架构",
+    "locale": "zh-CN",
+    "output": "workbench-architecture.html",
+    "quality_profile": "showcase",
+    "viewBox": [1350, 760],
+    "repository": {
+      "url": "https://github.com/Jack-Liu0227/personal-research-workbench.git",
+      "provider": "github",
+      "link_mode": "web",
+      "revision": "7e2895074259ea05ef6372c2bba552b289ac09dd"
+    },
+    "views": [
+      {
+        "id": "desktop-request-path",
+        "label": "桌面请求主路径",
+        "focus": ["user", "renderer", "preload", "main", "core", "workspace", "database"],
+        "note": "从 React Renderer 经窄化 Preload、Electron Main 与 Core 进入本地权威 SQLite。"
+      },
+      {
+        "id": "trust-boundaries",
+        "label": "进程与安全边界",
+        "focus": ["renderer", "preload", "main", "core", "contracts"],
+        "note": "Renderer 无 Node/数据库/凭据权限，跨边界请求由共享 Zod 契约校验。"
+      },
+      {
+        "id": "research-integrations",
+        "label": "科研连接器",
+        "focus": ["workspace", "connectors", "external"],
+        "note": "Obsidian、Zotero、Notion 通过受控 IntegrationCoordinator 访问，外部写回需显式确认。"
+      },
+      {
+        "id": "agent-and-mcp",
+        "label": "Agent 与本机 MCP",
+        "focus": ["workspace", "agent", "mcp", "database", "external"],
+        "note": "Codex/Pi 运行时生成归一化 run ledger；本机 stdio MCP 复用同一 Workspace Service 合同。"
+      }
+    ]
+  },
+  "components": [
+    {
+      "id": "user",
+      "type": "external",
+      "label": "研究者",
+      "sublabel": "Windows 桌面用户",
+      "pos": [30, 250],
+      "size": [120, 70],
+      "sources": [
+        { "path": "README.md", "line": 1, "label": "产品定位" }
+      ]
+    },
+    {
+      "id": "renderer",
+      "type": "frontend",
+      "label": "Renderer",
+      "sublabel": "React 19 · 无 Node",
+      "tag": "workbench://app",
+      "pos": [180, 250],
+      "size": [145, 70],
+      "sources": [
+        { "path": "apps/desktop/src/renderer/src/App.tsx", "line": 1, "label": "V2 Shell" },
+        { "path": "apps/desktop/src/renderer/src/features/queries.ts", "line": 1, "label": "共享查询" }
+      ]
+    },
+    {
+      "id": "preload",
+      "type": "security",
+      "label": "Preload",
+      "sublabel": "contextBridge · Zod 校验",
+      "tag": "窄化 API",
+      "pos": [355, 250],
+      "size": [150, 70],
+      "sources": [
+        { "path": "apps/desktop/src/preload/index.ts", "line": 1, "label": "边界 API" }
+      ]
+    },
+    {
+      "id": "main",
+      "type": "backend",
+      "label": "Electron Main",
+      "sublabel": "窗口 · IPC · 凭据",
+      "tag": "主进程",
+      "pos": [535, 250],
+      "size": [150, 70],
+      "sources": [
+        { "path": "apps/desktop/src/main/index.ts", "line": 1, "label": "启动编排" },
+        { "path": "apps/desktop/src/main/security.ts", "line": 1, "label": "安全策略" },
+        { "path": "apps/desktop/src/main/credentials.ts", "line": 1, "label": "safeStorage" }
+      ]
+    },
+    {
+      "id": "core",
+      "type": "backend",
+      "label": "Core Process",
+      "sublabel": "UtilityProcess · Port",
+      "tag": "RPC host",
+      "pos": [715, 250],
+      "size": [150, 70],
+      "sources": [
+        { "path": "apps/desktop/src/core/worker.ts", "line": 1, "label": "Core 入口" },
+        { "path": "apps/desktop/src/core/dispatcher.ts", "line": 1, "label": "RPC 分发" },
+        { "path": "apps/desktop/src/core/agent-runtime.ts", "line": 1, "label": "Agent 桥接" }
+      ]
+    },
+    {
+      "id": "workspace",
+      "type": "backend",
+      "label": "Workspace Service",
+      "sublabel": "领域命令 · 查询 · 编排",
+      "tag": "单一服务合同",
+      "pos": [895, 250],
+      "size": [180, 70],
+      "sources": [
+        { "path": "packages/workspace-service/src/host.ts", "line": 1, "label": "服务 Host" },
+        { "path": "packages/workspace-service/src/dispatcher.ts", "line": 1, "label": "命令分发" },
+        { "path": "packages/workspace-service/src/integration-runtime.ts", "line": 1, "label": "集成编排" }
+      ]
+    },
+    {
+      "id": "database",
+      "type": "database",
+      "label": "SQLite Workspace DB",
+      "sublabel": "workspace.sqlite3 · migrations",
+      "tag": "唯一权威数据源",
+      "pos": [1105, 250],
+      "size": [180, 70],
+      "sources": [
+        { "path": "packages/database/src/repository.ts", "line": 1, "label": "Repository" },
+        { "path": "packages/database/src/migrations.ts", "line": 1, "label": "版本迁移" },
+        { "path": "packages/database/src/schema.ts", "line": 1, "label": "数据模型" }
+      ]
+    },
+    {
+      "id": "contracts",
+      "type": "backend",
+      "label": "Shared Contracts",
+      "sublabel": "Zod DTO · RPC 方法",
+      "tag": "跨边界事实来源",
+      "pos": [260, 440],
+      "size": [190, 70],
+      "sources": [
+        { "path": "packages/contracts/src/index.ts", "line": 1, "label": "导出入口" },
+        { "path": "packages/contracts/src/v2.ts", "line": 1, "label": "V2 DTO" },
+        { "path": "packages/contracts/src/agent.ts", "line": 1, "label": "Agent 合同" }
+      ]
+    },
+    {
+      "id": "connectors",
+      "type": "backend",
+      "label": "IntegrationCoordinator",
+      "sublabel": "稳定 ID · revision 检查",
+      "tag": "受控外部写回",
+      "pos": [500, 440],
+      "size": [210, 70],
+      "sources": [
+        { "path": "packages/connectors/src/types.ts", "line": 1, "label": "适配器类型" },
+        { "path": "packages/connectors/src/obsidian.ts", "line": 1, "label": "Obsidian" },
+        { "path": "packages/connectors/src/zotero.ts", "line": 1, "label": "Zotero" }
+      ]
+    },
+    {
+      "id": "agent",
+      "type": "backend",
+      "label": "Agent + AI Runtime",
+      "sublabel": "Codex / Pi · ledger · cron",
+      "tag": "应用存活期间",
+      "pos": [740, 440],
+      "size": [210, 70],
+      "sources": [
+        { "path": "packages/agent-runtime/src/index.ts", "line": 1, "label": "运行时" },
+        { "path": "packages/ai-runtime/src/provider.ts", "line": 1, "label": "Provider" },
+        { "path": "packages/workspace-service/src/agent-coordinator.ts", "line": 1, "label": "编排器" }
+      ]
+    },
+    {
+      "id": "mcp",
+      "type": "backend",
+      "label": "Local MCP Server",
+      "sublabel": "stdio · named pipe 握手",
+      "tag": "复用服务合同",
+      "pos": [980, 440],
+      "size": [190, 70],
+      "sources": [
+        { "path": "packages/workspace-mcp/src/server.ts", "line": 1, "label": "MCP Server" },
+        { "path": "packages/workspace-mcp/src/client.ts", "line": 1, "label": "MCP Client" }
+      ]
+    },
+    {
+      "id": "external",
+      "type": "external",
+      "label": "外部科研系统",
+      "sublabel": "Obsidian · Zotero · Notion",
+      "tag": "附件仅保留链接",
+      "pos": [700, 630],
+      "size": [240, 70],
+      "sources": [
+        { "path": "packages/connectors/src/notion.ts", "line": 1, "label": "Notion" },
+        { "path": "packages/connectors/src/obsidian.ts", "line": 1, "label": "Obsidian" },
+        { "path": "packages/connectors/src/zotero.ts", "line": 1, "label": "Zotero" }
+      ]
+    }
+  ],
+  "boundaries": [
+    {
+      "kind": "region",
+      "label": "Windows Electron Desktop App",
+      "wraps": ["renderer", "preload", "main", "core", "workspace", "contracts", "connectors", "agent", "mcp"]
+    },
+    {
+      "kind": "security-group",
+      "label": "受控进程与 IPC 边界",
+      "wraps": ["preload", "main", "core"]
+    },
+    {
+      "kind": "security-group",
+      "label": "本地权威数据平面",
+      "wraps": ["workspace", "database", "agent"]
+    }
+  ],
+  "connections": [
+    { "id": "user-renderer", "from": "user", "to": "renderer", "label": "操作界面", "variant": "emphasis", "labelDy": 58 },
+    { "id": "renderer-preload", "from": "renderer", "to": "preload", "label": "window.workbench.v2 / agent", "labelDy": 58 },
+    { "id": "preload-main", "from": "preload", "to": "main", "label": "IPC · typed RPC", "variant": "security", "labelDy": 58 },
+    { "id": "main-core", "from": "main", "to": "core", "label": "MessagePort", "variant": "emphasis", "labelDy": 58 },
+    { "id": "core-workspace", "from": "core", "to": "workspace", "label": "RPC", "labelDy": 58 },
+    { "id": "workspace-database", "from": "workspace", "to": "database", "label": "SQLite", "variant": "emphasis", "labelDy": 58 },
+    { "id": "contracts-preload", "from": "contracts", "to": "preload", "label": "输入/输出 schema", "variant": "security", "fromSide": "top", "toSide": "bottom" },
+    { "id": "contracts-workspace", "from": "contracts", "to": "workspace", "label": "DTO 与错误合同", "fromSide": "right", "toSide": "bottom" },
+    { "id": "workspace-connectors", "from": "workspace", "to": "connectors", "fromSide": "bottom", "toSide": "top" },
+    { "id": "connectors-external", "from": "connectors", "to": "external", "label": "受控 API / Markdown I/O", "variant": "dashed", "fromSide": "bottom", "toSide": "top" },
+    { "id": "workspace-agent", "from": "workspace", "to": "agent", "fromSide": "bottom", "toSide": "top" },
+    { "id": "workspace-mcp", "from": "workspace", "to": "mcp", "label": "token handshake", "variant": "security", "fromSide": "bottom", "toSide": "top" },
+    { "id": "agent-external", "from": "agent", "to": "external", "label": "可选 AI / 文献增强", "variant": "dashed", "fromSide": "bottom", "toSide": "top" }
+  ]
+}

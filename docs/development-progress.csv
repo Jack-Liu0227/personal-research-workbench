@@ -1,0 +1,11 @@
+id,area,status,evidence,updated
+0,repository-ui-audit,"DONE (static audit)",docs/implementation/00-repository-ui-audit.md,2026-09-13
+1,last30days-skill,IN_REVIEW,"scripts/last30days-skill-smoke.cjs + last30days-skill-run-check.cjs + last30days-skill-cli-run.cjs; NSIS install smoke BLOCKED",2026-09-13
+2,daily-literature-push,IN_REVIEW,"pnpm test:daily-literature 19/19; real CLI + real Vault run BLOCKED",2026-09-13
+3,literature-zotero-ux,IN_REVIEW,"pnpm typecheck/build/test:e2e; real Zotero 9/10 read/write authorization BLOCKED",2026-09-13
+4,selection-and-batch,IN_REVIEW,"pnpm typecheck/build/test:e2e; per-list manual spot check not covered",2026-09-13
+5,obsidian-literature-management,IN_REVIEW,"pnpm typecheck/build/test:e2e + focused unit checks; real user Vault scenario not accepted",2026-09-13
+6,agent-context-and-skills,IN_REVIEW,"pnpm typecheck/build/test:e2e + focused unit checks; real Codex/Pi credential run BLOCKED",2026-09-13
+7,scheduling-and-delivery,IN_REVIEW,"pnpm typecheck/build/test:e2e + 25/25 focused checks; real cron trigger and real Vault delivery not observed",2026-09-13
+8,ui-release-acceptance,IN_REVIEW,"pnpm typecheck PASS + pnpm build PASS + pnpm test:e2e PASS (responsive overflow sweep 1440/1080/720/320, narrow sidebar drawer, help entry at 320px, embedded matrix single-scroller, long-content scroll contract); pnpm test is an intentional no-op; pnpm package:win NOT RUN",2026-09-13
+9,zotero-two-sided-delete,IN_REVIEW,"pnpm typecheck/build/test:e2e PASS + test:zotero-connector 19/19 + test:zotero-write 20/20 + test:zotero-delete 7/7; official Local API erase contract (DELETE + If-Unmodified-Since-Version, 204/404/412/428/401/403/429) implemented; real Zotero 10 authorization and remote delete round-trip BLOCKED (localAPIKeys.json is empty)",2026-09-13

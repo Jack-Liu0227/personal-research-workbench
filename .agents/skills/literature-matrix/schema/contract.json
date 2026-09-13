@@ -1,0 +1,529 @@
+{
+  "contractVersion": "1.0.0",
+  "skillKey": "literature-matrix",
+  "diagnosticPrefix": "MATRIX",
+  "purpose": "literature-matrix 的机器可读合同：输入归一化、多源检索计划、去重键序、摘要/全文可得性标记、矩阵字段模板、Artifact/Obsidian 投影规则与诊断码。SKILL.md 与 scripts/litmatrix.py 必须与本文件一致；本文件是唯一可机读源。",
+  "language": {
+    "default": "zh-CN",
+    "allowed": [
+      "zh-CN",
+      "en"
+    ],
+    "unreportedToken": "未报告"
+  },
+  "inputs": {
+    "topic": {
+      "required": true,
+      "type": "string",
+      "maxLength": 200,
+      "note": "去首尾空白并压缩内部空白；缺失或为空即阻断，不允许猜测主题"
+    },
+    "lookbackDays": {
+      "default": 30,
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 365
+    },
+    "sources": {
+      "default": [],
+      "type": "array",
+      "maxItems": 24,
+      "emptyMeans": "全部当前可用来源",
+      "allowed": [
+        "openalex",
+        "arxiv",
+        "europepmc",
+        "crossref",
+        "zotero",
+        "obsidian",
+        "injected",
+        "web"
+      ],
+      "aliases": {
+        "web": [
+          "openalex",
+          "arxiv",
+          "europepmc",
+          "crossref"
+        ]
+      },
+      "note": "别名 web 展开为四个网络来源；未知来源名是硬错误（阻断），不做静默降级"
+    },
+    "responseLanguage": {
+      "default": "zh-CN",
+      "type": "string",
+      "allowed": [
+        "zh-CN",
+        "en"
+      ]
+    },
+    "project": {
+      "default": null,
+      "type": "string",
+      "maxLength": 120,
+      "note": "只用于分类标注；不得据此隐式遍历项目文献库"
+    },
+    "outputFolder": {
+      "default": "每日资讯推送",
+      "type": "string",
+      "maxLength": 200,
+      "note": "Vault 相对目录；本 helper 只做前置校验，不创建目录、不写文件"
+    },
+    "fieldTemplate": {
+      "default": null,
+      "type": "object",
+      "note": "只能增加/裁剪可选列；标识类必填列不可删除"
+    }
+  },
+  "sources": [
+    {
+      "id": "openalex",
+      "kind": "network",
+      "label": "OpenAlex",
+      "baseUrl": "https://api.openalex.org/works",
+      "auth": "none",
+      "politeParam": "mailto",
+      "cacheTtlSeconds": 86400,
+      "minIntervalSeconds": 1,
+      "defaultLimit": 25,
+      "requiredFields": [
+        "id",
+        "title",
+        "publication_year",
+        "authorships",
+        "type",
+        "ids"
+      ],
+      "fulltextFlags": "open_access.is_oa + best_oa_location.pdf_url",
+      "license": "OpenAlex 数据为 CC0；接口无需密钥",
+      "notes": "polite pool（mailto）约 10 req/s；实测 200 且 ids 含 openalex/doi/pmid。不传 select 以避免字段名漂移导致 400。"
+    },
+    {
+      "id": "arxiv",
+      "kind": "network",
+      "label": "arXiv",
+      "baseUrl": "https://export.arxiv.org/api/query",
+      "auth": "none",
+      "politeParam": null,
+      "cacheTtlSeconds": 86400,
+      "minIntervalSeconds": 3,
+      "defaultLimit": 20,
+      "requiredFields": [
+        "entry",
+        "title",
+        "summary",
+        "published",
+        "author"
+      ],
+      "fulltextFlags": "pdf 链接存在，但摘要/元数据仅 Atom 层级",
+      "license": "arXiv 元数据按其 API 使用条款；无需密钥",
+      "notes": "官方 ToU 要求同一连接每次请求间隔 ≥3s；实测 https 端点会返回 429，必须按失败/限流记录而不是当作空结果。"
+    },
+    {
+      "id": "europepmc",
+      "kind": "network",
+      "label": "Europe PMC",
+      "baseUrl": "https://www.ebi.ac.uk/europepmc/webservices/rest/search",
+      "auth": "none",
+      "politeParam": null,
+      "cacheTtlSeconds": 86400,
+      "minIntervalSeconds": 1,
+      "defaultLimit": 25,
+      "requiredFields": [
+        "resultList.result",
+        "hitCount"
+      ],
+      "fulltextFlags": "isOpenAccess=Y / inEPMC=Y / pmcid / fullTextUrlList",
+      "license": "Europe PMC REST 服务公开可访问；无需密钥",
+      "notes": "resultType=core 才带摘要与全文链接；预印本条目 pmid 可能缺失（实测 PPR 记录 pmid 为 undefined）。"
+    },
+    {
+      "id": "crossref",
+      "kind": "network",
+      "label": "Crossref",
+      "baseUrl": "https://api.crossref.org/works",
+      "auth": "none",
+      "politeParam": "mailto",
+      "cacheTtlSeconds": 86400,
+      "minIntervalSeconds": 1,
+      "defaultLimit": 25,
+      "requiredFields": [
+        "message.items",
+        "message.total-results"
+      ],
+      "fulltextFlags": "link[].content-type=application/pdf（仅链接，未下载）",
+      "license": "Crossref 元数据开放；无需密钥",
+      "notes": "不传 select：实测 select 中出现未支持的字段会 400（select-not-available），因此该适配器不依赖 select。"
+    },
+    {
+      "id": "zotero",
+      "kind": "workspace",
+      "label": "Zotero（工作台注入上下文）",
+      "baseUrl": null,
+      "auth": "workbench-managed",
+      "cacheTtlSeconds": 0,
+      "minIntervalSeconds": 0,
+      "defaultLimit": 0,
+      "requiredFields": [
+        "itemKey"
+      ],
+      "license": "不适用：本 helper 从不读取 zotero.sqlite 或 Zotero API",
+      "notes": "只能由本次运行注入的上下文文件（--context）满足；helper 不连接 Zotero。"
+    },
+    {
+      "id": "obsidian",
+      "kind": "workspace",
+      "label": "Obsidian（工作台注入上下文）",
+      "baseUrl": null,
+      "auth": "workbench-managed",
+      "cacheTtlSeconds": 0,
+      "minIntervalSeconds": 0,
+      "defaultLimit": 0,
+      "requiredFields": [
+        "relativePath"
+      ],
+      "license": "不适用：本 helper 从不读取 .obsidian/ 或 Vault 文件",
+      "notes": "只能由本次运行注入的上下文文件（--context）满足；helper 不遍历 Vault。"
+    },
+    {
+      "id": "injected",
+      "kind": "workspace",
+      "label": "本次运行注入的文献上下文",
+      "baseUrl": null,
+      "auth": "workbench-managed",
+      "cacheTtlSeconds": 0,
+      "minIntervalSeconds": 0,
+      "defaultLimit": 0,
+      "requiredFields": [
+        "identifiers"
+      ],
+      "license": "不适用",
+      "notes": "工作台 agent runtime 在 prompt 里注入的被选中文献；记录来源为 run:context。"
+    }
+  ],
+  "dedupe": {
+    "order": [
+      "doi",
+      "pmid",
+      "arxiv",
+      "zoteroKey",
+      "titleYearFirstAuthor"
+    ],
+    "normalization": {
+      "doi": "小写、去掉 https://doi.org/ 前缀与 doi: 前缀、去掉尾随标点",
+      "pmid": "仅保留数字",
+      "arxiv": "去掉 arXiv: 前缀与版本号 vN",
+      "zoteroKey": "原样保留（8 位大写字母数字）",
+      "titleYearFirstAuthor": "标题转小写、去掉非字母数字、压缩空白 + 年份 + 第一作者姓氏"
+    },
+    "dropWithoutAnyKey": true,
+    "dropReason": "no_persistent_identifier",
+    "mergePreference": "保留先出现的记录，用后续记录补空字段；来源与来源记录合并进 sourceIds/provenance；记录 mergedFrom 计数"
+  },
+  "evidence": {
+    "levels": [
+      "fulltext",
+      "abstract",
+      "metadata"
+    ],
+    "helperLevel": {
+      "abstract": "来源给出了摘要文本（OpenAlex abstract_inverted_index / Europe PMC abstractText / Crossref abstract / arXiv summary）",
+      "metadata": "只有标题/作者/年份/标识符，没有摘要",
+      "fulltext": "本 helper 从不设置；只有真实读过全文的 agent 才能把单元格标为「证据：全文」"
+    },
+    "fulltextLink": {
+      "checked": false,
+      "note": "只按来源元数据标记链接可得性，从不下载或解析全文；未下载必须如实呈现",
+      "sources": {
+        "europepmc": "isOpenAccess=Y 且（pmcid/inEPMC/hasPDF 任一）时 linkAvailable=true",
+        "openalex": "open_access.is_oa=true 且 best_oa_location.pdf_url 非空时 linkAvailable=true",
+        "arxiv": "始终有 /pdf/<id> 链接：linkAvailable=true，但层级仍是摘要",
+        "crossref": "link[].content-type 为 application/pdf 时 linkAvailable=true"
+      }
+    },
+    "cell": {
+      "statuses": [
+        "reported",
+        "unreported",
+        "derived"
+      ],
+      "evidenceLabels": [
+        "摘要",
+        "元数据",
+        "全文"
+      ],
+      "unreportedValue": "未报告",
+      "forbiddenPlaceholders": [
+        "N/A",
+        "n/a",
+        "TBD",
+        "待补",
+        "待定",
+        "未知"
+      ]
+    }
+  },
+  "matrixFields": {
+    "maxColumns": 12,
+    "required": [
+      {
+        "id": "identifier",
+        "label": "标识",
+        "derivable": "metadata",
+        "guidance": "DOI/PMID/arXiv/Zotero key 等持久标识"
+      },
+      {
+        "id": "title",
+        "label": "标题",
+        "derivable": "metadata",
+        "guidance": "原文标题，保留原语言"
+      },
+      {
+        "id": "authorYear",
+        "label": "作者·年份",
+        "derivable": "metadata",
+        "guidance": "第一作者 + 年份"
+      },
+      {
+        "id": "venue",
+        "label": "来源·出处",
+        "derivable": "metadata",
+        "guidance": "期刊/会议/预印本平台 + 本次来源标识"
+      },
+      {
+        "id": "studyType",
+        "label": "研究类型",
+        "derivable": "metadata-partial",
+        "guidance": "原文自述优先；只有来源类型可用时须标注"
+      },
+      {
+        "id": "method",
+        "label": "方法·干预",
+        "derivable": "none",
+        "guidance": "必须来自本次读到的摘要/全文，helper 不生成"
+      },
+      {
+        "id": "data",
+        "label": "数据·样本",
+        "derivable": "none",
+        "guidance": "数据集/样本量/语料；缺失写未报告"
+      },
+      {
+        "id": "conclusion",
+        "label": "主要结论",
+        "derivable": "none",
+        "guidance": "原文结论 + 证据位置"
+      },
+      {
+        "id": "limitations",
+        "label": "局限（原文自述）",
+        "derivable": "none",
+        "guidance": "作者自述局限；没有则未报告"
+      },
+      {
+        "id": "relation",
+        "label": "与本主题的关系",
+        "derivable": "none",
+        "guidance": "直接相关/相邻方法/基线/反例"
+      },
+      {
+        "id": "projectClass",
+        "label": "项目分类",
+        "derivable": "input",
+        "guidance": "使用本次注入的项目上下文；没有项目写未分类"
+      }
+    ],
+    "optional": [
+      {
+        "id": "dataAvailability",
+        "label": "数据集可得性"
+      },
+      {
+        "id": "metrics",
+        "label": "评价指标"
+      },
+      {
+        "id": "links",
+        "label": "代码或数据链接"
+      },
+      {
+        "id": "citationImpact",
+        "label": "引用影响"
+      },
+      {
+        "id": "reproRisk",
+        "label": "复现风险"
+      },
+      {
+        "id": "transfer",
+        "label": "可迁移场景"
+      }
+    ],
+    "comparability": [
+      "同一列必须同粒度、同口径；单位/样本量口径/指标不一致时在单元格标注差异，不拼成一个数字",
+      "不得用「约」「左右」抹平差异",
+      "无法从本次证据判断的单元格写未报告，不用 0 或 N/A 代替"
+    ]
+  },
+  "projection": {
+    "owner": "workbench Artifact / Inbox / Obsidian 投影层",
+    "maxExcerptChars": 4000,
+    "firstHeadingLevel": "##",
+    "forbiddenInBody": [
+      "YAML frontmatter",
+      "一级标题（# ）",
+      "绝对路径（盘符或 /home、/Users、/root 前缀）",
+      "凭据类内容（api key/token/cookie/.env/私钥）",
+      "工具日志或命令行回显"
+    ],
+    "requiredSections": [
+      "## 主题与范围",
+      "## 覆盖与来源状态",
+      "## 文献矩阵",
+      "## 关键对比",
+      "## 证据与引用",
+      "## 缺口与下一步"
+    ],
+    "selfContainedWithinExcerpt": [
+      "## 主题与范围",
+      "## 覆盖与来源状态"
+    ],
+    "note": "SQLite Artifact/Inbox 只保留前 4000 字符摘录；完整正文只在 Obsidian note 与本次运行输出里。本 helper 不写 Vault、不写 Zotero。"
+  },
+  "diagnostics": {
+    "blocked": [
+      "MATRIX_INPUT_TOPIC_MISSING",
+      "MATRIX_INPUT_TOPIC_INVALID",
+      "MATRIX_INPUT_WINDOW_INVALID",
+      "MATRIX_INPUT_SOURCES_INVALID",
+      "MATRIX_INPUT_LANGUAGE_INVALID",
+      "MATRIX_INPUT_OUTPUT_FOLDER_INVALID",
+      "MATRIX_FIELD_TEMPLATE_INVALID",
+      "MATRIX_SOURCES_UNAVAILABLE",
+      "MATRIX_FORBIDDEN_PATH",
+      "MATRIX_CONTRACT_MISSING",
+      "MATRIX_CONTRACT_INVALID",
+      "MATRIX_CONTRACT_MISPLACED",
+      "MATRIX_EXTERNAL_WRITE_REFUSED",
+      "MATRIX_BODY_FRONTMATTER",
+      "MATRIX_BODY_H1",
+      "MATRIX_BODY_SECTION_MISSING",
+      "MATRIX_BODY_SECTION_ORDER",
+      "MATRIX_BODY_EXCERPT_INCOMPLETE",
+      "MATRIX_BODY_TABLE_COLUMNS",
+      "MATRIX_BODY_ROW_WITHOUT_IDENTIFIER",
+      "MATRIX_BODY_LEAK",
+      "MATRIX_INPUT_MISSING",
+      "MATRIX_INPUT_INVALID",
+      "MATRIX_INPUT_PROJECT_INVALID"
+    ],
+    "degraded": [
+      "MATRIX_SOURCE_DEGRADED",
+      "MATRIX_SOURCE_CONTEXT_MISSING",
+      "MATRIX_SOURCE_RATE_LIMITED",
+      "MATRIX_SOURCE_FAILED",
+      "MATRIX_SOURCE_REQUEST_INVALID",
+      "MATRIX_NETWORK_DISABLED",
+      "MATRIX_EMPTY_RESULT",
+      "MATRIX_EVIDENCE_INSUFFICIENT",
+      "MATRIX_CITATION_UNVERIFIED",
+      "MATRIX_CITATION_MISMATCH",
+      "MATRIX_CITATION_OFFLINE_UNCHECKED",
+      "MATRIX_BODY_PLACEHOLDER",
+      "MATRIX_BODY_COVERAGE_MISSING",
+      "MATRIX_RECORDS_INVALID",
+      "MATRIX_SOURCE_CONTEXT_UNUSED",
+      "MATRIX_CITATION_INPUT_MISSING"
+    ],
+    "failed": [
+      "MATRIX_RUN_FAILED",
+      "MATRIX_PERMISSION_DENIED",
+      "MATRIX_CACHE_UNAVAILABLE",
+      "MATRIX_SOURCE_KEY_REQUIRED",
+      "MATRIX_SELF_TEST_FAILED"
+    ],
+    "note": "列表 = helper 实际可产出的诊断码；SKILL.md 另外声明的 MATRIX_SOURCES_UNAVAILABLE / MATRIX_EVIDENCE_INSUFFICIENT / MATRIX_EXTERNAL_WRITE_REFUSED / MATRIX_SOURCE_KEY_REQUIRED / MATRIX_CITATION_OFFLINE_UNCHECKED 是 skill 层语义（由 agent 按 SKILL.md 判定），helper 不会伪造这些码。",
+    "skillLevelOnly": [
+      "MATRIX_SOURCES_UNAVAILABLE",
+      "MATRIX_EVIDENCE_INSUFFICIENT",
+      "MATRIX_EXTERNAL_WRITE_REFUSED",
+      "MATRIX_SOURCE_KEY_REQUIRED",
+      "MATRIX_CITATION_OFFLINE_UNCHECKED"
+    ]
+  },
+  "cache": {
+    "defaultLocation": "操作系统缓存目录下的 prw-literature-cache/literature-matrix（永不写入仓库、Vault、Zotero 或用户配置目录）",
+    "windows": "%LOCALAPPDATA%\\prw-literature-cache\\literature-matrix",
+    "posix": "$XDG_CACHE_HOME/prw-literature-cache/literature-matrix 或 ~/.cache/prw-literature-cache/literature-matrix",
+    "layout": "<cache>/<source>/<sha256>.json 原始响应 + <sha256>.meta.json 元数据（来源、URL、参数、取回时间、TTL）",
+    "bypass": "--no-cache",
+    "note": "缓存只存公开检索响应，不含凭据、不含 Vault/Zotero 内容；可用 --cache-dir 覆盖，但会被路径守卫拦截（zotero.sqlite/.obsidian/~/.pi/.env/.sqlite）"
+  },
+  "security": {
+    "apiKeysInRepo": false,
+    "credentialsRead": false,
+    "envCredentials": "helper 从不读取环境变量中的凭据，也不发送 Authorization 头；无需密钥即可运行四个网络来源",
+    "politeContact": "--contact-email 只作为 mailto/polite 标识（非密钥），可省略；不写入仓库",
+    "forbiddenPaths": [
+      ".obsidian",
+      "zotero.sqlite",
+      "*.sqlite",
+      "*.sqlite3",
+      ".env*",
+      "~/.pi/**"
+    ],
+    "externalWrites": "none：只写 --cache-dir 与 --manifest-dir（用户显式指定，默认缓存目录）",
+    "noInstall": "不安装依赖、不改代理/网络配置、不运行首次配置向导",
+    "humanReviewRequired": true
+  },
+  "humanVerification": {
+    "required": true,
+    "mustCheck": [
+      "每个标识符是否真的解析到本次记录（verify 命令的输出）",
+      "证据层级标注是否与实际读到的材料一致（摘要 vs 全文）",
+      "未报告单元格是否确实在来源中缺失，而不是没读",
+      "计数（检索/去重/纳入）是否与本次运行一致",
+      "部分覆盖/空结果是否已如实声明"
+    ],
+    "neverClaim": [
+      "不得声称已做完整覆盖或 PRISMA 合规",
+      "不得声称已核验未核验的引用",
+      "不得把 helper 输出当作可直接发布的事实"
+    ]
+  },
+  "provenance": {
+    "note": "本合同与 helper 为项目自有实现，仅参考下列公开方案的*设计模式*，未复制任何代码。",
+    "references": [
+      {
+        "name": "sensein/synthscholar",
+        "license": "Apache-2.0",
+        "pattern": "PRISMA 2020 分步流水线 + 强类型中间产物 + 缓存短路"
+      },
+      {
+        "name": "Proportione/prisma",
+        "license": "MIT",
+        "pattern": "单源检索语料 + 跨源去重 + 可追踪规则集"
+      },
+      {
+        "name": "kurtvalcorza/agentic-research",
+        "license": "MIT",
+        "pattern": "默认免密钥（OpenAlex/Crossref + 标准库）+ 人工闸门"
+      },
+      {
+        "name": "ChaokunHong/MetaScreener",
+        "license": "Apache-2.0",
+        "pattern": "筛选阶段的人机分工与显式不确定性"
+      },
+      {
+        "name": "PRISMA 2020 声明",
+        "license": "CC BY 4.0（BMJ 文章）",
+        "pattern": "流程计数必须真实、可追溯（本 helper 只报告计数，不声称合规）"
+      },
+      {
+        "name": "GaoxiangLuo/OpenMetaMate",
+        "license": "NOASSERTION（未声明）",
+        "pattern": "只作对照阅读，未采用任何代码或数据"
+      }
+    ]
+  }
+}
