@@ -18,7 +18,7 @@ Windows 本地优先的个人科研工作台。Electron + React 19 桌面端，T
 
 最新安装包见 [Releases](https://github.com/Jack-Liu0227/personal-research-workbench/releases/latest)（`Personal-Research-Workbench-<version>-Setup.exe`，Windows 10/11 x64，NSIS，**未签名**，SmartScreen 会提示未知发布者）。变更记录见 [docs/changelog](docs/changelog)。
 
-安装后默认以自身 exe 目录作为可移植数据根（`data/workspace.sqlite3`、`config/`、`workbench/`）；需要隔离 profile 时用 `research-workbench.exe --prw-user-data-dir="D:\path\to\profile"` 启动。构建、安装、首次启动与卸载证据见 [`docs/implementation/21-windows-nsis-0.0.2-release.md`](docs/implementation/21-windows-nsis-0.0.2-release.md)。
+安装后默认使用当前 Windows 用户的 AppData 数据根（`data/workspace.sqlite3`、`config/`）；首次升级会从旧 exe 目录安全迁移已有数据，应用目录中的 `workbench/` 仍作为默认 Obsidian Vault。需要隔离 profile 时用 `research-workbench.exe --prw-user-data-dir="D:\path\to\profile"` 启动。设置页“关于与更新”支持检查、下载和重启安装。构建、安装、首次启动与卸载证据见 [`docs/implementation/21-windows-nsis-0.0.2-release.md`](docs/implementation/21-windows-nsis-0.0.2-release.md)。
 
 发版流程（版本自洽 → 门禁 → NSIS 打包 → 产物核对 → 安装/启动/卸载 smoke → tag + GitHub release）已做成项目内 skill：[`.agents/skills/windows-release/`](.agents/skills/windows-release/SKILL.md)。
 

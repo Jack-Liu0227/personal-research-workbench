@@ -11,6 +11,11 @@ electronFuses:
   grantFileProtocolExtraPrivileges: false
 directories:
   output: ../../release
+publish:
+  provider: github
+  owner: Jack-Liu0227
+  repo: personal-research-workbench
+  releaseType: release
 files:
   - out/**
   - package.json
@@ -28,6 +33,7 @@ extraResources:
       - "!**/__pycache__/**"
       - "!**/*.pyc"
       - "!**/last30days/assets/**"
+      - "!**/windows-release/**"
   # The Scholar adapter is an explicit, page-bounded sidecar. It is shipped
   # as data so the Python runtime remains user-controlled and inspectable.
   - from: ../../sidecars

@@ -1992,6 +1992,21 @@ export const WorkspaceServiceStatusSchema = z.object({
 })
 export type WorkspaceServiceStatus = z.infer<typeof WorkspaceServiceStatusSchema>
 
+/** Main-owned application update state.  The renderer receives only this
+ * redacted, finite state machine; updater instances and download URLs never
+ * cross the preload boundary. */
+export const UpdatePhaseSchema = z.enum(['idle', 'checking', 'available', 'downloading', 'downloaded', 'error'])
+export type UpdatePhase = z.infer<typeof UpdatePhaseSchema>
+export const UpdateStateSchema = z.strictObject({
+  phase: UpdatePhaseSchema,
+  currentVersion: z.string().trim().min(1).max(64),
+  availableVersion: z.string().trim().min(1).max(64).nullable(),
+  downloadedVersion: z.string().trim().min(1).max(64).nullable(),
+  progress: z.number().min(0).max(100).nullable(),
+  message: z.string().trim().max(500).nullable()
+})
+export type UpdateState = z.infer<typeof UpdateStateSchema>
+
 /**
  * Knowledge engines are optional, user-managed services.  Their public
  * configuration is persisted in the authoritative workspace database while

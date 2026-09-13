@@ -16,6 +16,8 @@ import {
   electronSecretCryptography
 } from './credentials.js'
 import { registerRpcHandler } from './ipc.js'
+import { migrateLegacyUserData } from './data-migration.js'
+import { registerUpdateHandlers } from './updater.js'
 import {
   developmentRendererUrl,
   hardenSession,
@@ -36,6 +38,7 @@ if (!hasSingleInstanceLock) {
 let mainWindow: BrowserWindow | null = null
 let coreClient: CoreRpcClient | null = null
 let removeRpcHandler: (() => void) | null = null
+let removeUpdateHandlers: (() => void) | null = null
 const developmentUrl = developmentRendererUrl(app.isPackaged, process.env['ELECTRON_RENDERER_URL'])
 
 function createWindow(): BrowserWindow {
@@ -79,6 +82,11 @@ function createWindow(): BrowserWindow {
 }
 
 async function bootstrap(): Promise<void> {
+  if (app.isPackaged) {
+    const legacyRoot = dirname(app.getPath('exe'))
+    const migration = await migrateLegacyUserData(legacyRoot, app.getPath('userData'))
+    if (migration.migrated) console.info('[workbench] migrated legacy user data to per-user storage')
+  }
   const rendererRoot = join(__dirname, '../renderer')
   await registerRendererProtocol(rendererRoot)
   hardenSession()
@@ -113,7 +121,13 @@ async function bootstrap(): Promise<void> {
     getWindow: () => mainWindow,
     developmentUrl
   })
+  const updates = registerUpdateHandlers({
+    getWindow: () => mainWindow,
+    developmentUrl
+  })
+  removeUpdateHandlers = updates.dispose
   mainWindow = createWindow()
+  if (app.isPackaged) setTimeout(() => { void updates.controller.check() }, 3_000)
 }
 
 /**
@@ -257,6 +271,8 @@ app.on('activate', () => {
 })
 
 app.on('before-quit', () => {
+  removeUpdateHandlers?.()
+  removeUpdateHandlers = null
   removeRpcHandler?.()
   removeRpcHandler = null
   coreClient?.dispose()
@@ -315,10 +331,10 @@ function configureUserData(): void {
     app.setPath('userData', selected)
     return
   }
-  // Keep packaged data beside the installed executable so the app can be
-  // copied/archived as one self-contained workspace. Users who need a
-  // different profile root can still pass the validated explicit switch.
-  if (app.isPackaged) app.setPath('userData', dirname(app.getPath('exe')))
+  // Packaged data belongs to the current Windows user, not Program Files.
+  // This keeps SQLite, safeStorage metadata and service state writable across
+  // upgrades while the explicit switch remains available for isolated runs.
+  if (app.isPackaged) app.setPath('userData', join(app.getPath('appData'), 'Personal Research Workbench'))
 }
 
 /** Load non-secret local connector defaults from the working directory during

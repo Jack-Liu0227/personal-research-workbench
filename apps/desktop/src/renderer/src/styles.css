@@ -2723,6 +2723,189 @@ select#batch-action option[value="import_zotero"] { display: none; }
  * vertical scroller. */
 .matrix-embedded { min-width: 0; }
 
+/* ---------------------------------------------------------------------------
+ * 2026 visual system refresh.
+ *
+ * The workbench stays information-dense, but shared surfaces now use a clear
+ * editorial hierarchy: warm neutral canvas, one teal action color, restrained
+ * elevation, and transform-only interaction feedback.  These overrides are
+ * intentionally grouped at the end so feature-specific rules above remain
+ * easy to audit.
+ * --------------------------------------------------------------------------- */
+:root {
+  --background: #f3f6f5;
+  --foreground: #122a27;
+  --surface: #ffffff;
+  --muted: #e7efed;
+  --muted-foreground: #58706b;
+  --border: #d4e1dd;
+  --border-strong: #9db8b1;
+  --input: #aec4bd;
+  --primary: #0d766d;
+  --primary-strong: #075e57;
+  --primary-foreground: #ffffff;
+  --primary-subtle: #e1f2ef;
+  --accent: #b65f2a;
+  --accent-subtle: #fff0e5;
+  --ring: #0d766d;
+}
+
+.dark {
+  --background: #09151a;
+  --foreground: #e8f2f0;
+  --surface: #10232a;
+  --muted: #172f37;
+  --muted-foreground: #9bb6b5;
+  --border: #29454d;
+  --border-strong: #51747b;
+  --input: #42656b;
+  --primary: #53c5b7;
+  --primary-strong: #7bddcf;
+  --primary-foreground: #06201f;
+  --primary-subtle: #123d3e;
+  --accent: #e2a172;
+  --accent-subtle: #3d2a24;
+  --ring: #53c5b7;
+}
+
+body {
+  font-family: "Geist", "Segoe UI Variable", "Noto Sans SC", "Microsoft YaHei UI", sans-serif;
+  letter-spacing: -0.005em;
+}
+
+.app-shell {
+  background: radial-gradient(circle at 78% -10%, color-mix(in srgb, var(--primary-subtle) 72%, transparent), transparent 34%), var(--background);
+}
+
+.topbar {
+  height: 68px;
+  border-bottom-color: color-mix(in srgb, var(--border) 78%, transparent);
+  background: color-mix(in srgb, var(--surface) 88%, transparent);
+  backdrop-filter: blur(14px);
+}
+
+.page-scroll {
+  padding: 28px clamp(18px, 3vw, 44px) 44px;
+}
+
+.research-panel {
+  border-radius: 12px;
+  border-color: color-mix(in srgb, var(--border) 86%, var(--primary));
+  background: color-mix(in srgb, var(--surface) 96%, var(--primary-subtle));
+  box-shadow: 0 14px 36px color-mix(in srgb, var(--foreground) 7%, transparent);
+  transition: border-color 220ms ease, box-shadow 220ms ease, transform 220ms ease;
+}
+
+.research-panel:hover {
+  border-color: color-mix(in srgb, var(--primary) 34%, var(--border));
+  box-shadow: 0 18px 42px color-mix(in srgb, var(--foreground) 10%, transparent);
+}
+
+.research-panel > header {
+  min-height: 58px;
+  padding: 13px 18px;
+  background: linear-gradient(100deg, color-mix(in srgb, var(--primary-subtle) 45%, transparent), transparent 68%);
+}
+
+.instrument-label {
+  letter-spacing: 0.18em;
+  font-family: "Geist Mono", "IBM Plex Mono", Consolas, monospace;
+}
+
+.metric-card,
+.settings-engine,
+.update-hero {
+  border-radius: 10px;
+  border-color: color-mix(in srgb, var(--border) 90%, var(--primary));
+  background: color-mix(in srgb, var(--surface) 94%, var(--primary-subtle));
+}
+
+.metric-card:hover,
+.settings-row:hover,
+.project-row:hover,
+.task-row:hover {
+  transform: translateY(-1px);
+  transition: transform 180ms ease, background-color 180ms ease, border-color 180ms ease;
+}
+
+button,
+a,
+select,
+input,
+textarea {
+  transition: transform 180ms ease, background-color 180ms ease, border-color 180ms ease, box-shadow 180ms ease, color 180ms ease;
+}
+
+button:active,
+a:active { transform: translateY(1px) scale(0.985); }
+
+button:focus-visible,
+a:focus-visible,
+input:focus-visible,
+select:focus-visible,
+textarea:focus-visible {
+  outline: 2px solid var(--ring);
+  outline-offset: 2px;
+}
+
+.research-tabs {
+  display: flex;
+  gap: 6px;
+  overflow-x: auto;
+  padding: 5px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: color-mix(in srgb, var(--muted) 58%, var(--surface));
+  scrollbar-width: none;
+}
+
+.research-tab {
+  min-height: 32px;
+  border: 1px solid transparent;
+  border-radius: 7px;
+  padding: 5px 11px;
+  color: var(--muted-foreground);
+  white-space: nowrap;
+}
+
+.research-tab:hover { background: var(--surface); color: var(--foreground); }
+.research-tab-active { border-color: color-mix(in srgb, var(--primary) 28%, var(--border)); background: var(--surface); color: var(--foreground); box-shadow: 0 2px 9px color-mix(in srgb, var(--foreground) 8%, transparent); }
+
+.update-hero {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 20px;
+  align-items: center;
+  padding: 20px;
+  background: linear-gradient(120deg, color-mix(in srgb, var(--primary-subtle) 78%, var(--surface)), var(--surface));
+}
+
+.update-version-mark {
+  display: grid;
+  min-width: 118px;
+  gap: 4px;
+  border-left: 1px solid color-mix(in srgb, var(--primary) 30%, var(--border));
+  padding-left: 18px;
+  color: var(--muted-foreground);
+  font-family: "Geist Mono", Consolas, monospace;
+  font-size: 11px;
+}
+
+.update-version-mark strong { color: var(--foreground); font-size: 22px; letter-spacing: -0.06em; }
+.update-status-row { display: flex; flex-wrap: wrap; gap: 12px; align-items: center; font-size: 12px; }
+.update-progress { height: 6px; overflow: hidden; border-radius: 999px; background: var(--muted); }
+.update-progress span { display: block; height: 100%; border-radius: inherit; background: var(--primary); transition: width 260ms ease; }
+
+@media (max-width: 640px) {
+  .page-scroll { padding: 18px 12px 28px; }
+  .update-hero { grid-template-columns: minmax(0, 1fr); }
+  .update-version-mark { border-top: 1px solid var(--border); border-left: 0; padding-top: 12px; padding-left: 0; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after { scroll-behavior: auto !important; transition-duration: 0.01ms !important; animation-duration: 0.01ms !important; }
+}
+
 /* Literature Zotero entry: state the frozen write capability before any
  * preview exists, so a read-only connection (Zotero 9) is never presented as a
  * writable target. Wraps inside the panel instead of widening the action row. */

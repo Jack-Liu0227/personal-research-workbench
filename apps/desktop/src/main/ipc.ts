@@ -731,7 +731,7 @@ function normalizeMainError(error: unknown) {
   return appError('INTERNAL_ERROR', 'The secure request could not be completed.')
 }
 
-function isTrustedSender(
+export function isTrustedSender(
   event: IpcMainInvokeEvent,
   window: BrowserWindow | null,
   developmentUrl?: string

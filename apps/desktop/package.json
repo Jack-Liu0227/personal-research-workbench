@@ -1,6 +1,6 @@
 {
   "name": "@prw/desktop",
-  "version": "0.0.2",
+  "version": "0.0.3",
   "private": true,
   "type": "module",
   "main": "./out/main/index.cjs",
@@ -16,10 +16,10 @@
   "dependencies": {
     "@atlaskit/pragmatic-drag-and-drop": "3.0.0",
     "@prw/ai-runtime": "workspace:*",
+    "@prw/connectors": "workspace:*",
     "@prw/contracts": "workspace:*",
     "@prw/database": "workspace:*",
     "@prw/domain": "workspace:*",
-    "@prw/connectors": "workspace:*",
     "@prw/workspace-core": "workspace:*",
     "@prw/workspace-service": "workspace:*",
     "@radix-ui/react-dialog": "1.1.15",
@@ -28,12 +28,13 @@
     "better-sqlite3": "13.0.3",
     "class-variance-authority": "0.7.1",
     "clsx": "2.1.1",
+    "electron-updater": "6.6.2",
     "lucide-react": "0.542.0",
     "react": "19.2.8",
     "react-dom": "19.2.8",
     "tailwind-merge": "3.3.1",
-    "zustand": "5.0.8",
-    "zod": "4.4.3"
+    "zod": "4.4.3",
+    "zustand": "5.0.8"
   },
   "devDependencies": {
     "@tailwindcss/vite": "4.3.3",

@@ -180,6 +180,7 @@ import {
   KnowledgeEngineSaveInputSchema,
   KnowledgeEngineTestInputSchema,
   KnowledgeEngineTestResultSchema,
+  UpdateStateSchema,
   type BulkOperationResult,
   type CalendarEvent,
   type CalendarRangeInput,
@@ -211,6 +212,7 @@ import {
   type PaperToZoteroPreview,
   type ResourceLink,
   type WorkspaceServiceStatus,
+  type UpdateState,
   type ObsidianIndexStatusInput,
   type WorkspaceTab,
   type ObsidianIndexStatus,
@@ -1065,6 +1067,13 @@ export interface WorkbenchApiV2 {
     selectFolder(): Promise<string | null>
     revealPath(input: import('./v2.js').SystemRevealPathInput): Promise<void>
     saveTextFile(input: import('./v2.js').SystemSaveTextFileInput): Promise<import('./v2.js').SystemSaveTextFileResult>
+  }
+  updates: {
+    state(): Promise<UpdateState>
+    check(): Promise<UpdateState>
+    download(): Promise<UpdateState>
+    install(): Promise<void>
+    onState(listener: (state: UpdateState) => void): () => void
   }
 }
 

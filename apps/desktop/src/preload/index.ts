@@ -22,7 +22,8 @@ import type {
   RpcRequest,
   WorkbenchAgentApiV1,
   WorkbenchApiV2,
-  KnowledgeEngineSaveInput
+  KnowledgeEngineSaveInput,
+  UpdateState
 } from '@prw/contracts'
 import {
   AgentApprovalSchema,
@@ -196,6 +197,7 @@ import {
   KnowledgeEngineSaveInputSchema,
   KnowledgeEngineTestInputSchema,
   KnowledgeEngineTestResultSchema,
+  UpdateStateSchema,
   /** Same allowlist Main enforces; a non-http(s) URL never leaves the renderer bridge. */
   ExternalOpenUrlSchema
 } from '@prw/contracts'
@@ -209,6 +211,8 @@ const agentChannel = 'workbench:agent:v1'
  * is deliberately not a generic `on` bridge. */
 const agentLedgerSubscribeChannel = 'workbench:agent:ledger-subscribe'
 const agentLedgerPushChannel = 'workbench:agent:ledger-push'
+const updateStateChannel = 'workbench:updates:state'
+const updateInvokeChannel = 'workbench:updates:invoke'
 
 class WorkbenchApiError extends Error {
   readonly code: string
@@ -293,6 +297,21 @@ function subscribeAgentLedger(runId: string, handler: (push: AgentLedgerPush) =>
     void ipcRenderer
       .invoke(agentLedgerSubscribeChannel, { runId: id, action: 'unsubscribe' })
       .catch(() => undefined)
+  }
+}
+
+function subscribeUpdates(handler: (state: UpdateState) => void): () => void {
+  let active = true
+  const listener = (_event: unknown, payload: unknown): void => {
+    if (!active) return
+    const parsed = UpdateStateSchema.safeParse(payload)
+    if (parsed.success) handler(parsed.data)
+  }
+  ipcRenderer.on(updateStateChannel, listener)
+  return () => {
+    if (!active) return
+    active = false
+    ipcRenderer.removeListener(updateStateChannel, listener)
   }
 }
 
@@ -752,6 +771,13 @@ const api: WorkbenchApiV2 = {
     selectFolder: () => invoke('system.selectFolder', SystemSelectFolderInputSchema.parse(null), SystemSelectFolderResultSchema)
     , revealPath: (input) => invoke('system.revealPath', SystemRevealPathInputSchema.parse(input), VoidResultSchema)
     , saveTextFile: (input) => invoke('system.saveTextFile', SystemSaveTextFileInputSchema.parse(input), SystemSaveTextFileResultSchema)
+  },
+  updates: {
+    state: () => ipcRenderer.invoke(updateInvokeChannel, 'state').then((value: unknown) => UpdateStateSchema.parse(value)),
+    check: () => ipcRenderer.invoke(updateInvokeChannel, 'check').then((value: unknown) => UpdateStateSchema.parse(value)),
+    download: () => ipcRenderer.invoke(updateInvokeChannel, 'download').then((value: unknown) => UpdateStateSchema.parse(value)),
+    install: async () => { await ipcRenderer.invoke(updateInvokeChannel, 'install') },
+    onState: subscribeUpdates
   }
 }
 

@@ -1,6 +1,6 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import type { AgentConnector, AgentProxyProfile, AgentRuntimeKind, ArchiveBulkResult, IntegrationProfile, IntegrationProvider, KnowledgeEngineConfig, KnowledgeEngineKind, Project, SyncRun } from '@prw/contracts'
-import { Cable, ChevronDown, ChevronUp, Edit3, FolderOpen, Plus, RefreshCw, Save, TestTube2, Trash2 } from 'lucide-react'
+import type { AgentConnector, AgentProxyProfile, AgentRuntimeKind, ArchiveBulkResult, IntegrationProfile, IntegrationProvider, KnowledgeEngineConfig, KnowledgeEngineKind, Project, SyncRun, UpdateState } from '@prw/contracts'
+import { Cable, CheckCircle2, ChevronDown, ChevronUp, Download, Edit3, FolderOpen, Plus, RefreshCw, Save, TestTube2, Trash2 } from 'lucide-react'
 import { Fragment, useEffect, useId, useRef, useState, type FormEvent, type ReactElement } from 'react'
 import { ArchiveReceiptList, SelectionBar, SelectionCheckbox } from '../../components/selection'
 import { EmptyState, ErrorState, LoadingState, PageHeader } from '../../components/states'
@@ -10,7 +10,7 @@ import { getWorkbenchAgentApi, getWorkbenchApi } from '../../lib/workbench'
 import { queryKeys, useIntegrationsQuery, useSyncRunsQuery } from '../queries'
 import { describeSyncRun, MutationFeedback, ResearchPanel, ResearchTabs, StatusBadge, SyncRunList } from './shared'
 
-type SettingsTab = 'general' | 'workspace' | 'literature' | 'proxy' | 'connectors' | 'agent' | 'engines' | 'mcp' | 'security'
+type SettingsTab = 'general' | 'workspace' | 'literature' | 'proxy' | 'connectors' | 'agent' | 'engines' | 'mcp' | 'security' | 'about'
 
 const integrationLabels: Record<IntegrationProvider, string> = {
   obsidian: 'Obsidian',
@@ -518,6 +518,51 @@ function GeneralSettingsPanel(): React.JSX.Element {
   return <SettingInfoPanel eyebrow="SETTINGS / GENERAL" title="通用"><div className="grid gap-3 sm:grid-cols-2"><label className="grid gap-1.5 text-xs font-semibold text-foreground" htmlFor="general-theme"><span>主题</span><select className="select-control" id="general-theme" onChange={(event) => { const next = event.target.value as 'light' | 'dark'; setTheme(next); publish(next, fontScale) }} value={theme}><option value="dark">深色</option><option value="light">浅色</option></select></label><label className="grid gap-1.5 text-xs font-semibold text-foreground" htmlFor="general-font-scale"><span>字号</span><select className="select-control" id="general-font-scale" onChange={(event) => { const next = event.target.value as 'compact' | 'comfortable' | 'large'; setFontScale(next); publish(theme, next) }} value={fontScale}><option value="compact">紧凑（13px）</option><option value="comfortable">标准（14px）</option><option value="large">大号（16px）</option></select></label></div><p>主题和字号会保存在当前用户配置并立即应用；左侧底部主题按钮与此处保持同步。</p><p>全局快捷创建支持顶部 Todo 输入；Ctrl K 搜索入口当前跳转到文献检索工作区。</p></SettingInfoPanel>
 }
 
+function UpdatesSettingsPanel(): React.JSX.Element {
+  const [state, setState] = useState<UpdateState | null>(null)
+  const [busy, setBusy] = useState<'check' | 'download' | 'install' | null>(null)
+  const [error, setError] = useState<string | null>(null)
+
+  useEffect(() => {
+    let active = true
+    const api = getWorkbenchApi().updates
+    void api.state().then((value) => { if (active) setState(value) }).catch((reason) => { if (active) setError(getErrorMessage(reason)) })
+    const unsubscribe = api.onState((value) => { if (active) setState(value) })
+    return () => { active = false; unsubscribe() }
+  }, [])
+
+  const run = async (operation: 'check' | 'download' | 'install'): Promise<void> => {
+    if (busy) return
+    setBusy(operation)
+    setError(null)
+    try {
+      const next = operation === 'check'
+        ? await getWorkbenchApi().updates.check()
+        : operation === 'download'
+          ? await getWorkbenchApi().updates.download()
+          : await getWorkbenchApi().updates.install().then(() => getWorkbenchApi().updates.state())
+      setState(next)
+    } catch (reason) {
+      setError(getErrorMessage(reason))
+    } finally {
+      setBusy(null)
+    }
+  }
+
+  const phaseLabel: Record<UpdateState['phase'], string> = {
+    idle: '已是最新', checking: '正在检查', available: '发现新版本', downloading: '正在下载', downloaded: '等待重启安装', error: '检查失败'
+  }
+  const phase = state?.phase ?? 'checking'
+  return <SettingInfoPanel eyebrow="SETTINGS / ABOUT" title="关于与更新">
+    <div className="update-hero"><div><p className="instrument-label">PERSONAL RESEARCH WORKBENCH</p><h3 className="mt-1 text-lg font-bold text-foreground">保持工作台稳定、可恢复、可更新</h3><p className="mt-1 text-xs leading-5">更新只替换应用文件；项目、任务、文献、连接配置和安全存储保留在当前 Windows 用户数据目录。</p></div><div className="update-version-mark"><span>当前版本</span><strong>{state?.currentVersion ?? '读取中'}</strong></div></div>
+    <div className="update-status-row" role="status" aria-live="polite"><span className="flex items-center gap-2"><span className={cn('status-led', phase === 'error' ? 'bg-danger' : phase === 'downloaded' ? 'bg-online' : 'bg-primary')} />{phaseLabel[phase]}</span>{state?.availableVersion ? <span>目标版本 {state.availableVersion}</span> : null}{state?.message ? <span className="text-muted-foreground">{state.message}</span> : null}</div>
+    {phase === 'downloading' ? <div className="update-progress" aria-label="更新下载进度"><span style={{ width: `${state?.progress ?? 0}%` }} /></div> : null}
+    <div className="flex flex-wrap gap-2"><Button loading={busy === 'check' || phase === 'checking'} disabled={busy !== null || phase === 'downloading'} onClick={() => { void run('check') }} size="sm" variant="secondary"><RefreshCw aria-hidden="true" className="size-3.5" />检查更新</Button>{phase === 'available' ? <Button loading={busy === 'download'} disabled={busy !== null} onClick={() => { void run('download') }} size="sm" variant="primary"><Download aria-hidden="true" className="size-3.5" />下载更新</Button> : null}{phase === 'downloaded' ? <Button loading={busy === 'install'} disabled={busy !== null} onClick={() => { void run('install') }} size="sm" variant="primary"><CheckCircle2 aria-hidden="true" className="size-3.5" />重启并安装</Button> : null}</div>
+    {error ? <p className="form-feedback form-feedback-error" role="alert">{error}</p> : null}
+    <p className="text-xs">应用内更新需要可访问 GitHub Release。网络不可用时可以继续使用当前版本，稍后再检查。</p>
+  </SettingInfoPanel>
+}
+
 function LegacyWorkspaceSettingsPanel(): React.JSX.Element {
   return <SettingInfoPanel eyebrow="SETTINGS / WORKSPACE" title="工作区与数据"><p>当前使用新的 <code className="font-mono text-foreground">workspace.sqlite3</code>。旧 <code className="font-mono text-foreground">workbench.sqlite3</code> 不读取、不删除。</p><p>SQLite、WAL 和迁移由 Workspace Service 管理；索引重建、备份恢复将在后续阶段加入。</p></SettingInfoPanel>
 }
@@ -855,5 +900,5 @@ function McpSettingsPanel(): React.JSX.Element {
 
 export function IntegrationsSettingsPage({ projects: _projects }: { projects: Project[] }): React.JSX.Element {
   const [tab, setTab] = useState<SettingsTab>('general')
-  return <div className="page-scroll"><PageHeader description="管理工作区、外部工具、代理、Agent 运行时和知识引擎映射；页面仅显示后端真实状态。" eyebrow="SETTINGS / WORKSPACE" title="设置" /><div className="mt-4"><ResearchTabs items={[{ value: 'general', label: '通用' }, { value: 'workspace', label: '工作区与数据' }, { value: 'literature', label: '文献检索' }, { value: 'proxy', label: '代理' }, { value: 'connectors', label: '工具连接' }, { value: 'agent', label: 'Agent 运行时' }, { value: 'engines', label: '知识引擎' }, { value: 'mcp', label: 'MCP Server' }, { value: 'security', label: '安全与审计' }]} label="设置分区" onChange={setTab} value={tab} /></div><div className="mt-4">{tab === 'general' ? <GeneralSettingsPanel /> : null}{tab === 'workspace' ? <WorkspaceSettingsPanel /> : null}{tab === 'literature' ? <LiteratureSettingsPanel /> : null}{tab === 'proxy' ? <ProxySettingsPanel /> : null}{tab === 'connectors' ? <ConnectorsPanel /> : null}{tab === 'agent' ? <AgentRuntimeSettingsPanel /> : null}{tab === 'engines' ? <EnginesPanel /> : null}{tab === 'mcp' ? <McpSettingsPanel /> : null}{tab === 'security' ? <SecuritySettingsPanel /> : null}</div></div>
+  return <div className="page-scroll"><PageHeader description="管理工作区、外部工具、代理、Agent 运行时和知识引擎映射；页面仅显示后端真实状态。" eyebrow="SETTINGS / WORKSPACE" title="设置" /><div className="mt-4"><ResearchTabs items={[{ value: 'general', label: '通用' }, { value: 'workspace', label: '工作区与数据' }, { value: 'literature', label: '文献检索' }, { value: 'proxy', label: '代理' }, { value: 'connectors', label: '工具连接' }, { value: 'agent', label: 'Agent 运行时' }, { value: 'engines', label: '知识引擎' }, { value: 'mcp', label: 'MCP Server' }, { value: 'security', label: '安全与审计' }, { value: 'about', label: '关于与更新' }]} label="设置分区" onChange={setTab} value={tab} /></div><div className="mt-4">{tab === 'general' ? <GeneralSettingsPanel /> : null}{tab === 'workspace' ? <WorkspaceSettingsPanel /> : null}{tab === 'literature' ? <LiteratureSettingsPanel /> : null}{tab === 'proxy' ? <ProxySettingsPanel /> : null}{tab === 'connectors' ? <ConnectorsPanel /> : null}{tab === 'agent' ? <AgentRuntimeSettingsPanel /> : null}{tab === 'engines' ? <EnginesPanel /> : null}{tab === 'mcp' ? <McpSettingsPanel /> : null}{tab === 'security' ? <SecuritySettingsPanel /> : null}{tab === 'about' ? <UpdatesSettingsPanel /> : null}</div></div>
 }
