@@ -145,21 +145,29 @@ node .agents/skills/windows-release/scripts/release.mjs status    # read-only st
 node .agents/skills/windows-release/scripts/release.mjs version 0.0.2 --check
 ```
 
-The packaging filter that keeps this dev-only skill out of the installer can
-be verified against electron-builder's real matcher without building anything:
+The packaging filter that keeps this dev-only skill out of the installer is
+checked by a script, not by memory:
 
-- recommended: `apps/desktop/electron-builder.yml` → `extraResources[0].filter`
-  contains `"!**/windows-release/**"`;
-- `FileMatcher.createFilter()` from the installed `app-builder-lib` must return
-  `false` for `windows-release/SKILL.md` and `true` for
-  `literature-matrix/SKILL.md` once that pattern is present;
-- `release.mjs verify` warns whenever `win-unpacked/resources/skills` still
-  contains `windows-release`, so a missing filter cannot pass unnoticed.
+```powershell
+node .agents/skills/windows-release/scripts/verify-packaging-filter.mjs
+```
 
-`references/evidence-and-pitfalls.md` §4 has the exact check to run. If the
-filter is absent, the skill only costs ~20 KB in the installer: the runtime
+- `apps/desktop/electron-builder.yml` → `extraResources[0].filter` must contain
+  `"!**/windows-release/**"`;
+- the script reads that real list, runs it through `FileMatcher.createFilter()`
+  from the installed `app-builder-lib`, and exits 1 while the line is missing;
+- `release.mjs verify` also warns when `win-unpacked/resources/skills` still
+  contains `windows-release`.
+
+Without the filter the skill only costs ~20 KB in the installer: the runtime
 resolves an explicit catalog of skill keys, so an unknown directory is never
 listed or injected into an agent session.
+
+Verify with `node .agents/skills/windows-release/scripts/verify-packaging-filter.mjs`
+(reads the real filter list, evaluates it with the installed `app-builder-lib`
+matcher, and exits 1 with the exact line to add when the exclusion is missing).
+`release.mjs verify` additionally warns whenever
+`win-unpacked/resources/skills` still contains `windows-release`.
 
 ## Handoff
 

@@ -123,24 +123,33 @@ narrow exclusion so the release playbook does not ship:
       - "!**/windows-release/**"
 ```
 
-Verify with electron-builder's own matcher (no build required):
+Verify with the packaged checker (no build required):
 
-```js
-const store = 'node_modules/.pnpm'
-const entry = fs.readdirSync(store).filter((n) => n.startsWith('app-builder-lib@')).sort().pop()
-const { FileMatcher } = require(`${store}/${entry}/node_modules/app-builder-lib/out/fileMatcher.js`)
-const matcher = new FileMatcher('.agents/skills', 'skills', (v) => v, [/* the filter list above */])
-const filter = matcher.createFilter()
-filter('.agents/skills/windows-release/SKILL.md', { isDirectory: () => false }) // false
-filter('.agents/skills/literature-matrix/SKILL.md', { isDirectory: () => false }) // true
+```powershell
+node .agents/skills/windows-release/scripts/verify-packaging-filter.mjs
 ```
 
+It reads the `filter:` list from `apps/desktop/electron-builder.yml`, feeds it to
+`FileMatcher.createFilter()` from the installed `app-builder-lib` (the same code
+path `copyDir` uses) and asserts:
+
+| path | required |
+| --- | --- |
+| `windows-release/SKILL.md`, `windows-release/scripts/release.mjs` | not allowed |
+| `literature-matrix/SKILL.md`, `literature-review-push/SKILL.md`, `last30days/skills/last30days/SKILL.md` | allowed |
+| `last30days/assets/demo.mp4` (when that pattern is present) | not allowed |
+
 Measured with `app-builder-lib@26.15.3` on 2026-09-13: with the extra pattern the
-matcher rejects both files of this skill and keeps every other skill, including
-the existing `last30days/assets` exclusion. Directory entries themselves are
-always passed through (`excludePatterns` never filters a directory), so an empty
-`windows-release/` folder may survive in `win-unpacked` — harmless, but do not
-report "the skill is not packaged" based on the directory alone; check the files.
+matcher rejects both files of this skill and keeps every other skill, leaving the
+existing `!**/last30days/assets/**` behaviour unchanged. While the pattern is
+absent the checker prints the exact line to add and exits 1 — in this repository
+that was still the case on 2026-09-13, because `electron-builder.yml` carried an
+unrelated uncommitted `publish:` change from another writer and was left alone.
+
+Directory entries themselves are always passed through (`excludePatterns` never
+filters a directory), so an empty `windows-release/` folder may survive in
+`win-unpacked` — harmless, but do not report "the skill is not packaged" based on
+the directory alone; check the files.
 
 ## 5. Smoke expectations
 

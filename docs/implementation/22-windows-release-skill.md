@@ -16,6 +16,7 @@
 | --- | --- |
 | `.agents/skills/windows-release/SKILL.md` | 触发词、硬规则、命令表、证据清单、交接要求 |
 | `.agents/skills/windows-release/scripts/release.mjs` | 发行引擎（`status` / `version` / `build` / `verify` / `smoke` / `publish`） |
+| `.agents/skills/windows-release/scripts/verify-packaging-filter.mjs` | 用 electron-builder 自身的 matcher 校验“本 skill 不进安装包、要发的 skill 仍在” |
 | `.agents/skills/windows-release/references/evidence-and-pitfalls.md` | 本机实测的失败模式与规避方式（含 `.asar` 锁证据表） |
 
 `SKILL.md` 只使用仓库既有约定：YAML frontmatter（`name` + `description` 触发词）
@@ -84,17 +85,39 @@ node .agents/skills/windows-release/scripts/release.mjs publish --dry-run --vers
 打包过滤器用 electron-builder 自身的 `FileMatcher.createFilter()`
 （`app-builder-lib@26.15.3`）实测：加入 `!**/windows-release/**` 后
 `windows-release/SKILL.md` 与 `windows-release/scripts/release.mjs` 均被排除（`false`），
-`literature-matrix/SKILL.md`、`literature-matrix/scripts/litmatrix.py`、
+`literature-matrix/SKILL.md`、`literature-review-push/SKILL.md`、
 `last30days/skills/last30days/SKILL.md` 仍保留（`true`），既有
-`!**/last30days/assets/**` 行为不变。
+`!**/last30days/assets/**` 行为不变。该检查已固化为
+`scripts/verify-packaging-filter.mjs`（它直接读配置文件里的真实 filter 列表）；
+**当前仓库状态下该脚本以 exit code 1 结束并打印待添加的那一行**：
+
+```text
+node .agents/skills/windows-release/scripts/verify-packaging-filter.mjs
+exit=1
+[FAIL] excluded windows-release/SKILL.md               allowed=true
+[FAIL] excluded windows-release/scripts/release.mjs    allowed=true
+[PASS] included literature-matrix/SKILL.md             allowed=true
+[PASS] included literature-review-push/SKILL.md        allowed=true
+[PASS] included last30days/skills/last30days/SKILL.md  allowed=true
+[PASS] excluded last30days/assets/demo.mp4             allowed=false
+[FAIL] apps\desktop\electron-builder.yml does not exclude this dev-only skill. Add !**/windows-release/** ...
+```
+
+即：检查脚本本身工作正常，它报的“未排除”是仓库当前真实状态（见下方未完成项）。
 
 ## 未完成项
 
 - `apps/desktop/electron-builder.yml` 的 `extraResources[0].filter` **本轮未改动**：
   该文件当前存在另一位写入者未提交的 `publish: github` 改动，按“一个文件一个写入者”
   纪律不与其交错。需要的行与验证方式写在
-  `references/evidence-and-pitfalls.md` §4；`release.mjs verify` 会在
-  `win-unpacked/resources/skills` 出现 `windows-release` 时告警，因此该遗漏不会被静默放过。
+  `references/evidence-and-pitfalls.md` §4；`scripts/verify-packaging-filter.mjs`
+  因此当前以 exit code 1 结束（这是真实状态，不是脚本缺陷），`release.mjs verify`
+  也会在 `win-unpacked/resources/skills` 出现 `windows-release` 时告警。
+  修掉只需在 filter 列表追加一行：
+
+  ```yaml
+      - "!**/windows-release/**"
+  ```
 - `build`、`smoke`、`publish` 三个子命令本轮只验证了参数解析、前置条件与计划输出
   （见上方真实输出），未对 0.0.2 重复执行实际的打包/安装/发布：重复执行会重新
   打包 1 GB 产物、重复安装卸载，并为已存在的 tag 再次发布。0.0.2 的手工等价流程
