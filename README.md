@@ -131,7 +131,7 @@ Core process ── Workspace Service ── SQLite (workspace.sqlite3)
 
 ## 尚未实现
 
-AnythingLLM／AgentScope／LLMWiki／MOSAIC 的 RAG 与索引执行、Headless 常驻调度、远程 MCP、完整持久化 AI Job／Event／Approval／checkpoint、PDF 与向量检索、富文本引用、三方冲突 UI、durable outbox、无人值守外部写回、备份恢复、代码签名和自动更新仍在后续阶段。
+AnythingLLM／AgentScope／LLMWiki／MOSAIC 的 RAG 与索引执行、Headless 常驻调度、远程 MCP、完整持久化 AI Job／Event／Approval／checkpoint、PDF 与向量检索、富文本引用、三方冲突 UI、durable outbox、无人值守外部写回、备份恢复和代码签名仍在后续阶段；桌面端已支持从 GitHub Release 检查、下载并重启安装更新。
 
 已知的局部未完成项：文献检索 Inspector 的「笔记」与「相关文献」分页只渲染标签页外观，没有绑定交互（见 `features/research/literature.tsx:107`）。
 
