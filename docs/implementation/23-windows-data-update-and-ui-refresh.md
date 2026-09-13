@@ -28,6 +28,10 @@ Zotero 页面的本机写入授权入口在 profile 存在时始终驻留。探�
 - `pnpm test:e2e`（真实 Electron + preload/Core；响应式溢出、抽屉、帮助入口、Inspector/Agent 长内容滚动）
 - Zotero focused checks：`test:zotero-connector` 19/19、`test:zotero-write` 20/20、`test:zotero-delete` 7/7
 - `node .agents/skills/windows-release/scripts/verify-packaging-filter.mjs`
+- `pnpm package:win` attempted; the default `release/` output hit the known
+  machine local `EBUSY` lock on `resources/default_app.asar`. Re-running the
+  same electron-builder NSIS x64 build into isolated `release-0.0.3/build`
+  succeeded.
 - NSIS x64 构建与 `release.mjs verify`：0.0.3、125,123,593 bytes、SHA-256 `8513742EF29E7BA98B14095C4E7F209E33675F16832296C40ED9B63B11C1F274`、NotSigned、blockmap 133,178 bytes；资源中不再包含 windows-release 文件
 - 直接启动 `release-0.0.3/build/win-unpacked/research-workbench.exe`：窗口标题“个人科研工作台”、进程响应，隔离 profile 在约 2 秒内创建 `data/workspace.sqlite3`
 
