@@ -20,6 +20,8 @@ Windows 本地优先的个人科研工作台。Electron + React 19 桌面端，T
 
 安装后默认以自身 exe 目录作为可移植数据根（`data/workspace.sqlite3`、`config/`、`workbench/`）；需要隔离 profile 时用 `research-workbench.exe --prw-user-data-dir="D:\path\to\profile"` 启动。构建、安装、首次启动与卸载证据见 [`docs/implementation/21-windows-nsis-0.0.2-release.md`](docs/implementation/21-windows-nsis-0.0.2-release.md)。
 
+发版流程（版本自洽 → 门禁 → NSIS 打包 → 产物核对 → 安装/启动/卸载 smoke → tag + GitHub release）已做成项目内 skill：[`.agents/skills/windows-release/`](.agents/skills/windows-release/SKILL.md)。
+
 ## 界面总览
 
 十个一级页面共享同一套 Shell：左侧导航、项目上下文切换、全局 Quick Todo、顶部工作区 Tabs、右侧 Inspector 和底部服务状态栏。

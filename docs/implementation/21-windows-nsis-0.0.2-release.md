@@ -2,6 +2,10 @@
 
 状态：IN_REVIEW（真实构建、安装、首次启动、隔离 profile 启动与卸载 smoke 已在本机 Windows x64 执行并留证；安装包未签名，真实 Zotero/Vault/cron/模型验收仍 BLOCKED）
 
+> 本轮的发布流程已固化为项目内 skill：`.agents/skills/windows-release/`
+> （`node .agents/skills/windows-release/scripts/release.mjs <status|version|build|verify|smoke|publish>`），
+> 说明与验证证据见 [22-windows-release-skill.md](22-windows-release-skill.md)。
+
 ## 交付物
 
 | 项 | 值 |
