@@ -1,4 +1,5 @@
 import { z } from 'zod'
+import { ExternalOpenUrlSchema } from './external-url.js'
 
 type JsonValue = string | number | boolean | null | JsonValue[] | { [key: string]: JsonValue }
 const JsonValueSchema: z.ZodType<JsonValue> = z.lazy(() => z.union([
@@ -41,7 +42,9 @@ import type {
   LiteratureBatchRetryInput,
   LiteratureBatchImportResultInput,
   PaperImportReceipt,
-  PaperImportFromZoteroInput
+  PaperImportFromZoteroInput,
+  ArchiveBulkInput,
+  ArchiveBulkResult
 } from './research.js'
 import {
   ArtifactKindSchema,
@@ -66,6 +69,8 @@ import {
   LiteratureBatchResultSchema,
   LiteratureBatchCancelReceiptSchema,
   PaperImportFromZoteroInputSchema,
+  ArchiveBulkInputSchema,
+  ArchiveBulkResultSchema,
   PaperSchema
 } from './research.js'
 import {
@@ -81,6 +86,11 @@ import {
   CalendarMarkerRangeInputSchema,
   DeleteNoteInputSchema,
   DeleteNoteFolderInputSchema,
+  CreateNoteFolderInputSchema,
+  MoveNoteInputSchema,
+  NoteMetadataPreviewInputSchema,
+  ApplyNoteMetadataInputSchema,
+  NoteDuplicateInputSchema,
   DateRangeSchema,
   ExternalWriteErrorSchema,
   IntegrationErrorSchema,
@@ -90,6 +100,11 @@ import {
   NoteListInputSchema,
   NoteDeleteReceiptSchema,
   NoteFolderDeleteReceiptSchema,
+  NoteSchema,
+  NoteFolderCreateReceiptSchema,
+  NoteMoveReceiptSchema,
+  NoteMetadataPreviewSchema,
+  NoteDuplicateReportSchema,
   ReadNoteInputSchema,
   RemoveResourceLinkInputSchema,
   ResourceLinkListInputSchema,
@@ -122,6 +137,8 @@ import {
   ZoteroBibtexExportInputSchema,
   ZoteroBibtexExportSchema,
   ZoteroCapabilityStatusSchema,
+  ZoteroWriteBlockedReasonSchema,
+  ZoteroCollectionWriteSchema,
   ZoteroAuthorizeInputSchema,
   ZoteroAuthorizeResultSchema,
   ZoteroCollectionPageInputSchema,
@@ -133,6 +150,11 @@ import {
   ScholarStatusInputSchema,
   ZoteroCollectionPageSchema,
   ZoteroItemPageSchema,
+  ZoteroRemoteDeletePreviewInputSchema,
+  ZoteroRemoteDeletePreviewSchema,
+  ZoteroRemoteDeleteExecuteInputSchema,
+  ZoteroRemoteDeleteReceiptSchema,
+  ZoteroDeleteTargetSchema,
   ZoteroImportPreviewSchema,
   ZoteroImportResultSchema,
   PaperToZoteroPreviewSchema,
@@ -173,10 +195,17 @@ import {
   type LiteratureClearSessionReceipt,
   type ScholarWorkspaceStatus,
   type ZoteroCapabilityStatus,
+  type ZoteroWriteBlockedReason,
+  type ZoteroCollectionWrite,
   type ZoteroBibtexExport,
   type ZoteroBibtexExportInput,
   type ZoteroCollectionPage,
   type ZoteroItemPage,
+  type ZoteroRemoteDeletePreviewInput,
+  type ZoteroRemoteDeletePreview,
+  type ZoteroRemoteDeleteExecuteInput,
+  type ZoteroRemoteDeleteReceipt,
+  type ZoteroDeleteTarget,
   type ZoteroImportPreview,
   type ZoteroImportResult,
   type PaperToZoteroPreview,
@@ -216,6 +245,8 @@ import {
 export * from './research.js'
 export * from './v2.js'
 export * from './agent.js'
+export * from './external-url.js'
+
 
 export const TaskStatusSchema = z.enum([
   'inbox',
@@ -485,6 +516,9 @@ export const RpcMethodPayloadSchemas = {
   'integrations.list': z.null(),
   'integrations.save': strictPayload(SaveIntegrationProfileInputSchema),
   'integrations.remove': strictPayload(EntityArchiveInputSchema),
+  'integrations.bulkRemove': strictPayload(ArchiveBulkInputSchema),
+  'integrations.removeRun': strictPayload(EntityArchiveInputSchema),
+  'integrations.bulkRemoveRuns': strictPayload(ArchiveBulkInputSchema),
   'integrations.test': strictPayload(IdInputSchema),
   'integrations.sync': strictPayload(IntegrationSyncInputSchema),
   'integrations.runs': strictPayload(OptionalProfileInputSchema),
@@ -525,6 +559,11 @@ export const RpcMethodPayloadSchemas = {
   'notes.write': strictPayload(WriteNoteInputSchema),
   'notes.delete': strictPayload(DeleteNoteInputSchema),
   'notes.deleteFolder': strictPayload(DeleteNoteFolderInputSchema),
+  'notes.createFolder': strictPayload(CreateNoteFolderInputSchema),
+  'notes.move': strictPayload(MoveNoteInputSchema),
+  'notes.metadata.preview': strictPayload(NoteMetadataPreviewInputSchema),
+  'notes.metadata.apply': strictPayload(ApplyNoteMetadataInputSchema),
+  'notes.duplicates': strictPayload(NoteDuplicateInputSchema),
   'zotero.capability': strictPayload(ZoteroCapabilityInputSchema),
   'zotero.authorize': strictPayload(ZoteroAuthorizeInputSchema),
   'zotero.collectionsPage': strictPayload(ZoteroCollectionPageInputSchema),
@@ -539,12 +578,14 @@ export const RpcMethodPayloadSchemas = {
   'zotero.importSelected.execute': strictPayload(ZoteroImportExecuteInputSchema),
   'zotero.paperToZotero.preview': strictPayload(PaperToZoteroPreviewInputSchema),
   'zotero.paperToZotero.execute': strictPayload(PaperToZoteroExecuteInputSchema),
+  'zotero.deleteRemote.preview': strictPayload(ZoteroRemoteDeletePreviewInputSchema),
+  'zotero.deleteRemote.execute': strictPayload(ZoteroRemoteDeleteExecuteInputSchema),
   'papers.importFromZotero': strictPayload(PaperImportFromZoteroInputSchema),
   'knowledge.engines.list': z.null(),
   'knowledge.engines.save': strictPayload(KnowledgeEngineSaveInputSchema),
   'knowledge.engines.test': strictPayload(KnowledgeEngineTestInputSchema),
   'workspace.status': z.null(),
-  'system.openExternal': z.string().url(),
+  'system.openExternal': ExternalOpenUrlSchema,
   'system.health': z.null(),
   'system.selectFolder': SystemSelectFolderInputSchema
   , 'system.revealPath': strictPayload(SystemRevealPathInputSchema)
@@ -568,6 +609,10 @@ export const RpcMethodResultSchemas = {
   'calendar.markers.remove': z.null(),
   'matrix.remove': z.null(),
   'matrix.bulkDelete': LiteratureMatrixBulkDeleteResultSchema,
+  /** Validated in Core as well: the renderer renders these receipts verbatim. */
+  'integrations.bulkRemove': ArchiveBulkResultSchema,
+  /** Sync-run removal reuses the frozen CAS + per-record receipt vocabulary. */
+  'integrations.bulkRemoveRuns': ArchiveBulkResultSchema,
   'literature.search': z.object({
     session: z.lazy(() => SearchSessionSchema),
     results: z.array(z.lazy(() => SearchResultSchema))
@@ -596,6 +641,11 @@ export const RpcMethodResultSchemas = {
   'obsidian.vaultLayout.initialize': ObsidianVaultLayoutReceiptSchema,
   'notes.delete': NoteDeleteReceiptSchema,
   'notes.deleteFolder': NoteFolderDeleteReceiptSchema,
+  'notes.createFolder': NoteFolderCreateReceiptSchema,
+  'notes.move': NoteMoveReceiptSchema,
+  'notes.metadata.preview': NoteMetadataPreviewSchema,
+  'notes.metadata.apply': NoteSchema,
+  'notes.duplicates': NoteDuplicateReportSchema,
   'papers.importFromZotero': PaperImportReceiptSchema,
   'zotero.capability': ZoteroCapabilityStatusSchema,
   'zotero.authorize': ZoteroAuthorizeResultSchema,
@@ -610,6 +660,8 @@ export const RpcMethodResultSchemas = {
   'zotero.importSelected.execute': ZoteroImportResultSchema,
   'zotero.paperToZotero.preview': PaperToZoteroPreviewSchema,
   'zotero.paperToZotero.execute': ZoteroImportResultSchema,
+  'zotero.deleteRemote.preview': ZoteroRemoteDeletePreviewSchema,
+  'zotero.deleteRemote.execute': ZoteroRemoteDeleteReceiptSchema,
   'zotero.import': PaperSchema
   , 'knowledge.engines.list': z.array(KnowledgeEngineConfigSchema)
   , 'knowledge.engines.save': KnowledgeEngineConfigSchema
@@ -658,6 +710,9 @@ const RpcRequestVariants = [
   rpc('integrations.list', RpcMethodPayloadSchemas['integrations.list']),
   rpc('integrations.save', RpcMethodPayloadSchemas['integrations.save']),
   rpc('integrations.remove', RpcMethodPayloadSchemas['integrations.remove']),
+  rpc('integrations.bulkRemove', RpcMethodPayloadSchemas['integrations.bulkRemove']),
+  rpc('integrations.removeRun', RpcMethodPayloadSchemas['integrations.removeRun']),
+  rpc('integrations.bulkRemoveRuns', RpcMethodPayloadSchemas['integrations.bulkRemoveRuns']),
   rpc('integrations.test', RpcMethodPayloadSchemas['integrations.test']),
   rpc('integrations.sync', RpcMethodPayloadSchemas['integrations.sync']),
   rpc('integrations.runs', RpcMethodPayloadSchemas['integrations.runs']),
@@ -698,6 +753,11 @@ const RpcRequestVariants = [
   rpc('notes.write', RpcMethodPayloadSchemas['notes.write']),
   rpc('notes.delete', RpcMethodPayloadSchemas['notes.delete']),
   rpc('notes.deleteFolder', RpcMethodPayloadSchemas['notes.deleteFolder']),
+  rpc('notes.createFolder', RpcMethodPayloadSchemas['notes.createFolder']),
+  rpc('notes.move', RpcMethodPayloadSchemas['notes.move']),
+  rpc('notes.metadata.preview', RpcMethodPayloadSchemas['notes.metadata.preview']),
+  rpc('notes.metadata.apply', RpcMethodPayloadSchemas['notes.metadata.apply']),
+  rpc('notes.duplicates', RpcMethodPayloadSchemas['notes.duplicates']),
   rpc('zotero.capability', RpcMethodPayloadSchemas['zotero.capability']),
   rpc('zotero.authorize', RpcMethodPayloadSchemas['zotero.authorize']),
   rpc('zotero.collectionsPage', RpcMethodPayloadSchemas['zotero.collectionsPage']),
@@ -712,6 +772,8 @@ const RpcRequestVariants = [
   rpc('zotero.importSelected.execute', RpcMethodPayloadSchemas['zotero.importSelected.execute']),
   rpc('zotero.paperToZotero.preview', RpcMethodPayloadSchemas['zotero.paperToZotero.preview']),
   rpc('zotero.paperToZotero.execute', RpcMethodPayloadSchemas['zotero.paperToZotero.execute']),
+  rpc('zotero.deleteRemote.preview', RpcMethodPayloadSchemas['zotero.deleteRemote.preview']),
+  rpc('zotero.deleteRemote.execute', RpcMethodPayloadSchemas['zotero.deleteRemote.execute']),
   rpc('papers.importFromZotero', RpcMethodPayloadSchemas['papers.importFromZotero']),
   rpc('knowledge.engines.list', RpcMethodPayloadSchemas['knowledge.engines.list']),
   rpc('knowledge.engines.save', RpcMethodPayloadSchemas['knowledge.engines.save']),
@@ -778,6 +840,17 @@ export interface WorkbenchApiLegacy {
     list(): Promise<IntegrationProfile[]>
     save(input: SaveIntegrationProfileInput): Promise<IntegrationProfile>
     remove(id: string, expectedRevision: number): Promise<void>
+    /** Archive connection *records* only in one CAS-locked transaction with
+     * per-record receipts. It never touches the safeStorage credential, the
+     * Obsidian Vault or Zotero's own database. */
+    bulkRemove(input: ArchiveBulkInput): Promise<ArchiveBulkResult>
+    /** Soft-archive one sync run (Settings → 最近同步) with a revision lock. The
+     * audit row and every external system keep their state. */
+    removeRun(id: string, expectedRevision: number): Promise<void>
+    /** Soft-archive the selected sync runs in one CAS-locked transaction with
+     * per-record receipts; connection secrets, links and external data are not
+     * part of the command. */
+    bulkRemoveRuns(input: ArchiveBulkInput): Promise<ArchiveBulkResult>
     test(id: string): Promise<{ ok: boolean; message: string }>
     sync(id: string, direction?: 'pull' | 'push' | 'both'): Promise<SyncRun>
     runs(profileId?: string): Promise<SyncRun[]>
@@ -865,6 +938,12 @@ export interface WorkbenchApiV2 {
     list(): Promise<IntegrationProfile[]>
     save(input: SaveIntegrationProfileInput): Promise<IntegrationProfile>
     remove(id: string, expectedRevision: number): Promise<void>
+    /** Archive connection records only (see WorkbenchApiV1.integrations). */
+    bulkRemove(input: ArchiveBulkInput): Promise<ArchiveBulkResult>
+    /** See WorkbenchApiV1.integrations.removeRun. */
+    removeRun(id: string, expectedRevision: number): Promise<void>
+    /** See WorkbenchApiV1.integrations.bulkRemoveRuns. */
+    bulkRemoveRuns(input: ArchiveBulkInput): Promise<ArchiveBulkResult>
     test(id: string): Promise<{ ok: boolean; message: string }>
     sync(id: string, direction: 'pull' | 'push'): Promise<SyncRun>
     runs(profileId?: string): Promise<SyncRun[]>
@@ -932,6 +1011,14 @@ export interface WorkbenchApiV2 {
     write(input: import('./v2.js').WriteNoteInput): Promise<import('./v2.js').Note>
     delete(input: import('./v2.js').DeleteNoteInput): Promise<import('./v2.js').NoteDeleteReceipt>
     deleteFolder(input: import('./v2.js').DeleteNoteFolderInput): Promise<import('./v2.js').NoteFolderDeleteReceipt>
+    createFolder(input: import('./v2.js').CreateNoteFolderInput): Promise<import('./v2.js').NoteFolderCreateReceipt>
+    move(input: import('./v2.js').MoveNoteInput): Promise<import('./v2.js').NoteMoveReceipt>
+    /** Preview the controlled frontmatter change without writing anything. */
+    previewMetadata(input: import('./v2.js').NoteMetadataPreviewInput): Promise<import('./v2.js').NoteMetadataPreview>
+    /** Apply a previewed frontmatter change; requires the previewed fingerprint. */
+    applyMetadata(input: import('./v2.js').ApplyNoteMetadataInput): Promise<import('./v2.js').Note>
+    /** Conservative duplicate probe used before importing a note. */
+    duplicates(input: import('./v2.js').NoteDuplicateInput): Promise<import('./v2.js').NoteDuplicateReport>
   }
   zotero: {
     capability(profileId: string): Promise<ZoteroCapabilityStatus>
@@ -951,6 +1038,15 @@ export interface WorkbenchApiV2 {
     paperToZotero: {
       preview(input: import('./v2.js').PaperToZoteroPreviewInput): Promise<PaperToZoteroPreview>
       execute(input: import('./v2.js').PaperToZoteroExecuteInput): Promise<ZoteroImportResult>
+    }
+    /**
+     * Two-sided Zotero deletion: preview freezes the remote revision of every
+     * selected item, execute re-checks the frozen values and only removes the
+     * local projection for items Zotero confirmed as deleted (or absent).
+     */
+    deleteRemote: {
+      preview(input: import('./v2.js').ZoteroRemoteDeletePreviewInput): Promise<import('./v2.js').ZoteroRemoteDeletePreview>
+      execute(input: import('./v2.js').ZoteroRemoteDeleteExecuteInput): Promise<import('./v2.js').ZoteroRemoteDeleteReceipt>
     }
   }
   knowledge: {

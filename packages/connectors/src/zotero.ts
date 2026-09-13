@@ -3,6 +3,7 @@ import type {
   AdapterProbe,
   AdapterProfile,
   AdapterPullResult,
+  AdapterWriteBlockedReason,
   ManagedProjection,
   NormalizedExternalPaper,
   ProjectionReceipt,
@@ -15,6 +16,8 @@ type FetchLike = typeof fetch
 
 const DEFAULT_LOCAL_API_URL = 'http://127.0.0.1:23119/api/'
 const LOOPBACK_HOSTS = new Set(['127.0.0.1', 'localhost', '[::1]', '::1'])
+/** Zotero Local API and Web API both reject more than 50 objects per write. */
+const MAX_WRITE_OBJECTS = 50
 
 type IntegrationErrorPath = Array<string | number>
 
@@ -98,6 +101,220 @@ export interface ZoteroCollectionPage {
 export interface ZoteroBibtexExport {
   readonly content: string
   readonly citationKeys: string[]
+}
+
+/**
+ * Zotero item deletion.
+ *
+ * The contract is taken from Zotero's own Local API server implementation
+ * (`server_localAPI.js`), not guessed: the item erase route is
+ * `DELETE <library>/items/<itemKey>`, it requires the `Zotero-Server-ID`
+ * handshake on loopback exactly like every other local call, and it refuses to
+ * run without `If-Unmodified-Since-Version` (missing header → `428`, stale
+ * version → `412`, unknown key → `404`, success → `204`).  The local server
+ * performs `obj.eraseTx()`, i.e. a permanent delete rather than the client's
+ * "move to trash", and a successful response is therefore the only thing a
+ * Workbench receipt may report as a remote deletion.
+ */
+export interface ZoteroDeleteTarget {
+  readonly itemKey: string
+  /** The version the deletion was previewed against.  It is sent as the
+   * precondition so Zotero itself rejects a stale delete with `412` instead of
+   * erasing an item the user changed in the meantime. */
+  readonly remoteRevision: string
+}
+
+/** Per-item outcome of a real `DELETE`.  `deleted` and `absent` are the only
+ * states in which the remote library is known not to hold the item any more;
+ * every other state means the item is still there and local data must stay. */
+export type ZoteroDeleteOutcomeStatus =
+  | 'deleted'
+  | 'absent'
+  | 'conflict'
+  | 'unauthorized'
+  | 'forbidden'
+  | 'rate-limited'
+  | 'unavailable'
+
+export interface ZoteroDeleteOutcome {
+  readonly itemKey: string
+  readonly status: ZoteroDeleteOutcomeStatus
+  /** `Last-Modified-Version` of the library after the delete, when returned. */
+  readonly remoteVersion: string | null
+  readonly message: string
+  readonly retryable: boolean
+}
+
+export const ZOTERO_DELETE_BLOCKED_MESSAGE = 'Zotero 未获得写入权限，因此没有发送任何删除请求：远端条目仍然存在，本地记录也保留。'
+export const ZOTERO_DELETE_ABSENT_MESSAGE = 'Zotero 远端已不存在该条目（404）：本地投影可以安全删除。'
+export const ZOTERO_DELETE_CONFLICT_MESSAGE = 'Zotero 条目在预览之后已被修改，本次没有删除它：请重新预览并确认后再试。'
+export const ZOTERO_DELETE_UNAVAILABLE_MESSAGE = 'Zotero 删除请求未得到可用响应：无法确认远端是否已删除，因此保留本地记录。'
+
+/** DELETE needs the same local write authorization as POST/PATCH: a one-time or
+ * unverified local key is refused before any request is sent, so a batch delete
+ * can never report a partial success caused by a key Zotero already spent. */
+function assertDeletableLocalKey(profile: AdapterProfile): void {
+  assertWritableLocalKey(profile)
+}
+
+/**
+ * Delete Zotero items, one request per item, in request order.
+ *
+ * The calls are deliberately sequential: deletion is destructive, the local
+ * API is rate limited, and a per-item receipt is only meaningful if one failed
+ * request cannot silently race the next one.  A transport failure is reported
+ * as `unavailable` for that key instead of aborting the batch, so every
+ * requested key always gets an honest outcome.
+ */
+export async function deleteZoteroRemoteItems(
+  profile: AdapterProfile,
+  targets: readonly ZoteroDeleteTarget[],
+  fetcher: FetchLike = fetch
+): Promise<{ outcomes: ZoteroDeleteOutcome[]; serverId: string | null }> {
+  if (targets.length === 0) throw new IntegrationRuntimeError('INVALID_MAPPING', '至少选择一个 Zotero 条目后再请求删除。')
+  if (targets.length > 100) throw new IntegrationRuntimeError('INVALID_MAPPING', '单次最多删除 100 个 Zotero 条目。')
+  for (const target of targets) {
+    if (!target.itemKey.trim()) throw new IntegrationRuntimeError('INVALID_MAPPING', 'Zotero 条目 key 无效。')
+    if (!target.remoteRevision.trim()) throw new IntegrationRuntimeError('REVISION_CONFLICT', 'Zotero 删除需要对象版本；请重新预览。')
+  }
+  if (!hasCredential(profile)) throw new IntegrationRuntimeError('AUTH_REQUIRED', ZOTERO_DELETE_BLOCKED_MESSAGE)
+  assertDeletableLocalKey(profile)
+  let serverId: string | null = null
+  try {
+    serverId = await serverIdForRequest(profile, fetcher)
+    if (isLoopbackLocation(profile) && !serverId && !configuredServerId(profile)) {
+      throw new IntegrationRuntimeError('UNSUPPORTED_CAPABILITY', 'Zotero Local API 未提供 server id，暂不支持删除。')
+    }
+  } catch (error) {
+    mapCollectionTransportError(error)
+  }
+  const outcomes: ZoteroDeleteOutcome[] = []
+  for (const target of targets) {
+    outcomes.push(await deleteOneZoteroItem(profile, target, serverId, fetcher))
+  }
+  return { outcomes, serverId }
+}
+
+async function deleteOneZoteroItem(
+  profile: AdapterProfile,
+  target: ZoteroDeleteTarget,
+  serverId: string | null,
+  fetcher: FetchLike
+): Promise<ZoteroDeleteOutcome> {
+  const itemKey = target.itemKey.trim()
+  try {
+    const requestHeaders = headers(profile, serverId)
+    requestHeaders.set('If-Unmodified-Since-Version', target.remoteRevision.trim())
+    const response = await fetcher(endpoint(profile, `items/${encodeURIComponent(itemKey)}`), {
+      method: 'DELETE',
+      headers: requestHeaders,
+      signal: AbortSignal.timeout(20_000)
+    })
+    const remoteVersion = response.headers.get('Last-Modified-Version')?.trim() || null
+    if (response.status === 204 || response.status === 200) {
+      return { itemKey, status: 'deleted', remoteVersion, message: 'Zotero 已永久删除该条目。', retryable: false }
+    }
+    if (response.status === 404) {
+      return { itemKey, status: 'absent', remoteVersion, message: ZOTERO_DELETE_ABSENT_MESSAGE, retryable: false }
+    }
+    const detail = await errorBody(response)
+    if (response.status === 412 || response.status === 428) {
+      return { itemKey, status: 'conflict', remoteVersion, message: preconditionMessage(detail) || ZOTERO_DELETE_CONFLICT_MESSAGE, retryable: true }
+    }
+    if (response.status === 401) {
+      return { itemKey, status: 'unauthorized', remoteVersion, message: authErrorMessage(detail), retryable: true }
+    }
+    if (response.status === 403) {
+      return { itemKey, status: 'forbidden', remoteVersion, message: permissionDeniedMessage(detail), retryable: false }
+    }
+    if (response.status === 429) {
+      const retryAfter = Number.parseInt(response.headers.get('Retry-After') ?? '', 10)
+      const wait = Number.isFinite(retryAfter) && retryAfter > 0 ? `请在 ${retryAfter} 秒后重试。` : '请稍后重试。'
+      return { itemKey, status: 'rate-limited', remoteVersion, message: `Zotero 请求过于频繁。${wait}`, retryable: true }
+    }
+    return {
+      itemKey,
+      status: 'unavailable',
+      remoteVersion,
+      message: detail ? `${ZOTERO_DELETE_UNAVAILABLE_MESSAGE}（Zotero 返回 ${response.status}：${detail}）` : `${ZOTERO_DELETE_UNAVAILABLE_MESSAGE}（Zotero 返回 ${response.status}）`,
+      retryable: true
+    }
+  } catch (error) {
+    const message = getZoteroIntegrationError(error)?.message ?? (error instanceof Error ? error.message : '未知错误')
+    return { itemKey, status: 'unavailable', remoteVersion: null, message: `${ZOTERO_DELETE_UNAVAILABLE_MESSAGE}（${message}）`, retryable: true }
+  }
+}
+
+/** True only when the remote library is known not to hold the item any more, so
+ * the Workbench projection may be removed. */
+export function zoteroDeleteRemovedRemotely(status: ZoteroDeleteOutcomeStatus): boolean {
+  return status === 'deleted' || status === 'absent'
+}
+
+export interface ZoteroRemoteItemSnapshot {
+  readonly itemKey: string
+  /** The remote revision the caller must freeze and send back as the delete
+   * precondition.  Never invented: it is Zotero's own `version` field. */
+  readonly version: string
+  readonly title: string | null
+}
+
+/**
+ * Read the current revision of explicit Zotero items, one request per key.
+ *
+ * This is the read half of the two-sided delete preview: it is what makes the
+ * confirmation step bind to a real version instead of to whatever the Renderer
+ * had cached.  A key that cannot be read is reported with its real reason rather
+ * than dropped, so a preview can never silently shrink the user's selection.
+ */
+export async function readZoteroRemoteItems(
+  profile: AdapterProfile,
+  itemKeys: readonly string[],
+  fetcher: FetchLike = fetch
+): Promise<{ items: ZoteroRemoteItemSnapshot[]; unavailable: Array<{ itemKey: string; message: string }> }> {
+  const items: ZoteroRemoteItemSnapshot[] = []
+  const unavailable: Array<{ itemKey: string; message: string }> = []
+  let serverId: string | null = null
+  try {
+    serverId = await serverIdForRequest(profile, fetcher)
+  } catch (error) {
+    mapCollectionTransportError(error)
+  }
+  for (const value of itemKeys) {
+    const itemKey = value.trim()
+    if (!itemKey) continue
+    try {
+      const response = await fetcher(endpoint(profile, `items/${encodeURIComponent(itemKey)}`), {
+        headers: headers(profile, serverId),
+        signal: AbortSignal.timeout(20_000)
+      })
+      if (!response.ok) {
+        const detail = await errorBody(response)
+        unavailable.push({
+          itemKey,
+          message: response.status === 404
+            ? 'Zotero 远端已不存在该条目。'
+            : `无法读取 Zotero 条目（Zotero 返回 ${response.status}${detail ? `：${detail}` : ''}）。`
+        })
+        continue
+      }
+      const payload = await readJson(response, 'zotero.item.read')
+      const record = asRecord(payload)
+      const rawVersion = record?.['version']
+      const version = optionalInteger(rawVersion)
+      if (record === null || version === null) {
+        unavailable.push({ itemKey, message: 'Zotero item 响应缺少 revision，无法冻结删除版本。' })
+        continue
+      }
+      const data = asRecord(record['data'])
+      const title = typeof data?.['title'] === 'string' && data['title'].trim() ? data['title'].trim() : null
+      items.push({ itemKey, version: String(version), title })
+    } catch (error) {
+      const message = getZoteroIntegrationError(error)?.message ?? (error instanceof Error ? error.message : '未知错误')
+      unavailable.push({ itemKey, message: `无法读取 Zotero 条目：${message}` })
+    }
+  }
+  return { items, unavailable }
 }
 
 type CollectionPageInput = {
@@ -469,15 +686,66 @@ function normalizeCollectionsResponse(payload: unknown): ZoteroCollectionSummary
   return items.map((item, index) => normalizeCollection(item, index))
 }
 
-function mapHttpError(response: Response): never {
-  if (response.status === 401) throw new IntegrationRuntimeError('AUTH_REQUIRED', 'Zotero 需要授权')
-  if (response.status === 403) throw new IntegrationRuntimeError('PERMISSION_DENIED', 'Zotero 权限不足')
+function mapHttpError(response: Response, detail = ''): never {
+  if (response.status === 401) throw new IntegrationRuntimeError('AUTH_REQUIRED', authErrorMessage(detail))
+  if (response.status === 403) throw new IntegrationRuntimeError('PERMISSION_DENIED', permissionDeniedMessage(detail))
   if (response.status === 404) throw new IntegrationRuntimeError('NOT_FOUND', 'Zotero 对象不存在')
+  if (response.status === 413) throw new IntegrationRuntimeError('INVALID_MAPPING', detail || `Zotero 单次写入最多 ${MAX_WRITE_OBJECTS} 个条目，请分批导入。`)
   if (response.status === 409 || response.status === 412 || response.status === 428) {
-    throw new IntegrationRuntimeError('REVISION_CONFLICT', 'Zotero 对象版本冲突')
+    throw new IntegrationRuntimeError('REVISION_CONFLICT', preconditionMessage(detail))
   }
-  if (response.status === 429) throw new IntegrationRuntimeError('RATE_LIMITED', 'Zotero 请求过于频繁')
-  throw new IntegrationRuntimeError('TEMPORARILY_UNAVAILABLE', `Zotero 请求失败（${response.status}）`)
+  if (response.status === 429) throw new IntegrationRuntimeError('RATE_LIMITED', detail ? `Zotero 请求过于频繁：${detail}` : 'Zotero 请求过于频繁')
+  throw new IntegrationRuntimeError('TEMPORARILY_UNAVAILABLE', detail ? `Zotero 请求失败（${response.status}）：${detail}` : `Zotero 请求失败（${response.status}）`)
+}
+
+/**
+ * Zotero's Local API explains failed writes with a short plain-text reason and
+ * the Web API answers with JSON.  Reading it lets the caller report the real
+ * cause (a consumed one-time local key, a missing `Zotero-Server-ID`, a replayed
+ * write token) instead of a generic "version conflict".
+ */
+async function errorBody(response: Response): Promise<string> {
+  try {
+    const text = (await response.text()).trim()
+    return text.replace(/\s+/gu, ' ').slice(0, 300)
+  } catch {
+    return ''
+  }
+}
+
+/** Map a 401/403 into the reason the user has to act on.  Zotero requires a
+ * local key for writes, and a one-time key is consumed by the first write that
+ * validates it, which makes "authorize again with Always Allow" the only
+ * durable recovery. */
+function authErrorMessage(detail: string): string {
+  const lowered = detail.toLocaleLowerCase('en-US')
+  if (lowered.includes('invalid or expired')) {
+    return 'Zotero 本地写入密钥已失效：一次性授权（Allow）的密钥会在第一次成功写入后被 Zotero 消耗，之后的写入都会返回 401。请重新请求 Zotero 写入权限，并在 Zotero 弹窗中选择「始终允许（Always Allow）」。'
+  }
+  if (lowered.includes('api key required')) {
+    return 'Zotero 尚未授权本地写入：Local API 的写请求必须先取得本地密钥。请点击「请求 Zotero 写入权限」，并在 Zotero 弹窗中选择「始终允许（Always Allow）」。'
+  }
+  return detail ? `Zotero 需要授权：${detail}` : 'Zotero 需要授权'
+}
+
+function permissionDeniedMessage(detail: string): string {
+  const lowered = detail.toLocaleLowerCase('en-US')
+  if (lowered.includes('denied')) {
+    return 'Zotero 授权弹窗中选择了「拒绝」：本次没有获得写入权限。请重新请求 Zotero 写入权限，并在弹窗中选择「始终允许（Always Allow）」。'
+  }
+  return detail ? `Zotero 权限不足：${detail}` : 'Zotero 权限不足'
+}
+
+/** 412/428/409 are precondition failures.  The Local API uses them for the
+ * Server-ID handshake and the write token as well, so the body decides. */
+function preconditionMessage(detail: string): string {
+  const lowered = detail.toLocaleLowerCase('en-US')
+  if (lowered.includes('zotero-server-id not provided')) return 'Zotero 写入缺少 Zotero-Server-ID：该连接无法完成本机写入握手，请确认 Zotero 版本并重新探测。'
+  if (lowered.includes('server-id does not match')) return 'Zotero-Server-ID 与当前 Zotero 实例不一致：请确认 Zotero 未更换数据目录或版本，然后重新探测。'
+  if (lowered.includes('write token')) return 'Zotero 写入令牌已被使用：请重新生成预览后再导入。'
+  if (lowered.includes('if-unmodified-since-version not provided')) return 'Zotero 写入缺少对象版本：请先刷新该条目再重新导入。'
+  if (lowered.includes('has been modified since specified version') || lowered.includes('version mismatch')) return 'Zotero 条目已在外部更新，本地版本已过期：请刷新该条目并重新生成预览。'
+  return detail ? `Zotero 写前置条件失败：${detail}` : 'Zotero 写前置条件失败'
 }
 
 function upsertManagedExtra(existing: string, projection: ManagedProjection): string {
@@ -489,6 +757,143 @@ function upsertManagedExtra(existing: string, projection: ManagedProjection): st
   if (matches.length > 1) throw new IntegrationRuntimeError('REVISION_CONFLICT', 'Zotero extra 中存在重复托管区块')
   const block = `${begin}\nWorkbench ID: ${projection.workbenchId}\n${projection.markdown.slice(0, 45_000)}\n${end}`
   return matches.length === 1 ? existing.replace(pattern, block) : `${existing.trimEnd()}${existing.trim() ? '\n\n' : ''}${block}`
+}
+
+/** Only a non-empty, explicitly selected collection key may be written. */
+function normalizedCollectionKey(value: string | null | undefined): string | null {
+  return typeof value === 'string' && value.trim() ? value.trim() : null
+}
+
+/** Union of the remote item's current tags and the Workbench tags.  Order is
+ * stable (remote first) so a repeated PATCH is idempotent. */
+function mergeZoteroTags(remoteTags: unknown, projectionTags: readonly string[]): string[] {
+  const merged = new Set<string>()
+  const push = (value: unknown): void => {
+    if (typeof value === 'string' && value.trim()) merged.add(value.trim())
+  }
+  if (Array.isArray(remoteTags)) {
+    for (const tag of remoteTags) {
+      if (tag && typeof tag === 'object') push((tag as Record<string, unknown>)['tag'])
+      else push(tag)
+    }
+  }
+  for (const tag of projectionTags) push(tag)
+  return [...merged]
+}
+
+/** Persistence mode of the stored local key.  Zotero's authorization dialog
+ * offers a one-time "Allow" and a persistent "Always Allow"; only the latter can
+ * carry a multi-item import. */
+function localKeyMode(profile: AdapterProfile): 'persistent' | 'single-use' | 'unknown' {
+  const value = profile.settings['zoteroLocalKeyPersistent']
+  return value === true ? 'persistent' : value === false ? 'single-use' : 'unknown'
+}
+
+export interface ZoteroWriteAuthorizationCheck {
+  readonly authorized: boolean
+  readonly reason: AdapterWriteBlockedReason | null
+  readonly message: string
+  readonly retryAfterSeconds: number | null
+}
+
+const SINGLE_USE_KEY_MESSAGE = 'Zotero 本地写入密钥是一次性授权（Allow）：Zotero 会在第一次成功写入后消耗该密钥，多条目导入必然中途失败。请重新请求 Zotero 写入权限，并在 Zotero 弹窗中选择「始终允许（Always Allow）」。'
+const UNVERIFIED_KEY_MESSAGE = '无法确认已保存的 Zotero 本地写入密钥是否可重复使用（它由旧版本保存，未记录授权方式）。请重新请求 Zotero 写入权限，并在 Zotero 弹窗中选择「始终允许（Always Allow）」。'
+const VERIFIED_KEY_MESSAGE = 'Zotero 本机写入权限有效。'
+
+const WRITE_BLOCKED_MESSAGES: Record<AdapterWriteBlockedReason, string> = {
+  'server-id-missing': 'Zotero Local API 未返回 Zotero-Server-ID（Zotero 9 或更早版本不支持本机写入授权），无法完成写入握手。',
+  'credential-missing': '尚未请求 Zotero 本机写入权限。',
+  'probe-failed': '无法验证 Zotero 写入权限，请检查连接后重试。',
+  'key-single-use': SINGLE_USE_KEY_MESSAGE,
+  'key-unverified': UNVERIFIED_KEY_MESSAGE,
+  'key-invalid': authErrorMessage('Invalid or expired API key'),
+  'authorization-denied': permissionDeniedMessage('denied'),
+  'rate-limited': 'Zotero 授权请求过于频繁（每 60 秒最多 5 次），请在 60 秒后重试。'
+}
+
+/** Single user-facing explanation for a read-only Zotero connection, shared by
+ * the capability surface and the write gate so both report the same cause. */
+export function zoteroWriteBlockedMessage(reason: AdapterWriteBlockedReason | null | undefined): string {
+  return reason === null || reason === undefined ? 'Zotero 未获得写入权限。' : WRITE_BLOCKED_MESSAGES[reason]
+}
+
+/**
+ * Prove that the stored local write key is still usable *without* changing
+ * anything in the user's Zotero library.
+ *
+ * Zotero's Local API authenticates a write request before it parses the body,
+ * so `POST <library>/items` with an empty array is answered with
+ * `400 No items provided` only once the key has been accepted.  That makes the
+ * empty array a zero-object authorization check: nothing is created, updated
+ * or deleted, no remote identifier is returned, and the key itself is never
+ * echoed back to the caller.
+ *
+ * The check must only be run for keys whose persistence mode is known, because
+ * Zotero consumes a one-time key as soon as any write validates it.
+ */
+export async function verifyZoteroWriteAuthorization(
+  profile: AdapterProfile,
+  fetcher: FetchLike = fetch,
+  knownServerId: string | null = null
+): Promise<ZoteroWriteAuthorizationCheck> {
+  if (!isLoopbackLocation(profile)) {
+    // The Web API exposes no zero-effect authorization check; its key is
+    // validated by the first real write, which reports its own failure.
+    return { authorized: true, reason: null, message: 'Zotero Web API 写入权限在首次写入时校验。', retryAfterSeconds: null }
+  }
+  try {
+    const serverId = knownServerId ?? await serverIdForRequest(profile, fetcher)
+    if (!serverId && !configuredServerId(profile)) {
+      return { authorized: false, reason: 'server-id-missing', message: 'Zotero Local API 未返回 Zotero-Server-ID，无法完成本机写入握手。', retryAfterSeconds: null }
+    }
+    if (!hasCredential(profile)) {
+      return { authorized: false, reason: 'credential-missing', message: '尚未请求 Zotero 本机写入权限。', retryAfterSeconds: null }
+    }
+    const mode = localKeyMode(profile)
+    if (mode === 'single-use') return { authorized: false, reason: 'key-single-use', message: SINGLE_USE_KEY_MESSAGE, retryAfterSeconds: null }
+    if (mode === 'unknown') return { authorized: false, reason: 'key-unverified', message: UNVERIFIED_KEY_MESSAGE, retryAfterSeconds: null }
+    const requestHeaders = headers(profile, serverId)
+    requestHeaders.set('Content-Type', 'application/json')
+    const response = await fetcher(endpoint(profile, 'items'), {
+      method: 'POST',
+      headers: requestHeaders,
+      body: '[]',
+      signal: AbortSignal.timeout(15_000)
+    })
+    if (response.ok) return { authorized: true, reason: null, message: VERIFIED_KEY_MESSAGE, retryAfterSeconds: null }
+    const detail = await errorBody(response)
+    const lowered = detail.toLocaleLowerCase('en-US')
+    if (response.status === 400 && lowered.includes('no items provided')) {
+      return { authorized: true, reason: null, message: VERIFIED_KEY_MESSAGE, retryAfterSeconds: null }
+    }
+    if (response.status === 401) {
+      return { authorized: false, reason: 'key-invalid', message: authErrorMessage(detail), retryAfterSeconds: null }
+    }
+    if (response.status === 403) {
+      return { authorized: false, reason: 'authorization-denied', message: permissionDeniedMessage(detail), retryAfterSeconds: null }
+    }
+    if (response.status === 428) {
+      return { authorized: false, reason: 'server-id-missing', message: preconditionMessage(detail), retryAfterSeconds: null }
+    }
+    if (response.status === 412) {
+      return { authorized: false, reason: 'server-id-missing', message: preconditionMessage(detail), retryAfterSeconds: null }
+    }
+    if (response.status === 429) {
+      const retryAfter = Number.parseInt(response.headers.get('Retry-After') ?? '', 10)
+      return {
+        authorized: false,
+        reason: 'rate-limited',
+        message: `Zotero 授权请求过于频繁（每 60 秒最多 5 次）${Number.isFinite(retryAfter) && retryAfter > 0 ? `，请在 ${retryAfter} 秒后重试。` : '，请稍后重试。'}`,
+        retryAfterSeconds: Number.isFinite(retryAfter) && retryAfter > 0 ? retryAfter : null
+      }
+    }
+    return { authorized: false, reason: 'probe-failed', message: detail ? `无法验证 Zotero 写入权限（${response.status}）：${detail}` : `无法验证 Zotero 写入权限（${response.status}）`, retryAfterSeconds: null }
+  } catch (error) {
+    if (error instanceof IntegrationRuntimeError) {
+      return { authorized: false, reason: error.code === 'NOT_CONNECTED' ? 'probe-failed' : 'probe-failed', message: error.message, retryAfterSeconds: null }
+    }
+    return { authorized: false, reason: 'probe-failed', message: '无法验证 Zotero 写入权限，请稍后重试。', retryAfterSeconds: null }
+  }
 }
 
 export async function probeZotero(profile: AdapterProfile, fetcher: FetchLike = fetch): Promise<AdapterProbe> {
@@ -510,19 +915,33 @@ export async function probeZotero(profile: AdapterProfile, fetcher: FetchLike = 
     const itemPayload = await readJson(itemResponse, 'zotero.items.probe')
     if (!Array.isArray(itemPayload)) throw integrationFailure('zotero.items.probe', ['items'], 'invalid_type', 'Zotero items 返回格式无效。')
     itemPayload.forEach((item, index) => { normalize(item, profile, index) })
-    const write = local ? Boolean(hasCredential(profile) && serverId) : hasCredential(profile)
+    // A loopback Local API without `Zotero-Server-ID` (Zotero 9) can never
+    // complete the local write handshake, and a one-time local key cannot
+    // survive a multi-item import.  Both are reported as explicit read-only
+    // causes instead of a write that is advertised and then fails.
+    const writeCheck: ZoteroWriteAuthorizationCheck = local
+      ? !serverId && !configuredServerId(profile)
+        ? { authorized: false, reason: 'server-id-missing', message: 'Zotero Local API 未返回 Zotero-Server-ID（Zotero 9 或更早版本不支持本机写入授权）。', retryAfterSeconds: null }
+        : hasCredential(profile)
+          ? await verifyZoteroWriteAuthorization(profile, fetcher, serverId)
+          : { authorized: false, reason: 'credential-missing', message: 'Zotero Local API 只读连接正常，尚未请求本机写入权限。', retryAfterSeconds: null }
+      : hasCredential(profile)
+        ? { authorized: true, reason: null, message: 'Zotero Web API 写入权限在首次写入时校验。', retryAfterSeconds: null }
+        : { authorized: false, reason: 'credential-missing', message: 'Zotero API 已连接，但写入需要 API key。', retryAfterSeconds: null }
+    const write = writeCheck.authorized
+    const writeBlockedReason: AdapterWriteBlockedReason | null = write ? null : writeCheck.reason ?? 'probe-failed'
     return {
       ok: true,
+      writeBlockedReason,
       message: write
         ? 'Zotero API 已连接，可执行受 revision 保护的写入。'
-        : local
-          ? hasCredential(profile) ? 'Zotero 已连接，但本地写入仍需授权。' : 'Zotero Local API 只读连接正常。'
-          : 'Zotero API 已连接，但写入需要 API key。',
+        : writeCheck.message,
       capabilities: { read: true, write, attachments: 'link_only', incremental: true }
     }
   } catch (error) {
     return {
       ok: false,
+      writeBlockedReason: 'probe-failed',
       message: error instanceof Error ? error.message : '无法连接 Zotero',
       capabilities: { read: false, write: false, attachments: 'link_only', incremental: true }
     }
@@ -766,6 +1185,20 @@ export async function listZoteroCollections(
   }
 }
 
+/**
+ * Refuse a local write that cannot succeed.  Zotero consumes a one-time local
+ * key (`remember:false`) on the first write that validates it, so accepting one
+ * here would produce exactly the partial import this guard prevents.  The write
+ * paths therefore require a *persistent* local key; the persistence mode is
+ * recorded when the user answers Zotero's authorization dialog.
+ */
+function assertWritableLocalKey(profile: AdapterProfile): void {
+  if (!isLoopbackLocation(profile)) return
+  const mode = localKeyMode(profile)
+  if (mode === 'persistent') return
+  throw new IntegrationRuntimeError('AUTH_REQUIRED', mode === 'single-use' ? SINGLE_USE_KEY_MESSAGE : UNVERIFIED_KEY_MESSAGE)
+}
+
 export async function writeZoteroProjection(
   profile: AdapterProfile,
   target: ProjectionTarget,
@@ -773,6 +1206,7 @@ export async function writeZoteroProjection(
   fetcher: FetchLike = fetch
 ): Promise<ProjectionReceipt> {
   if (!hasCredential(profile)) throw new IntegrationRuntimeError('AUTH_REQUIRED', 'Zotero 写入需要 API key')
+  assertWritableLocalKey(profile)
   if (!target.remoteRevision) throw new IntegrationRuntimeError('REVISION_CONFLICT', 'Zotero 写入需要对象版本')
   try {
     const serverId = await serverIdForRequest(profile, fetcher)
@@ -801,6 +1235,29 @@ export async function writeZoteroProjection(
     const currentData = asRecord(current['data'])
     if (currentData === null) throw integrationFailure('zotero.item.read', ['data'], 'invalid_type', 'Zotero item data 响应格式无效。')
     const currentExtra = typeof currentData['extra'] === 'string' ? currentData['extra'] : ''
+    // Zotero fields are shared with the user.  A confirmed Workbench update
+    // may fill metadata the remote item is still missing, but it must never
+    // overwrite a non-empty remote value (title, DOI, URL, abstract, venue,
+    // date) that the user may have curated inside Zotero.
+    const metadataPatch: Record<string, string> = {}
+    const metadataCandidates: Array<[string, string]> = [
+      ['title', projection.title],
+      ['DOI', projection.doi ?? ''],
+      ['url', projection.url ?? ''],
+      ['abstractNote', projection.abstract ?? ''],
+      ['publicationTitle', projection.venue ?? ''],
+      ['date', projection.year === null || projection.year === undefined ? '' : String(projection.year)]
+    ]
+    for (const [field, value] of metadataCandidates) {
+      const remote = currentData[field]
+      if (typeof remote === 'string' && remote.trim()) continue
+      if (!value.trim()) continue
+      metadataPatch[field] = value
+    }
+    // Tags are merged instead of replaced so a Workbench write can add the
+    // project/`#未分类` tag without deleting the user's own Zotero tags.
+    const mergedTags = mergeZoteroTags(currentData['tags'], projection.tags)
+    const collectionKey = normalizedCollectionKey(target.collectionKey)
     const response = await fetcher(url, {
       method: 'PATCH',
       headers: new Headers({
@@ -809,13 +1266,17 @@ export async function writeZoteroProjection(
         'If-Unmodified-Since-Version': target.remoteRevision
       }),
       body: JSON.stringify({
+        ...metadataPatch,
         extra: upsertManagedExtra(currentExtra, projection),
-        tags: projection.tags.map((tag) => ({ tag })),
-        collections: projection.collections
+        tags: mergedTags.map((tag) => ({ tag })),
+        // Only an explicitly selected collection key is written.  Omitting
+        // `collections` keeps the remote membership untouched instead of
+        // restoring a stale locally cached value.
+        ...(collectionKey === null ? {} : { collections: [collectionKey] })
       }),
       signal: AbortSignal.timeout(20_000)
     })
-    if (!response.ok) mapHttpError(response)
+    if (!response.ok) mapHttpError(response, await errorBody(response))
     return {
       externalId: target.externalId,
       locator: target.locator,
@@ -836,6 +1297,7 @@ export async function createZoteroProjection(
   fetcher: FetchLike = fetch
 ): Promise<ProjectionReceipt> {
   if (!hasCredential(profile)) throw new IntegrationRuntimeError('AUTH_REQUIRED', 'Zotero create requires a local/API key')
+  assertWritableLocalKey(profile)
   try {
     const serverId = await serverIdForRequest(profile, fetcher)
     if (isLoopbackLocation(profile) && !serverId && !configuredServerId(profile)) {
@@ -873,13 +1335,22 @@ export async function createZoteroProjection(
       body: JSON.stringify([item]),
       signal: AbortSignal.timeout(20_000)
     })
-    if (!response.ok) mapHttpError(response)
+    if (!response.ok) mapHttpError(response, await errorBody(response))
     const payload: unknown = await readJson(response, 'zotero.item.create')
     const record = asRecord(payload)
     if (record === null) throw integrationFailure('zotero.item.create', [], 'invalid_type', 'Zotero create 响应格式无效。')
     const failed = asRecord(record['failed'])?.['0']
     if (failed !== undefined) {
-      throw integrationFailure('zotero.item.create', ['failed', 0], 'remote_rejected', 'Zotero 拒绝创建 item。')
+      // Zotero reports per-object validation failures inside a 200 response.
+      // Surface its own message so the user can see which field was rejected
+      // instead of a generic "Zotero refused the item".
+      const failure = asRecord(failed)
+      const remoteMessage = failure === null
+        ? ''
+        : typeof failure['message'] === 'string'
+          ? failure['message'].trim()
+          : ''
+      throw integrationFailure('zotero.item.create', ['failed', 0], 'remote_rejected', remoteMessage ? `Zotero 拒绝创建条目：${remoteMessage}` : 'Zotero 拒绝创建条目。')
     }
     const successful = asRecord(record['successful'])?.['0']
     const successfulRecord = asRecord(successful)

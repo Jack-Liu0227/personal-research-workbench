@@ -45,6 +45,9 @@ import type {
   LiteratureMatrixEntry,
   LiteratureMatrixBulkDeleteInput,
   LiteratureMatrixBulkDeleteResult,
+  ArchiveBulkInput,
+  ArchiveBulkReceipt,
+  ArchiveBulkResult,
   LiteratureStagingBulkDeleteInput,
   LiteratureStagingBulkDeleteResult,
   LiteratureStagingDeleteInput,
@@ -67,6 +70,7 @@ import type {
   SavePromptTemplateInput,
   SaveScheduleInput,
   Schedule,
+  ScheduleOccurrence,
   StartAgentRunInput,
   SyncRun,
   Task,
@@ -102,6 +106,10 @@ import {
   AgentUsageSchema,
   AgentMessageSchema,
   AgentRunRecordSchema as ManagedAgentRunSchema,
+  AgentApprovalSchema,
+  AgentSkillSnapshotSchema,
+  ArchiveBulkInputSchema,
+  ArchiveBulkResultSchema,
   ConfirmationContextSchema,
   CreateResourceLinkInputSchema,
   LiteratureClearSessionReceiptSchema,
@@ -121,6 +129,7 @@ import {
   SearchResultSchema
 } from '@prw/contracts'
 import { calculateProjectProgress, isDueToday, isUpcoming } from '@prw/domain'
+import { archiveBulkResult, archiveLockConflict } from './research-repository.js'
 import BetterSqlite3 from 'better-sqlite3'
 import { and, asc, desc, eq, gt, gte, inArray, isNotNull, isNull, lt, ne, or, sql, type SQL } from 'drizzle-orm'
 import { drizzle, type BetterSQLite3Database } from 'drizzle-orm/better-sqlite3'
@@ -160,6 +169,7 @@ import {
   agentConnectors,
   agentProxyProfiles, agentProxyBindings,
   agentBindings,
+  agentApprovals,
   agentRunEvents,
   agentRunRecords,
   agentInboxItems,
@@ -186,6 +196,9 @@ const minimumSortGap = 0.000_001
 /** One ledger field may not exceed this many characters; the record carries a
  * `truncated` flag instead of silently shortening the value. */
 const agentRecordTextLimit = 65_536
+/** Non-terminal run states. A conversation with any of these is still being
+ * written to, so deleting it would make the run's own writes fail. */
+const ACTIVE_AGENT_RUN_STATUSES = ['planned', 'queued', 'running', 'waiting_confirmation']
 
 export interface WorkbenchDatabaseOptions {
   readonly filePath: string
@@ -523,6 +536,9 @@ function toManagedAgentRun(row: typeof agentRuns.$inferSelect): AgentRunRecord {
     toolProfile: row.toolProfile,
     permissionMode: row.permissionMode ?? (row.toolProfile === 'approved-write' ? 'auto' : 'read-only'),
     approvalPolicy: row.approvalPolicy ?? 'on-request',
+    skillKey: row.skillKey ?? null,
+    skillSnapshot: parseSkillSnapshot(row.skillSnapshotJson),
+    credentialSource: row.credentialSource ?? 'none',
     status: row.agentStatus,
     input: parseJsonRecord(row.inputJson),
     output: redactAgentText(row.output),
@@ -531,6 +547,31 @@ function toManagedAgentRun(row: typeof agentRuns.$inferSelect): AgentRunRecord {
     createdAt: row.createdAt,
     startedAt: row.startedAt,
     finishedAt: row.finishedAt
+  })
+}
+
+function parseSkillSnapshot(value: string | null): import('@prw/contracts').AgentSkillSnapshot | null {
+  if (value === null || value.trim().length === 0) return null
+  try {
+    return AgentSkillSnapshotSchema.parse(JSON.parse(value))
+  } catch {
+    // A snapshot that no longer matches the schema is reported as absent
+    // rather than crashing every run listing; the run keeps its `skillKey`.
+    return null
+  }
+}
+
+function toAgentApproval(row: typeof agentApprovals.$inferSelect): AgentApproval {
+  return AgentApprovalSchema.parse({
+    id: row.id,
+    runId: row.runId,
+    operation: row.operation,
+    summary: row.summary,
+    status: row.status,
+    policy: row.policy,
+    reason: row.reason ?? null,
+    createdAt: row.createdAt,
+    decidedAt: row.decidedAt ?? null
   })
 }
 
@@ -2243,6 +2284,10 @@ export class WorkbenchRepository {
     this.researchRepository.removeIntegrationProfile(id, expectedRevision)
   }
 
+  bulkRemoveIntegrationProfiles(input: ArchiveBulkInput): ArchiveBulkResult {
+    return this.researchRepository.bulkRemoveIntegrationProfiles(input)
+  }
+
   listKnowledgeEngineConfigs(): KnowledgeEngineConfig[] {
     const rows = this.database
       .select()
@@ -2342,6 +2387,18 @@ export class WorkbenchRepository {
     return this.researchRepository.listExternalLinks(profileId)
   }
 
+  findExternalPaperLink(profileId: string, externalId: string): ExternalLink | null {
+    return this.researchRepository.findExternalPaperLink(profileId, externalId)
+  }
+
+  removeExternalPaperProjection(input: { profileId: string; externalId: string }): {
+    paperId: string | null
+    archivedPaperId: string | null
+    linksRemoved: number
+  } {
+    return this.researchRepository.removeExternalPaperProjection(input)
+  }
+
   saveExternalLink(input: SaveExternalLinkInput): ExternalLink {
     return this.researchRepository.saveExternalLink(input)
   }
@@ -2368,6 +2425,14 @@ export class WorkbenchRepository {
 
   listSyncRuns(profileId?: string): SyncRun[] {
     return this.researchRepository.listSyncRuns(profileId)
+  }
+
+  removeSyncRun(id: string, expectedRevision: number): void {
+    this.researchRepository.removeSyncRun(id, expectedRevision)
+  }
+
+  bulkRemoveSyncRuns(input: ArchiveBulkInput): ArchiveBulkResult {
+    return this.researchRepository.bulkRemoveSyncRuns(input)
   }
 
   listPromptTemplates(): PromptTemplate[] {
@@ -2460,6 +2525,38 @@ export class WorkbenchRepository {
 
   removeSchedule(id: string, expectedRevision: number): void {
     this.researchRepository.removeSchedule(id, expectedRevision)
+  }
+
+  bulkArchiveSchedules(input: ArchiveBulkInput): ArchiveBulkResult {
+    return this.researchRepository.bulkArchiveSchedules(input)
+  }
+
+  getScheduleOccurrenceByIdempotencyKey(idempotencyKey: string): ScheduleOccurrence | null {
+    return this.researchRepository.getScheduleOccurrenceByIdempotencyKey(idempotencyKey)
+  }
+
+  getScheduleOccurrenceByRunId(runId: string): ScheduleOccurrence | null {
+    return this.researchRepository.getScheduleOccurrenceByRunId(runId)
+  }
+
+  getResearchArtifactTitle(id: string): { readonly id: string; readonly title: string } | null {
+    return this.researchRepository.getResearchArtifactTitle(id)
+  }
+
+  claimScheduleOccurrence(input: Parameters<ResearchRepository['claimScheduleOccurrence']>[0]): ReturnType<ResearchRepository['claimScheduleOccurrence']> {
+    return this.researchRepository.claimScheduleOccurrence(input)
+  }
+
+  settleScheduleOccurrence(input: Parameters<ResearchRepository['settleScheduleOccurrence']>[0]): ScheduleOccurrence {
+    return this.researchRepository.settleScheduleOccurrence(input)
+  }
+
+  listScheduleOccurrences(input: Parameters<ResearchRepository['listScheduleOccurrences']>[0] = {}): ScheduleOccurrence[] {
+    return this.researchRepository.listScheduleOccurrences(input)
+  }
+
+  reconcileClaimedScheduleOccurrences(reason: string): number {
+    return this.researchRepository.reconcileClaimedScheduleOccurrences(reason)
   }
 
   listAgentConnectors(): AgentConnector[] {
@@ -2687,6 +2784,65 @@ export class WorkbenchRepository {
     })
   }
 
+  /** Delete (soft-archive) one conversation record with a per-record receipt.
+   *
+   * The history rail's “删除" is intentionally the same write as `archive`: the
+   * conversation leaves the default list projection but the row, its messages
+   * and every associated `agent_runs` / `agent_events` row stay readable for
+   * audit. Deleting therefore cannot cascade into runs, credentials or external
+   * data. A conversation that changed since it was selected reports `conflict`;
+   * an already-removed one reports `skipped`; a conversation whose run is still
+   * active reports `failed` and is left untouched, because archiving mid-run
+   * would make the running run's later writes fail. */
+  removeAgentConversation(id: string, expectedRevision: number): ArchiveBulkReceipt {
+    return this.removeAgentConversations({ items: [{ id, expectedRevision }] }).items[0]!
+  }
+
+  /** Delete a selected conversation set in one SQLite transaction with one
+   * receipt per record. Each revision is checked (and written) under the same
+   * lock, so a stale selection can never partially remove history and can never
+   * report a success for a row that was not written. */
+  removeAgentConversations(inputValue: ArchiveBulkInput): ArchiveBulkResult {
+    const input = ArchiveBulkInputSchema.parse(inputValue)
+    return this.database.transaction((transaction) => {
+      const timestamp = this.now().toISOString()
+      const items: ArchiveBulkResult['items'] = []
+      for (const lock of input.items) {
+        const current = transaction.select().from(agentConversations).where(eq(agentConversations.id, lock.id)).get()
+        if (!current || current.archivedAt !== null) {
+          items.push({ id: lock.id, outcome: 'skipped', error: null })
+          continue
+        }
+        if (current.revision !== lock.expectedRevision) {
+          items.push(archiveLockConflict(lock.id, '对话已被更新，请刷新历史列表后重试。'))
+          continue
+        }
+        const activeRun = transaction.select({ id: agentRuns.id }).from(agentRuns)
+          .where(and(eq(agentRuns.conversationId, lock.id), inArray(agentRuns.agentStatus, ACTIVE_AGENT_RUN_STATUSES)))
+          .limit(1).get()
+        if (activeRun) {
+          items.push({
+            id: lock.id,
+            outcome: 'failed',
+            error: { code: 'AGENT_CONVERSATION_RUN_ACTIVE', message: '对话仍有正在运行的 Agent 运行，请先停止或等待完成后再删除。', retryable: true }
+          })
+          continue
+        }
+        const result = transaction
+          .update(agentConversations)
+          .set({ status: 'archived', archivedAt: timestamp, updatedAt: timestamp, revision: current.revision + 1 })
+          .where(and(eq(agentConversations.id, lock.id), eq(agentConversations.revision, lock.expectedRevision)))
+          .run()
+        if (result.changes !== 1) {
+          items.push(archiveLockConflict(lock.id, '对话已被更新，请刷新历史列表后重试。'))
+          continue
+        }
+        items.push({ id: lock.id, outcome: 'succeeded', error: null })
+      }
+      return ArchiveBulkResultSchema.parse(archiveBulkResult(items))
+    })
+  }
+
   startManagedAgentRun(input: {
     readonly jobId?: string | null
     readonly conversationId?: string | null
@@ -2700,6 +2856,11 @@ export class WorkbenchRepository {
     readonly toolProfile: 'read-only' | 'approved-write'
     readonly permissionMode?: 'read-only' | 'auto' | 'full-access'
     readonly approvalPolicy?: 'on-request' | 'never'
+    /** Skill resolved for this run plus its frozen, redaction-safe snapshot. */
+    readonly skillKey?: string | null
+    readonly skillSnapshot?: import('@prw/contracts').AgentSkillSnapshot | null
+    /** Where the runtime credential came from; never the credential itself. */
+    readonly credentialSource?: 'app-safeStorage' | 'none'
     readonly idempotencyKey?: string | null
   }): AgentRunRecord {
     if (input.idempotencyKey) {
@@ -2727,9 +2888,69 @@ export class WorkbenchRepository {
       toolProfile: input.toolProfile,
       permissionMode: input.permissionMode ?? (input.toolProfile === 'approved-write' ? 'auto' : 'read-only'),
       approvalPolicy: input.approvalPolicy ?? 'on-request',
+      skillKey: input.skillKey ?? null,
+      skillSnapshotJson: input.skillSnapshot ? JSON.stringify(input.skillSnapshot) : null,
+      credentialSource: input.credentialSource ?? 'none',
       agentStatus: 'queued'
     }).where(eq(agentRuns.id, legacy.id)).run()
     return this.getManagedAgentRun(legacy.id)
+  }
+
+  /**
+   * Approval audit rows for one run (or every run). These are persisted facts,
+   * not a placeholder queue: a non-interactive CLI transport records what it
+   * actually did with the requested permission mode.
+   */
+  createAgentApproval(input: {
+    readonly runId: string
+    readonly operation: string
+    readonly summary: string
+    readonly status: AgentApproval['status']
+    readonly policy: 'on-request' | 'never'
+    readonly reason?: string | null
+  }): AgentApproval {
+    const now = this.now().toISOString()
+    const row = {
+      id: uuidv7(),
+      runId: input.runId,
+      operation: input.operation.slice(0, 200),
+      summary: (redactAgentText(input.summary) ?? '').slice(0, 2_000),
+      status: input.status,
+      policy: input.policy,
+      reason: input.reason ? input.reason.slice(0, 200) : null,
+      createdAt: now,
+      decidedAt: input.status === 'pending' ? null : now
+    }
+    this.database.insert(agentApprovals).values(row).run()
+    return toAgentApproval(row)
+  }
+
+  listAgentApprovals(runId?: string): AgentApproval[] {
+    const query = this.database.select().from(agentApprovals)
+    return (runId === undefined ? query : query.where(eq(agentApprovals.runId, runId)))
+      .orderBy(desc(agentApprovals.createdAt)).limit(200).all().map(toAgentApproval)
+  }
+
+  getAgentApproval(id: string): AgentApproval | null {
+    const row = this.database.select().from(agentApprovals).where(eq(agentApprovals.id, id)).get()
+    return row ? toAgentApproval(row) : null
+  }
+
+  /** Decide a *pending* approval. Returns `null` when the id does not exist so
+   * the caller can report a real NOT_FOUND instead of inventing a decision. */
+  decideAgentApproval(id: string, decision: 'approve' | 'reject'): AgentApproval | null {
+    const current = this.database.select().from(agentApprovals).where(eq(agentApprovals.id, id)).get()
+    if (!current) return null
+    if (current.status !== 'pending') {
+      throw new WorkbenchDatabaseError('REVISION_CONFLICT', 'this approval has already been decided by the runtime policy', {
+        details: { id, status: current.status }
+      })
+    }
+    const updated = this.database.update(agentApprovals).set({
+      status: decision === 'approve' ? 'approved' : 'rejected',
+      decidedAt: this.now().toISOString()
+    }).where(eq(agentApprovals.id, id)).returning().get()
+    return toAgentApproval(updated!)
   }
 
   getManagedAgentRun(id: string): AgentRunRecord {
@@ -2756,6 +2977,90 @@ export class WorkbenchRepository {
     const query = this.database.select().from(agentRuns)
     return (conditions.length > 0 ? query.where(and(...conditions)) : query)
       .orderBy(desc(agentRuns.createdAt)).limit(safeLimit).all().map(toManagedAgentRun)
+  }
+
+  /**
+   * RUN HISTORY ledger rows of the Automation page: scheduled runs only (a run
+   * that belongs to no rule is never a history record there), each with the CAS
+   * revision the delete commands lock on. Archived records stay in the database
+   * but leave this list — nothing is dropped.
+   */
+  listScheduledManagedAgentRuns(limit = 200, scheduleId?: string): Array<{ readonly run: AgentRunRecord; readonly revision: number }> {
+    const safeLimit = z.int().min(1).max(1_000).parse(limit)
+    const conditions: SQL[] = [isNotNull(agentRuns.jobId), isNull(agentRuns.archivedAt)]
+    if (scheduleId !== undefined) conditions.push(eq(agentRuns.jobId, scheduleId))
+    return this.database.select().from(agentRuns)
+      .where(and(...conditions))
+      .orderBy(desc(agentRuns.createdAt)).limit(safeLimit).all()
+      .map((row) => ({ run: toManagedAgentRun(row), revision: row.revision }))
+  }
+
+  /**
+   * RUN HISTORY "删除" is a soft archive of the run *record* only.
+   *
+   * The row keeps its status, error, timings, events and Artifact link and is
+   * merely hidden from the RUN HISTORY list with an `archived_at` timestamp
+   * guarded by the caller's revision lock. Nothing else is written: the schedule
+   * rule, its occurrence cursor/slot rows, the Artifact body, the Obsidian note
+   * and every credential keep their state, so a removed record stays
+   * diagnosable and the schedule keeps firing exactly as before.
+   */
+  archiveManagedAgentRun(id: string, expectedRevision: number): void {
+    this.database.transaction((transaction) => {
+      const current = transaction.select().from(agentRuns).where(eq(agentRuns.id, id)).get()
+      if (!current || current.archivedAt !== null) {
+        throw new WorkbenchDatabaseError('NOT_FOUND', 'active agent run record not found', { details: { id } })
+      }
+      if (current.revision !== expectedRevision) {
+        throw new WorkbenchDatabaseError('REVISION_CONFLICT', '运行记录已被更新，请刷新列表后重试。', { retryable: true, details: { id } })
+      }
+      const result = transaction
+        .update(agentRuns)
+        .set({ archivedAt: this.now().toISOString(), revision: current.revision + 1 })
+        .where(and(eq(agentRuns.id, id), eq(agentRuns.revision, expectedRevision)))
+        .run()
+      if (result.changes !== 1) {
+        throw new WorkbenchDatabaseError('REVISION_CONFLICT', '运行记录已被更新，请刷新列表后重试。', { retryable: true, details: { id } })
+      }
+    })
+  }
+
+  /**
+   * Archive several RUN HISTORY records in one SQLite transaction with
+   * per-record receipts. A run whose revision moved after it was selected
+   * produces a `conflict` receipt and is left untouched; an already-archived (or
+   * missing) run is `skipped`. The command only ever writes
+   * `agent_runs.archived_at` / `revision`, so the schedule rule, the occurrence
+   * ledger, Artifacts, Obsidian output, credentials and external data are out of
+   * scope by construction.
+   */
+  bulkArchiveManagedAgentRuns(inputValue: ArchiveBulkInput): ArchiveBulkResult {
+    const input = ArchiveBulkInputSchema.parse(inputValue)
+    return this.database.transaction((transaction) => {
+      const items: ArchiveBulkResult['items'] = []
+      for (const lock of input.items) {
+        const current = transaction.select().from(agentRuns).where(eq(agentRuns.id, lock.id)).get()
+        if (!current || current.archivedAt !== null) {
+          items.push({ id: lock.id, outcome: 'skipped', error: null })
+          continue
+        }
+        if (current.revision !== lock.expectedRevision) {
+          items.push(archiveLockConflict(lock.id, '运行记录已被更新，请刷新列表后重试。'))
+          continue
+        }
+        const result = transaction
+          .update(agentRuns)
+          .set({ archivedAt: this.now().toISOString(), revision: current.revision + 1 })
+          .where(and(eq(agentRuns.id, lock.id), eq(agentRuns.revision, lock.expectedRevision)))
+          .run()
+        if (result.changes !== 1) {
+          items.push(archiveLockConflict(lock.id, '运行记录已被更新，请刷新列表后重试。'))
+          continue
+        }
+        items.push({ id: lock.id, outcome: 'succeeded', error: null })
+      }
+      return ArchiveBulkResultSchema.parse(archiveBulkResult(items))
+    })
   }
 
   reconcileInterruptedManagedAgentRuns(): number {
@@ -2800,7 +3105,12 @@ export class WorkbenchRepository {
       error: input.error === undefined ? current.error : input.error,
       artifactId: input.artifactId === undefined ? current.artifactId : input.artifactId,
       startedAt: input.status === 'running' ? current.startedAt ?? this.now().toISOString() : current.startedAt,
-      finishedAt: terminal ? current.finishedAt ?? this.now().toISOString() : null
+      finishedAt: terminal ? current.finishedAt ?? this.now().toISOString() : null,
+      // Every state transition is a new revision: a RUN HISTORY selection that
+      // was taken while the run was still running is a stale lock once it
+      // finishes, and the delete command must report a conflict instead of
+      // removing a record the user never saw in its final state.
+      revision: current.revision + 1
     }).where(eq(agentRuns.id, input.id)).returning().get()
     return toManagedAgentRun(updated!)
   }

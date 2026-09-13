@@ -9,14 +9,17 @@ export {
   readObsidianNote,
   deleteObsidianNote,
   deleteObsidianFolder,
+  createObsidianFolder,
+  moveObsidianEntry,
   snapshotObsidianRoot,
   upsertManagedBlock,
   writeObsidianNote,
   writeObsidianProjection
 } from './obsidian.js'
-export type { ObsidianNote } from './obsidian.js'
-export { authorizeZotero, createZoteroProjection, exportZoteroBibtex, listZoteroCollections, pullZotero, probeZotero, writeZoteroProjection } from './zotero.js'
-export type { ZoteroBibtexExport, ZoteroCollectionPage, ZoteroCollectionSummary } from './zotero.js'
+export type { ObsidianNote, ObsidianMoveReceipt } from './obsidian.js'
+export { authorizeZotero, createZoteroProjection, deleteZoteroRemoteItems, exportZoteroBibtex, readZoteroRemoteItems, listZoteroCollections, pullZotero, probeZotero, verifyZoteroWriteAuthorization, writeZoteroProjection, zoteroDeleteRemovedRemotely, zoteroWriteBlockedMessage } from './zotero.js'
+export { ZOTERO_DELETE_ABSENT_MESSAGE, ZOTERO_DELETE_BLOCKED_MESSAGE, ZOTERO_DELETE_CONFLICT_MESSAGE, ZOTERO_DELETE_UNAVAILABLE_MESSAGE } from './zotero.js'
+export type { ZoteroBibtexExport, ZoteroCollectionPage, ZoteroCollectionSummary, ZoteroDeleteOutcome, ZoteroRemoteItemSnapshot, ZoteroDeleteOutcomeStatus, ZoteroDeleteTarget, ZoteroWriteAuthorizationCheck } from './zotero.js'
 export { pullNotion, probeNotion, writeNotionProjection } from './notion.js'
 
 import type { AdapterProfile, AdapterProbe, AdapterPullResult } from './types.js'

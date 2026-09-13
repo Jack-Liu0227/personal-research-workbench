@@ -2,10 +2,11 @@ import { mkdirSync, unlinkSync, writeFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { createServer, type Socket } from 'node:net'
 import { WorkbenchRepository } from '@prw/database'
-import type { AgentRunRecord } from '@prw/contracts'
+import { AgentCredentialEnvelopeSchema, type AgentRunRecord, type AgentRuntimeKind } from '@prw/contracts'
 import { dispatchAgentRpc } from './agent-dispatcher.js'
 import { dispatchRpc } from './dispatcher.js'
 import { AgentCoordinator } from './agent-coordinator.js'
+import { deliverDailyLiterature, type DailyLiteratureDelivery } from './daily-literature.js'
 import { IntegrationCoordinator } from './integration-runtime.js'
 import { LiteratureCoordinator } from './literature-runtime.js'
 import { KnowledgeEngineCoordinator } from './knowledge-engines.js'
@@ -47,6 +48,10 @@ export function startWorkspaceService(options: WorkspaceServiceHostOptions): voi
     knowledgeEngines: new KnowledgeEngineCoordinator(repository),
     agent: new AgentCoordinator(repository, {
       runRoot: join(dirname(options.databasePath), 'agent-runs'),
+      // App-owned CLI profiles live beside the database, never in the user's
+      // `~/.codex`/`~/.pi`. A probe or run therefore cannot inherit a personal
+      // CLI login by accident.
+      runtimeProfileRoot: join(dirname(options.databasePath), 'agent-runtime'),
       serviceInfoPath: options.serviceInfoPath,
       persistScheduledOutput: (input) => persistScheduledOutput(integrations, input),
       // Normalized ledger records leave the Core process over the same parent
@@ -98,53 +103,26 @@ export function startWorkspaceService(options: WorkspaceServiceHostOptions): voi
 
 async function persistScheduledOutput(
   integrations: IntegrationCoordinator,
-  input: { readonly scheduleId: string; readonly run: AgentRunRecord; readonly content: string; readonly outputFolder?: string; readonly skillKey?: string | null }
-): Promise<void> {
-  if (input.run.workflowKey !== 'daily_digest') return
-  const profile = integrations.listObsidianProfiles().find((candidate) => candidate.enabled)
-  if (!profile) throw new Error('未配置可用的 Obsidian Vault。请先在设置中连接 Obsidian。')
-  const date = new Date(input.run.finishedAt ?? input.run.createdAt)
-  const dateKey = Number.isNaN(date.getTime()) ? new Date().toISOString().slice(0, 10) : formatShanghaiDate(date)
-  const slug = `${input.run.workflowKey}-${input.scheduleId.slice(0, 8)}`.replace(/[^A-Za-z0-9_-]+/gu, '-').replace(/^-+|-+$/gu, '') || 'daily-digest'
-  const relativePath = `${safeOutputFolder(input.outputFolder || '每日文献推送')}/${dateKey}-${slug}-${input.run.id.slice(0, 8)}.md`
-  const markdown = [
-    '---',
-    'workbench_kind: daily_literature',
-    `workbench_schedule_id: ${JSON.stringify(input.scheduleId)}`,
-    `workbench_run_id: ${JSON.stringify(input.run.id)}`,
-    `workbench_runtime: ${JSON.stringify(input.run.runtime)}`,
-    `generated_at: ${JSON.stringify(input.run.finishedAt ?? input.run.createdAt)}`,
-    '---',
-    '',
-    `# 每日 Agent 推送 · ${dateKey}`,
-    '',
-    input.content.trim(),
-    '',
-    `> 来源：工作台定时任务 ${input.scheduleId.slice(0, 8)} · 运行 ${input.run.id.slice(0, 8)}`,
-    ''
-  ].join('\n')
-  await integrations.writeNote({ vaultId: profile.id, relativePath, content: markdown, expectedFingerprint: null })
-}
-
-function safeOutputFolder(value: string): string {
-  const normalized = value.trim().replace(/[\\/]+/gu, '/').replace(/^\/+|\/+$/gu, '')
-  if (!normalized || normalized === '.obsidian' || normalized.split('/').some((part) => part === '.obsidian' || part === '..' || part === '.')) {
-    return '每日文献推送'
+  input: {
+    readonly scheduleId: string
+    readonly run: AgentRunRecord
+    readonly content: string
+    readonly outputFolder?: string | undefined
+    readonly skillKey?: string | null | undefined
+    readonly scheduleName?: string | undefined
+    readonly timezone?: string | undefined
+    readonly topic?: string | undefined
+    readonly sources?: readonly string[] | undefined
+    readonly lookbackDays?: number | undefined
   }
-  return normalized.slice(0, 180)
-}
-
-function formatShanghaiDate(value: Date): string {
-  const parts = new Intl.DateTimeFormat('en-US', {
-    timeZone: 'Asia/Shanghai',
-    year: 'numeric',
-    month: '2-digit',
-    day: '2-digit'
-  }).formatToParts(value)
-  const year = parts.find((part) => part.type === 'year')?.value ?? '1970'
-  const month = parts.find((part) => part.type === 'month')?.value ?? '01'
-  const day = parts.find((part) => part.type === 'day')?.value ?? '01'
-  return `${year}-${month}-${day}`
+): Promise<DailyLiteratureDelivery> {
+  // One shared delivery path for the safe write: it decides the folder, the
+  // `YYYY-MM-DD-daily_digest-<schedule8>-<run8>.md` name and the frontmatter, so
+  // the host cannot drift away from the coordinator's expectations. A skipped
+  // (not-written) result is returned instead of thrown so the run can report the
+  // concrete degrade reason; a real write failure still throws and is reported
+  // as OBSIDIAN_DAILY_NOTE_SKIPPED with WRITE_FAILED.
+  return deliverDailyLiterature(integrations, input)
 }
 
 function createPipeServer(
@@ -197,13 +175,34 @@ async function dispatchMessage(
   metadata: { version: string },
   input: unknown
 ) {
-  if (isAgentMessage(input)) return dispatchAgentRpc(services, metadata, input)
+  if (isAgentMessage(input)) {
+    // Main may wrap an Agent RPC in its private credential envelope. The
+    // secret is used for this single dispatch and never persisted; without the
+    // envelope the coordinator fails closed instead of reusing a CLI login.
+    const envelope = AgentCredentialEnvelopeSchema.safeParse(input)
+    if (envelope.success) {
+      return dispatchAgentRpc(services, metadata, envelope.data.request, credentialResolver(envelope.data.credentials))
+    }
+    return dispatchAgentRpc(services, metadata, input, () => null)
+  }
   return dispatchRpc(services, metadata, input)
 }
 
+/** Resolve the credential Main attached for the runtime this run selected. */
+function credentialResolver(
+  credentials: ReadonlyArray<{ readonly runtime: AgentRuntimeKind; readonly provider: string; readonly secret: string }>
+): (runtime: AgentRuntimeKind) => { readonly provider: string; readonly secret: string } | null {
+  return (runtime) => credentials.find((entry) => entry.runtime === runtime) ?? null
+}
+
 function isAgentMessage(value: unknown): boolean {
-  if (typeof value !== 'object' || value === null || !('method' in value)) return false
-  const method = (value as { method?: unknown }).method
+  if (typeof value !== 'object' || value === null) return false
+  // Main's private envelope carries the RPC under `request`.
+  const candidate = 'request' in value && typeof value.request === 'object' && value.request !== null && 'method' in value.request
+    ? value.request
+    : value
+  if (!('method' in candidate)) return false
+  const method = (candidate as { method?: unknown }).method
   return typeof method === 'string' && (method.startsWith('agent.') || method.startsWith('automation.') || method.startsWith('inbox.ai.'))
 }
 

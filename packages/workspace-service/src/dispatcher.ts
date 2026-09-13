@@ -12,6 +12,11 @@ import {
   NoteListInputSchema,
   DeleteNoteInputSchema,
   DeleteNoteFolderInputSchema,
+  CreateNoteFolderInputSchema,
+  MoveNoteInputSchema,
+  NoteMetadataPreviewInputSchema,
+  ApplyNoteMetadataInputSchema,
+  NoteDuplicateInputSchema,
   ReadNoteInputSchema,
   SearchInputSchema,
   WriteNoteInputSchema,
@@ -28,6 +33,7 @@ import {
   UpsertLiteratureMatrixInputSchema,
   RemoveLiteratureMatrixInputSchema,
   LiteratureMatrixBulkDeleteInputSchema,
+  ArchiveBulkInputSchema,
   ArchiveTaskInputSchema,
   RestoreTaskInputSchema,
   HardDeleteTaskInputSchema,
@@ -56,6 +62,8 @@ import {
   ZoteroImportExecuteInputSchema,
   PaperToZoteroPreviewInputSchema,
   PaperToZoteroExecuteInputSchema,
+  ZoteroRemoteDeletePreviewInputSchema,
+  ZoteroRemoteDeleteExecuteInputSchema,
   PaperImportFromZoteroInputSchema,
   ObsidianIndexStatusInputSchema,
   ObsidianLayoutPreviewInputSchema,
@@ -81,6 +89,13 @@ import {
 } from '@prw/contracts'
 import type { WorkbenchRepository } from '@prw/database'
 import { z } from 'zod'
+import {
+  buildDailyPushCalendarEvents,
+  dailyPushRunOutcome,
+  isCalendarVirtualId,
+  mergeCalendarEvents,
+  type DailyPushRunOutcome
+} from './calendar-daily-push.js'
 import { normalizeAppError } from './errors.js'
 import type { IntegrationCoordinator } from './integration-runtime.js'
 import type { LiteratureCoordinator } from './literature-runtime.js'
@@ -319,12 +334,25 @@ async function execute(services: CoreServices, metadata: CoreMetadata, request: 
       return repository.saveIntegrationProfile(payload, credentialPresent)
     }
     case 'integrations.remove': { const p = EntityRevisionSchema.parse(request.payload); repository.removeIntegrationProfile(p.id, p.expectedRevision); return null }
+    // Record-only bulk archive. It deliberately takes no credential context: the
+    // safeStorage secret belongs to Main and is not part of a Core transaction.
+    case 'integrations.bulkRemove': return repository.bulkRemoveIntegrationProfiles(ArchiveBulkInputSchema.parse(request.payload))
+    // Settings → 最近同步: sync runs are soft-archived audit rows. Same record-only
+    // rule as above — no credential context, no cascade into external data.
+    case 'integrations.removeRun': { const p = EntityRevisionSchema.parse(request.payload); repository.removeSyncRun(p.id, p.expectedRevision); return null }
+    case 'integrations.bulkRemoveRuns': return repository.bulkRemoveSyncRuns(ArchiveBulkInputSchema.parse(request.payload))
     case 'integrations.test': { const p = z.object({ id: IdSchema }).parse(request.payload); return services.integrations.test({ id: p.id, secret: credential?.secret ?? null }) }
     case 'integrations.sync': { const p = z.object({ id: IdSchema, direction: z.enum(['pull', 'push']) }).parse(request.payload); return services.integrations.sync({ ...p, secret: credential?.secret ?? null }) }
     case 'integrations.runs': return repository.listSyncRuns(OptionalProfileInputSchema.parse(request.payload).profileId)
     case 'integrations.links': return repository.listExternalLinks(OptionalProfileInputSchema.parse(request.payload).profileId)
 
-    case 'calendar.list': return repository.listCalendarEvents(normalizeCalendarRange(CalendarRangeInputSchema.parse(request.payload)))
+    case 'calendar.list': {
+      const range = normalizeCalendarRange(CalendarRangeInputSchema.parse(request.payload))
+      // Stored rows first, then the read-only daily-push projection built from
+      // the schedule/occurrence rows and the run ledger. Both halves are sorted
+      // with the same comparator, so the merged list keeps one ordering.
+      return mergeCalendarEvents(repository.listCalendarEvents(range), dailyPushCalendarEvents(repository, range))
+    }
     case 'calendar.create': { const p = CreateCalendarEventInputSchema.parse(request.payload); validateCalendarRelations(repository, p); return repository.createCalendarEvent(normalizeCalendarCreate(p)) }
     case 'calendar.update': { const p = UpdateCalendarEventInputSchema.parse(request.payload); rejectVirtualCalendarId(p.id); validateCalendarRelations(repository, p); return repository.updateCalendarEvent(normalizeCalendarUpdate(p)) }
     case 'calendar.remove': { const p = EntityRevisionSchema.parse(request.payload); rejectVirtualCalendarId(p.id); repository.removeCalendarEvent(p.id, p.expectedRevision); return null }
@@ -371,6 +399,11 @@ async function execute(services: CoreServices, metadata: CoreMetadata, request: 
     case 'notes.write': return services.integrations.writeNote(WriteNoteInputSchema.parse(request.payload))
     case 'notes.delete': return services.integrations.deleteNote(DeleteNoteInputSchema.parse(request.payload))
     case 'notes.deleteFolder': return services.integrations.deleteNoteFolder(DeleteNoteFolderInputSchema.parse(request.payload))
+    case 'notes.createFolder': return services.integrations.createNoteFolder(CreateNoteFolderInputSchema.parse(request.payload))
+    case 'notes.move': return services.integrations.moveNote(MoveNoteInputSchema.parse(request.payload))
+    case 'notes.metadata.preview': return services.integrations.previewNoteMetadata(NoteMetadataPreviewInputSchema.parse(request.payload))
+    case 'notes.metadata.apply': return services.integrations.applyNoteMetadata(ApplyNoteMetadataInputSchema.parse(request.payload))
+    case 'notes.duplicates': return services.integrations.noteDuplicates(NoteDuplicateInputSchema.parse(request.payload))
     case 'zotero.capability': return services.integrations.zoteroCapability(ZoteroCapabilityInputSchema.parse(request.payload).profileId, credential?.secret ?? null)
     case 'zotero.authorize': return services.integrations.authorizeZotero(ZoteroAuthorizeInputSchema.parse(request.payload).profileId, credential?.secret ?? null)
     case 'zotero.collectionsPage': return services.integrations.listZoteroCollectionPage({ ...ZoteroCollectionPageInputSchema.parse(request.payload), secret: credential?.secret ?? null })
@@ -389,6 +422,10 @@ async function execute(services: CoreServices, metadata: CoreMetadata, request: 
     case 'zotero.importSelected.execute': return services.integrations.executeZoteroImport(ZoteroImportExecuteInputSchema.parse(request.payload), credential?.secret ?? null, credential?.profileId)
     case 'zotero.paperToZotero.preview': return services.integrations.previewPaperToZotero({ ...PaperToZoteroPreviewInputSchema.parse(request.payload), secret: credential?.secret ?? null })
     case 'zotero.paperToZotero.execute': return services.integrations.executePaperToZotero(PaperToZoteroExecuteInputSchema.parse(request.payload), credential?.secret ?? null, credential?.profileId)
+    // 两侧删除：preview 冻结远端 revision（只读），execute 在确认后先删 Zotero
+    // 远端条目，只有远端确认删除（或 404）时才删除本地投影；凭据只在此处注入。
+    case 'zotero.deleteRemote.preview': return services.integrations.previewZoteroRemoteDelete(ZoteroRemoteDeletePreviewInputSchema.parse(request.payload), credential?.secret ?? null)
+    case 'zotero.deleteRemote.execute': return services.integrations.executeZoteroRemoteDelete(ZoteroRemoteDeleteExecuteInputSchema.parse(request.payload), credential?.secret ?? null)
     case 'papers.importFromZotero': return services.integrations.importFromZotero({ ...PaperImportFromZoteroInputSchema.parse(request.payload), secret: credential?.secret ?? null })
     case 'knowledge.engines.list': z.null().parse(request.payload); return services.knowledgeEngines.list()
     case 'knowledge.engines.save': {
@@ -432,7 +469,40 @@ function scholarWorkspaceStatus() {
 }
 
 function rejectVirtualCalendarId(id: string): void {
-  if (id.startsWith('task:') || id.startsWith('project:')) { const error = new Error('Calendar projections are read-only.'); error.name = 'READ_ONLY_PROJECTION'; throw error }
+  if (isCalendarVirtualId(id)) { const error = new Error('Calendar projections are read-only.'); error.name = 'READ_ONLY_PROJECTION'; throw error }
+}
+
+/**
+ * Read-only daily-push projection for one calendar range.
+ *
+ * The dispatcher performs the storage reads (schedules, occurrence slots, the
+ * scheduled-run ledger, artifact titles) and the pure projector decides what a
+ * calendar event may claim; nothing here invents a title, a path or a status.
+ */
+function dailyPushCalendarEvents(
+  repository: WorkbenchRepository,
+  range: z.infer<typeof CalendarRangeInputSchema>
+): ReturnType<typeof buildDailyPushCalendarEvents> {
+  const runs = new Map<string, DailyPushRunOutcome>()
+  // One ledger page: the same `listScheduledManagedAgentRuns` projection the
+  // Automation run history lists. A run record the user removed is absent here,
+  // and its slot then keeps the stored occurrence status without artifact or
+  // Obsidian path instead of a guessed one.
+  for (const { run } of repository.listScheduledManagedAgentRuns(200)) {
+    runs.set(run.id, dailyPushRunOutcome({
+      run,
+      artifact: run.artifactId === null ? null : repository.getResearchArtifactTitle(run.artifactId),
+      events: repository.listAgentEvents(run.id, 0, 200)
+    }))
+  }
+  return buildDailyPushCalendarEvents({
+    range: { startsAt: range.startsAt, endsAt: range.endsAt },
+    ...(range.projectId === undefined ? {} : { projectId: range.projectId }),
+    ...(range.types === undefined ? {} : { types: range.types }),
+    schedules: repository.listSchedules(),
+    occurrences: repository.listScheduleOccurrences({ limit: 200 }),
+    runs
+  })
 }
 function normalizeIso(value: string): string { const date = new Date(value); return Number.isFinite(date.getTime()) ? date.toISOString() : value }
 function normalizeCalendarRange(input: z.infer<typeof CalendarRangeInputSchema>) { return { ...input, startsAt: normalizeIso(input.startsAt), endsAt: normalizeIso(input.endsAt) } }

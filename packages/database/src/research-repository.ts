@@ -15,6 +15,7 @@ import type {
   SavePromptTemplateInput,
   SaveScheduleInput,
   Schedule,
+  ScheduleOccurrence,
   StartAgentRunInput,
   SyncRun,
   UpdatePaperInput,
@@ -22,7 +23,10 @@ import type {
   UpsertLiteratureMatrixInput,
   RemoveLiteratureMatrixInput,
   LiteratureMatrixBulkDeleteInput,
-  LiteratureMatrixBulkDeleteResult
+  LiteratureMatrixBulkDeleteResult,
+  ArchiveBulkInput,
+  ArchiveBulkReceipt,
+  ArchiveBulkResult
 } from '@prw/contracts'
 import {
   AgentRunSchema,
@@ -41,6 +45,7 @@ import {
   SavePromptTemplateInputSchema,
   SaveScheduleInputSchema,
   ScheduleSchema,
+  ScheduleOccurrenceSchema,
   StartAgentRunInputSchema,
   SyncRunSchema,
   UpdatePaperInputSchema,
@@ -48,7 +53,9 @@ import {
   UpsertLiteratureMatrixInputSchema,
   RemoveLiteratureMatrixInputSchema,
   LiteratureMatrixBulkDeleteInputSchema,
-  LiteratureMatrixBulkDeleteResultSchema
+  LiteratureMatrixBulkDeleteResultSchema,
+  ArchiveBulkInputSchema,
+  ArchiveBulkResultSchema
 } from '@prw/contracts'
 import { and, asc, desc, eq, inArray, isNull, type SQL } from 'drizzle-orm'
 import type { BetterSQLite3Database } from 'drizzle-orm/better-sqlite3'
@@ -64,6 +71,7 @@ import {
   papers,
   promptTemplates,
   researchArtifacts,
+  scheduleOccurrences,
   schedules,
   syncRuns,
   type AgentRunRow,
@@ -74,6 +82,7 @@ import {
   type PaperRow,
   type PromptTemplateRow,
   type ResearchArtifactRow,
+  type ScheduleOccurrenceRow,
   type ScheduleRow,
   type SyncRunRow
 } from './schema.js'
@@ -246,6 +255,33 @@ function revisionConflict(entity: string, id: string): never {
     `${entity} update lost its revision lock`,
     { retryable: true, details: { entity, id } }
   )
+}
+
+/**
+ * Aggregate per-record receipts into the counts a bulk archive command reports.
+ *
+ * The counts are derived from the receipts (never counted separately) so a
+ * caller can render "成功 3 · 跳过 1 · 冲突 1 · 失败 0" directly from the same
+ * array it lists per record, and the two can never disagree.
+ *
+ * Shared with the Agent run-ledger delete commands (`repository.ts`) so every
+ * list reports the same outcome vocabulary.
+ */
+export function archiveBulkResult(items: ArchiveBulkResult['items']): ArchiveBulkResult {
+  return {
+    items,
+    succeeded: items.filter((item) => item.outcome === 'succeeded').length,
+    skipped: items.filter((item) => item.outcome === 'skipped').length,
+    conflict: items.filter((item) => item.outcome === 'conflict').length,
+    failed: items.filter((item) => item.outcome === 'failed').length,
+    canceled: false
+  }
+}
+
+/** One stale revision lock inside a bulk archive command. Nothing was written
+ * for this record, and the user has to re-read the list before retrying. */
+export function archiveLockConflict(id: string, message: string): ArchiveBulkReceipt {
+  return { id, outcome: 'conflict', error: { code: 'REVISION_CONFLICT', message, retryable: true } }
 }
 
 function storedDataError(entity: string, id: string, field: string): WorkbenchDatabaseError {
@@ -431,7 +467,50 @@ function toAgentRun(row: AgentRunRow): AgentRun {
 }
 
 function toSchedule(row: ScheduleRow): Schedule {
-  return parseStored(ScheduleSchema, row, 'schedule', row.id)
+  return parseStored(ScheduleSchema, {
+    ...row,
+    // The requested source list is stored as a JSON array; a corrupted value
+    // degrades to the empty (= all available) list instead of making the whole
+    // schedule unreadable.
+    sources: safeParseSourcesJson(row.sourcesJson),
+    lookbackDays: row.lookbackDays
+  }, 'schedule', row.id)
+}
+
+function toScheduleOccurrence(row: ScheduleOccurrenceRow): ScheduleOccurrence {
+  // `updated_at` is internal bookkeeping: the contract projects one claimed
+  // time slot, and it is a `strictObject`, so the raw row must be narrowed
+  // here instead of leaking the column into the projection.
+  return parseStored(ScheduleOccurrenceSchema, {
+    id: row.id,
+    scheduleId: row.scheduleId,
+    occurrenceAt: row.occurrenceAt,
+    localDateKey: row.localDateKey,
+    idempotencyKey: row.idempotencyKey,
+    source: row.source,
+    status: row.status,
+    runId: row.runId,
+    reason: row.reason,
+    claimedAt: row.claimedAt,
+    settledAt: row.settledAt,
+    revision: row.revision
+  }, 'schedule occurrence', row.id)
+}
+
+/** Requested sources are user input, so a corrupted row must degrade to the
+ * empty (= all available sources) list rather than failing the schedule list. */
+function safeParseSourcesJson(raw: string): string[] {
+  try {
+    return StringArraySchema.parse(JSON.parse(raw))
+  } catch {
+    return []
+  }
+}
+
+/** Normalize a requested source list: trim, lower-case and de-duplicate. The
+ * engine's source names are lower-case CLI tokens. */
+export function normalizeAutomationSources(values: readonly string[]): string[] {
+  return [...new Set(values.map((value) => value.trim().toLocaleLowerCase()).filter((value) => value.length > 0))]
 }
 
 export class ResearchRepository {
@@ -1003,6 +1082,60 @@ export class ResearchRepository {
     })
   }
 
+  /**
+   * Archive several connection records in one SQLite transaction.
+   *
+   * Only the connection *record* is touched: the row is soft-archived
+   * (disabled + `archived_at`) with a revision/CAS guard, while the safeStorage
+   * credential, related sync runs/links and every external system (Obsidian
+   * Vault, Zotero database) keep their state. A bulk delete must never be able
+   * to destroy a secret or somebody else's data, so the credential removal that
+   * the single-record Main-owned path performs is deliberately not part of this
+   * service-side transaction.
+   */
+  bulkRemoveIntegrationProfiles(inputValue: ArchiveBulkInput): ArchiveBulkResult {
+    const input = ArchiveBulkInputSchema.parse(inputValue)
+    return this.database.transaction((transaction) => {
+      const items: ArchiveBulkResult['items'] = []
+      for (const lock of input.items) {
+        const current = transaction
+          .select()
+          .from(integrationProfiles)
+          .where(eq(integrationProfiles.id, lock.id))
+          .get()
+        if (!current || current.archivedAt !== null) {
+          items.push({ id: lock.id, outcome: 'skipped', error: null })
+          continue
+        }
+        if (current.revision !== lock.expectedRevision) {
+          items.push(archiveLockConflict(lock.id, '连接记录已被修改，请刷新设置后重试。'))
+          continue
+        }
+        const timestamp = this.now().toISOString()
+        const result = transaction
+          .update(integrationProfiles)
+          .set({
+            enabled: false,
+            status: 'disabled',
+            archivedAt: timestamp,
+            updatedAt: timestamp,
+            revision: current.revision + 1
+          })
+          .where(and(
+            eq(integrationProfiles.id, lock.id),
+            eq(integrationProfiles.revision, lock.expectedRevision)
+          ))
+          .run()
+        if (result.changes !== 1) {
+          items.push(archiveLockConflict(lock.id, '连接记录已被修改，请刷新设置后重试。'))
+          continue
+        }
+        items.push({ id: lock.id, outcome: 'succeeded', error: null })
+      }
+      return ArchiveBulkResultSchema.parse(archiveBulkResult(items))
+    })
+  }
+
   listExternalLinks(profileId?: string): ExternalLink[] {
     return this.database
       .select()
@@ -1011,6 +1144,74 @@ export class ResearchRepository {
       .orderBy(asc(externalLinks.profileId), asc(externalLinks.entityKind), asc(externalLinks.entityId))
       .all()
       .map(toExternalLink)
+  }
+
+  /** The Workbench projection of one external item, if it exists.  Used by the
+   * two-sided delete preview to freeze the local Paper and its revision. */
+  findExternalPaperLink(profileIdValue: string, externalIdValue: string): ExternalLink | null {
+    const profileId = z.string().min(1).parse(profileIdValue)
+    const externalId = z.string().min(1).parse(externalIdValue)
+    const row = this.database
+      .select()
+      .from(externalLinks)
+      .where(and(
+        eq(externalLinks.profileId, profileId),
+        eq(externalLinks.entityKind, 'paper'),
+        eq(externalLinks.externalId, externalId)
+      ))
+      .get()
+    return row ? toExternalLink(row) : null
+  }
+
+  /**
+   * Remove the local projection of an external item after the remote library is
+   * known not to hold it any more.
+   *
+   * Only two things change, both inside one transaction: the Paper is archived
+   * (never deleted, so its project, matrix entries, artifacts and history stay
+   * readable) and the external-link mapping rows for this profile + external id
+   * are removed.  No other Paper, project, artifact or link is touched.
+   */
+  removeExternalPaperProjection(inputValue: { profileId: string; externalId: string }): {
+    paperId: string | null
+    archivedPaperId: string | null
+    linksRemoved: number
+  } {
+    const profileId = z.string().min(1).parse(inputValue.profileId)
+    const externalId = z.string().min(1).parse(inputValue.externalId)
+    return this.database.transaction((transaction) => {
+      const links = transaction
+        .select()
+        .from(externalLinks)
+        .where(and(
+          eq(externalLinks.profileId, profileId),
+          eq(externalLinks.entityKind, 'paper'),
+          eq(externalLinks.externalId, externalId)
+        ))
+        .all()
+      const paperId = links[0]?.entityId ?? null
+      let archivedPaperId: string | null = null
+      if (paperId !== null) {
+        const paper = transaction.select().from(papers).where(eq(papers.id, paperId)).get()
+        if (paper && paper.archivedAt === null) {
+          transaction
+            .update(papers)
+            .set({
+              status: 'archived',
+              archivedAt: this.now().toISOString(),
+              updatedAt: this.now().toISOString(),
+              revision: paper.revision + 1
+            })
+            .where(eq(papers.id, paperId))
+            .run()
+          archivedPaperId = paperId
+        }
+      }
+      for (const link of links) {
+        transaction.delete(externalLinks).where(eq(externalLinks.id, link.id)).run()
+      }
+      return { paperId, archivedPaperId, linksRemoved: links.length }
+    })
   }
 
   saveExternalLink(inputValue: SaveExternalLinkInput): ExternalLink {
@@ -1262,7 +1463,9 @@ export class ResearchRepository {
       conflicts: 0,
       message: '',
       startedAt: this.now().toISOString(),
-      finishedAt: null
+      finishedAt: null,
+      archivedAt: null,
+      revision: 0
     }
     this.database.insert(syncRuns).values(row).run()
     return toSyncRun(row)
@@ -1281,7 +1484,10 @@ export class ResearchRepository {
         pushed: input.pushed ?? current.pushed,
         conflicts: input.conflicts ?? current.conflicts,
         message: input.message ?? current.message,
-        finishedAt: terminal ? current.finishedAt ?? this.now().toISOString() : null
+        finishedAt: terminal ? current.finishedAt ?? this.now().toISOString() : null,
+        // Every mutation invalidates an outstanding selection lock, so a run
+        // that progressed while it was selected cannot be removed silently.
+        revision: current.revision + 1
       })
       .where(eq(syncRuns.id, input.id))
       .returning()
@@ -1301,11 +1507,73 @@ export class ResearchRepository {
     })
   }
 
+  /**
+   * Sync runs are an audit ledger, so "delete" is a soft archive.
+   *
+   * The row keeps its content (status/counters/message) and is only hidden from
+   * the Settings list with an `archived_at` timestamp guarded by the caller's
+   * revision lock. Nothing else is touched: the connection profile, its
+   * safeStorage credential, external links and every external system keep their
+   * state, and no `sync_runs` row is ever dropped.
+   */
+  removeSyncRun(id: string, expectedRevision: number): void {
+    this.database.transaction((transaction) => {
+      const current = transaction.select().from(syncRuns).where(eq(syncRuns.id, id)).get()
+      if (!current || current.archivedAt !== null) databaseNotFound('sync run', id)
+      assertRevision('sync run', id, current.revision, expectedRevision)
+      const result = transaction
+        .update(syncRuns)
+        .set({ archivedAt: this.now().toISOString(), revision: current.revision + 1 })
+        .where(and(eq(syncRuns.id, id), eq(syncRuns.revision, expectedRevision)))
+        .run()
+      if (result.changes !== 1) revisionConflict('sync run', id)
+    })
+  }
+
+  /**
+   * Archive several sync runs in one SQLite transaction with per-record
+   * receipts. A run that changed since it was selected produces a `conflict`
+   * receipt and is left untouched; an already-archived (or missing) run is
+   * `skipped`. Connection credentials, external links and external data are out
+   * of scope by construction: this command only writes `sync_runs.archived_at`.
+   */
+  bulkRemoveSyncRuns(inputValue: ArchiveBulkInput): ArchiveBulkResult {
+    const input = ArchiveBulkInputSchema.parse(inputValue)
+    return this.database.transaction((transaction) => {
+      const items: ArchiveBulkResult['items'] = []
+      for (const lock of input.items) {
+        const current = transaction.select().from(syncRuns).where(eq(syncRuns.id, lock.id)).get()
+        if (!current || current.archivedAt !== null) {
+          items.push({ id: lock.id, outcome: 'skipped', error: null })
+          continue
+        }
+        if (current.revision !== lock.expectedRevision) {
+          items.push(archiveLockConflict(lock.id, '同步记录已被更新，请刷新列表后重试。'))
+          continue
+        }
+        const result = transaction
+          .update(syncRuns)
+          .set({ archivedAt: this.now().toISOString(), revision: current.revision + 1 })
+          .where(and(eq(syncRuns.id, lock.id), eq(syncRuns.revision, lock.expectedRevision)))
+          .run()
+        if (result.changes !== 1) {
+          items.push(archiveLockConflict(lock.id, '同步记录已被更新，请刷新列表后重试。'))
+          continue
+        }
+        items.push({ id: lock.id, outcome: 'succeeded', error: null })
+      }
+      return ArchiveBulkResultSchema.parse(archiveBulkResult(items))
+    })
+  }
+
   listSyncRuns(profileId?: string): SyncRun[] {
     return this.database
       .select()
       .from(syncRuns)
-      .where(profileId === undefined ? undefined : eq(syncRuns.profileId, profileId))
+      .where(and(
+        isNull(syncRuns.archivedAt),
+        ...(profileId === undefined ? [] : [eq(syncRuns.profileId, profileId)])
+      ))
       .orderBy(desc(syncRuns.startedAt))
       .all()
       .map(toSyncRun)
@@ -1565,6 +1833,9 @@ export class ResearchRepository {
       promptTemplateId: input.promptTemplateId,
       projectId: input.projectId,
       paperIdsJson: JSON.stringify(input.paperIds),
+      skillKey: null,
+      skillSnapshotJson: null,
+      credentialSource: 'none',
       status: 'queued',
       inputJson: JSON.stringify(runInput),
       output: '',
@@ -1572,7 +1843,11 @@ export class ResearchRepository {
       error: null,
       createdAt: timestamp,
       startedAt: null,
-      finishedAt: null
+      finishedAt: null,
+      // A fresh run record is never archived and starts at revision 0: the
+      // Automation RUN HISTORY delete commands lock on this token.
+      archivedAt: null,
+      revision: 0
     }
     this.database.insert(agentRuns).values(row).run()
     return toAgentRun(row)
@@ -1695,6 +1970,9 @@ export class ResearchRepository {
           prompt: input.prompt,
           skillKey: input.skillKey,
           topic: input.topic,
+          sourcesJson: JSON.stringify(normalizeAutomationSources(input.sources)),
+          lookbackDays: input.lookbackDays,
+          responseLanguage: input.responseLanguage,
           outputFolder: input.outputFolder,
           permissionMode: input.permissionMode,
           approvalPolicy: input.approvalPolicy,
@@ -1733,6 +2011,9 @@ export class ResearchRepository {
           prompt: input.prompt,
           skillKey: input.skillKey,
           topic: input.topic,
+          sourcesJson: JSON.stringify(normalizeAutomationSources(input.sources)),
+          lookbackDays: input.lookbackDays,
+          responseLanguage: input.responseLanguage,
           outputFolder: input.outputFolder,
           permissionMode: input.permissionMode,
           approvalPolicy: input.approvalPolicy,
@@ -1783,6 +2064,170 @@ export class ResearchRepository {
     return this.updateScheduleTiming({ id, expectedRevision, nextRunAt, lastRunAt })
   }
 
+  getScheduleOccurrenceByIdempotencyKey(idempotencyKey: string): ScheduleOccurrence | null {
+    const row = this.database.select().from(scheduleOccurrences)
+      .where(eq(scheduleOccurrences.idempotencyKey, idempotencyKey))
+      .get()
+    return row ? toScheduleOccurrence(row) : null
+  }
+
+  /** The occurrence one run consumed (used by the schedule run history). */
+  getScheduleOccurrenceByRunId(runId: string): ScheduleOccurrence | null {
+    const row = this.database.select().from(scheduleOccurrences)
+      .where(eq(scheduleOccurrences.runId, runId))
+      .orderBy(desc(scheduleOccurrences.claimedAt))
+      .get()
+    return row ? toScheduleOccurrence(row) : null
+  }
+
+  /** Title-only projection of one artifact; the schedule card never loads the
+   * artifact body, which is authoritative elsewhere. */
+  getResearchArtifactTitle(id: string): { readonly id: string; readonly title: string } | null {
+    const row = this.database.select({ id: researchArtifacts.id, title: researchArtifacts.title })
+      .from(researchArtifacts)
+      .where(and(eq(researchArtifacts.id, id), isNull(researchArtifacts.archivedAt)))
+      .get()
+    return row ?? null
+  }
+
+  /**
+   * Claim one cron occurrence: write the occurrence row *and* advance the
+   * schedule cursor inside one transaction.
+   *
+   * Two invariants the scheduler depends on:
+   *  1. A crash cannot leave "the cursor advanced but the time slot has no
+   *     record": either both writes land or neither does.
+   *  2. A duplicate tick / duplicate manual trigger cannot claim the same slot
+   *     twice: `idempotency_key` is unique, and an already claimed key returns
+   *     the existing row with `claimed: false` instead of inserting a second
+   *     one (the caller then reuses the existing run rather than starting a
+   *     new one).
+   *
+   * The cursor update is CAS-guarded on the revision the caller read, so a
+   * concurrent user edit is never overwritten; a lost CAS only skips the
+   * cursor advance while the claim itself stays durable.
+   */
+  claimScheduleOccurrence(input: {
+    readonly scheduleId: string
+    readonly idempotencyKey: string
+    readonly occurrenceAt: string
+    readonly localDateKey: string
+    readonly source: ScheduleOccurrence['source']
+    /** Target cursor value when `advanceCursor` is true. */
+    readonly nextRunAt: string | null
+    /** `false` leaves the cursor untouched (manual/paused rules). */
+    readonly advanceCursor: boolean
+    readonly lastRunAt?: string | null
+    readonly expectedRevision: number
+  }): { readonly claimed: boolean; readonly occurrence: ScheduleOccurrence; readonly cursorAdvanced: boolean } {
+    return this.database.transaction((transaction) => {
+      const existing = transaction.select().from(scheduleOccurrences)
+        .where(eq(scheduleOccurrences.idempotencyKey, input.idempotencyKey))
+        .get()
+      if (existing) {
+        return { claimed: false, occurrence: toScheduleOccurrence(existing), cursorAdvanced: false }
+      }
+      let cursorAdvanced = false
+      if (input.advanceCursor) {
+        const current = transaction.select().from(schedules).where(eq(schedules.id, input.scheduleId)).get()
+        if (current && current.archivedAt === null && current.revision === input.expectedRevision) {
+          const timestamp = this.now().toISOString()
+          const updated = transaction.update(schedules)
+            .set({
+              nextRunAt: input.nextRunAt,
+              lastRunAt: input.lastRunAt ?? current.lastRunAt ?? timestamp,
+              updatedAt: timestamp,
+              revision: current.revision + 1
+            })
+            .where(and(eq(schedules.id, current.id), eq(schedules.revision, input.expectedRevision)))
+            .returning()
+            .get()
+          cursorAdvanced = updated !== undefined
+        }
+      }
+      const timestamp = this.now().toISOString()
+      const row: ScheduleOccurrenceRow = {
+        id: uuidv7(),
+        scheduleId: input.scheduleId,
+        occurrenceAt: input.occurrenceAt,
+        localDateKey: input.localDateKey,
+        idempotencyKey: input.idempotencyKey,
+        source: input.source,
+        status: 'claimed',
+        runId: null,
+        reason: '',
+        claimedAt: timestamp,
+        settledAt: null,
+        updatedAt: timestamp,
+        revision: 0
+      }
+      transaction.insert(scheduleOccurrences).values(row).run()
+      return { claimed: true, occurrence: toScheduleOccurrence(row), cursorAdvanced }
+    })
+  }
+
+  /**
+   * Settle a claimed occurrence with its final outcome.
+   *
+   * A policy refusal, a missing credential, a failed runtime start and an
+   * interrupted app all settle here, so "nothing was pushed" always has a stored
+   * reason instead of only being visible as an absent artifact.
+   */
+  settleScheduleOccurrence(input: {
+    readonly id: string
+    readonly status: ScheduleOccurrence['status']
+    readonly runId?: string | null
+    readonly reason?: string
+  }): ScheduleOccurrence {
+    const timestamp = this.now().toISOString()
+    const row = this.database.update(scheduleOccurrences)
+      .set({
+        status: input.status,
+        ...(input.runId === undefined ? {} : { runId: input.runId }),
+        reason: (input.reason ?? '').slice(0, 1_000),
+        settledAt: input.status === 'running' ? null : timestamp,
+        updatedAt: timestamp,
+        revision: 1
+      })
+      .where(eq(scheduleOccurrences.id, input.id))
+      .returning()
+      .get()
+    if (!row) throw storedDataError('schedule occurrence', input.id, 'row')
+    return toScheduleOccurrence(row)
+  }
+
+  /** Newest-first occurrence page, optionally limited to one rule. */
+  listScheduleOccurrences(input: { readonly scheduleId?: string | undefined; readonly limit?: number | undefined } = {}): ScheduleOccurrence[] {
+    const limit = z.int().min(1).max(200).parse(input.limit ?? 50)
+    const conditions: SQL[] = []
+    if (input.scheduleId !== undefined) conditions.push(eq(scheduleOccurrences.scheduleId, input.scheduleId))
+    const query = this.database.select().from(scheduleOccurrences)
+    return (conditions.length > 0 ? query.where(and(...conditions)) : query)
+      .orderBy(desc(scheduleOccurrences.occurrenceAt), desc(scheduleOccurrences.claimedAt))
+      .limit(limit)
+      .all()
+      .map(toScheduleOccurrence)
+  }
+
+  /**
+   * Startup reconciliation: a claim left behind by a previous process is dead,
+   * so it is settled as `missed` with the concrete reason. The day is *not*
+   * silently re-run (the cursor already moved past it): the record stays visible
+   * in the schedule's run history with a safe retry entry next to it.
+   */
+  reconcileClaimedScheduleOccurrences(reason: string): number {
+    const timestamp = this.now().toISOString()
+    const stale = this.database.select().from(scheduleOccurrences)
+      .where(inArray(scheduleOccurrences.status, ['claimed', 'running']))
+      .all()
+    if (stale.length === 0) return 0
+    this.database.update(scheduleOccurrences)
+      .set({ status: 'missed', reason: reason.slice(0, 1_000), settledAt: timestamp, updatedAt: timestamp, revision: 1 })
+      .where(inArray(scheduleOccurrences.id, stale.map((row) => row.id)))
+      .run()
+    return stale.length
+  }
+
   removeSchedule(id: string, expectedRevision: number): void {
     this.database.transaction((transaction) => {
       const current = transaction.select().from(schedules).where(eq(schedules.id, id)).get()
@@ -1800,6 +2245,49 @@ export class ResearchRepository {
         .where(and(eq(schedules.id, id), eq(schedules.revision, expectedRevision)))
         .run()
       if (result.changes !== 1) revisionConflict('schedule', id)
+    })
+  }
+
+  /**
+   * Archive several schedules in one SQLite transaction.
+   *
+   * Archiving a rule only stops it from being scheduled: the row keeps its
+   * run/occurrence history, delivered artifacts and inbox items, because those
+   * are the audit trail of *what already ran*. Bulk archiving therefore reports
+   * one receipt per rule and never enumerates history rows.
+   */
+  bulkArchiveSchedules(inputValue: ArchiveBulkInput): ArchiveBulkResult {
+    const input = ArchiveBulkInputSchema.parse(inputValue)
+    return this.database.transaction((transaction) => {
+      const items: ArchiveBulkResult['items'] = []
+      for (const lock of input.items) {
+        const current = transaction.select().from(schedules).where(eq(schedules.id, lock.id)).get()
+        if (!current || current.archivedAt !== null) {
+          items.push({ id: lock.id, outcome: 'skipped', error: null })
+          continue
+        }
+        if (current.revision !== lock.expectedRevision) {
+          items.push(archiveLockConflict(lock.id, '定时任务已被修改，请刷新后重试。'))
+          continue
+        }
+        const timestamp = this.now().toISOString()
+        const result = transaction
+          .update(schedules)
+          .set({
+            enabled: false,
+            archivedAt: timestamp,
+            updatedAt: timestamp,
+            revision: current.revision + 1
+          })
+          .where(and(eq(schedules.id, lock.id), eq(schedules.revision, lock.expectedRevision)))
+          .run()
+        if (result.changes !== 1) {
+          items.push(archiveLockConflict(lock.id, '定时任务已被修改，请刷新后重试。'))
+          continue
+        }
+        items.push({ id: lock.id, outcome: 'succeeded', error: null })
+      }
+      return ArchiveBulkResultSchema.parse(archiveBulkResult(items))
     })
   }
 }

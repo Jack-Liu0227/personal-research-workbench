@@ -85,9 +85,19 @@ export const ZoteroItemKeySchema = z.string().trim().min(1).max(128)
 export type ZoteroItemKey = z.infer<typeof ZoteroItemKeySchema>
 
 export const CalendarEventTypeSchema = z.enum([
-  'event', 'milestone', 'reading', 'experiment', 'meeting', 'submission', 'deadline'
+  'event', 'milestone', 'reading', 'experiment', 'meeting', 'submission', 'deadline',
+  /** Read-only projection of a scheduled daily push (the rule's stored plan or
+   * one stored occurrence of that rule). Never authorable by a user: see
+   * `CalendarUserEventTypeSchema`. */
+  'daily_push'
 ])
 export type CalendarEventType = z.infer<typeof CalendarEventTypeSchema>
+
+/** Types a user may author through `calendar.create` / `calendar.update`. The
+ * daily-push type is reserved for the read-only Service projection, so a user
+ * cannot fabricate a push event that looks like a scheduled run. */
+export const CalendarUserEventTypeSchema = CalendarEventTypeSchema.exclude(['daily_push'])
+export type CalendarUserEventType = z.infer<typeof CalendarUserEventTypeSchema>
 
 /** A day/time marker that is independent from a calendar event. Markers are
  * user-authored records (unlike task/project virtual projections) and are
@@ -146,6 +156,55 @@ export const UpdateCalendarMarkerInputSchema = CalendarMarkerInputFieldsSchema.p
 }).superRefine((value, context) => validateCalendarMarkerBounds(value, context))
 export type UpdateCalendarMarkerInput = z.infer<typeof UpdateCalendarMarkerInputSchema>
 
+/**
+ * Mirrors of the Agent/automation enums that stay declared in this lower layer
+ * to avoid an import cycle (the agent contract imports this module). The
+ * workspace-service tests assert that these lists stay identical to
+ * `ScheduleOccurrenceStatusSchema` / `AgentRunStatusSchema` /
+ * `AgentResponseLanguageSchema`.
+ */
+export const CalendarDailyPushOccurrenceStatusSchema = z.enum(['claimed', 'running', 'completed', 'failed', 'blocked', 'canceled', 'missed', 'skipped'])
+export const CalendarDailyPushRunStatusSchema = z.enum(['planned', 'queued', 'running', 'waiting_confirmation', 'completed', 'partial', 'failed', 'canceled', 'blocked', 'missed'])
+export const CalendarDailyPushLanguageSchema = z.enum(['zh-CN', 'en'])
+export const CalendarDailyPushStateSchema = z.enum(['planned', 'occurred'])
+
+/**
+ * Stored detail of one projected daily-push event. Every field comes from the
+ * schedule row, the occurrence row or the run ledger — never from a demo
+ * fixture, and never a copy of the pushed body (SQLite and the Vault note stay
+ * authoritative for that).
+ */
+export const CalendarDailyPushDetailSchema = z.strictObject({
+  scheduleId: IdSchema,
+  scheduleName: z.string().min(1).max(200),
+  /** `planned:<nextRunAt>` for a plan, the occurrence row id for a slot. */
+  occurrenceKey: z.string().min(1).max(512),
+  state: CalendarDailyPushStateSchema,
+  /** Null while the slot is only planned: a plan has no status of its own. */
+  occurrenceStatus: CalendarDailyPushOccurrenceStatusSchema.nullable(),
+  occurrenceSource: z.enum(['scheduler', 'catchup', 'manual']).nullable(),
+  runId: IdSchema.nullable(),
+  runStatus: CalendarDailyPushRunStatusSchema.nullable(),
+  /** Local day of the slot in the rule's own timezone (stored on the row). */
+  localDateKey: z.string().max(20).nullable(),
+  topic: z.string().max(500),
+  language: CalendarDailyPushLanguageSchema,
+  sources: z.array(z.string().max(200)).max(50),
+  lookbackDays: z.int().nonnegative(),
+  outputFolder: z.string().max(180),
+  cron: z.string().min(1).max(200),
+  timezone: IanaTimezoneSchema,
+  artifact: z.strictObject({ id: IdSchema, title: z.string().max(500) }).nullable(),
+  /** Vault-relative Markdown path recorded by the delivery ledger. */
+  obsidianRelativePath: z.string().max(500).nullable(),
+  delivery: z.strictObject({
+    status: z.enum(['written', 'skipped']),
+    reason: z.string().max(120).nullable(),
+    message: z.string().max(500).nullable()
+  }).nullable()
+})
+export type CalendarDailyPushDetail = z.infer<typeof CalendarDailyPushDetailSchema>
+
 const CalendarEventBaseSchema = z.object({
   id: IdSchema,
   projectId: ProjectIdSchema.nullable(),
@@ -157,7 +216,9 @@ const CalendarEventBaseSchema = z.object({
   timezone: IanaTimezoneSchema,
   allDay: z.boolean(),
   taskId: TaskIdSchema.nullable(),
-  paperId: PaperIdSchema.nullable()
+  paperId: PaperIdSchema.nullable(),
+  /** Present only on the read-only daily-push projection. */
+  dailyPush: CalendarDailyPushDetailSchema.nullable().optional()
 }).superRefine((value, context) => {
   if (Date.parse(value.endsAt) < Date.parse(value.startsAt)) {
     context.addIssue({ code: 'custom', path: ['endsAt'], message: 'Calendar event endsAt must be >= startsAt.' })
@@ -168,11 +229,20 @@ export const CalendarEventSchema = z.union([
   CalendarEventBaseSchema.extend({ readOnly: z.literal(false), revision: z.int().nonnegative() }),
   CalendarEventBaseSchema.extend({ readOnly: z.literal(true), revision: z.int().nonnegative().nullable() })
 ]).superRefine((event, context) => {
-  if (!event.readOnly) return
+  const dailyPush = event.dailyPush ?? null
+  if (!event.readOnly) {
+    // A user-authored event must never carry push metadata: that would be a
+    // fabricated delivery/artifact claim outside the run ledger.
+    if (dailyPush !== null) {
+      context.addIssue({ code: 'custom', path: ['dailyPush'], message: 'Only read-only daily-push projections carry daily-push detail.' })
+    }
+    return
+  }
   const isTaskProjection = event.id.startsWith('task:')
   const isProjectProjection = event.id.startsWith('project:')
-  if (!isTaskProjection && !isProjectProjection) {
-    context.addIssue({ code: 'custom', path: ['id'], message: 'Read-only calendar events must be task/project projections.' })
+  const isDailyPushProjection = event.id.startsWith('daily-push:')
+  if (!isTaskProjection && !isProjectProjection && !isDailyPushProjection) {
+    context.addIssue({ code: 'custom', path: ['id'], message: 'Read-only calendar events must be task/project/daily-push projections.' })
     return
   }
   if (isTaskProjection && (event.type !== 'deadline' || event.taskId === null)) {
@@ -180,6 +250,31 @@ export const CalendarEventSchema = z.union([
   }
   if (isProjectProjection && (event.type !== 'milestone' || event.projectId === null)) {
     context.addIssue({ code: 'custom', message: 'Project projections must be milestone events with a projectId.' })
+  }
+  if (!isDailyPushProjection) return
+  if (event.type !== 'daily_push') {
+    context.addIssue({ code: 'custom', path: ['type'], message: 'Daily-push projections must use the daily_push type.' })
+  }
+  if (event.taskId !== null) {
+    context.addIssue({ code: 'custom', path: ['taskId'], message: 'Daily-push projections never belong to a task.' })
+  }
+  if (dailyPush === null) {
+    context.addIssue({ code: 'custom', path: ['dailyPush'], message: 'Daily-push projections must carry their stored schedule/occurrence detail.' })
+    return
+  }
+  if (event.id !== `daily-push:${dailyPush.scheduleId}:${dailyPush.occurrenceKey}`) {
+    context.addIssue({ code: 'custom', path: ['id'], message: 'Daily-push projection id must be `daily-push:<scheduleId>:<occurrenceKey>`.' })
+  }
+  if (dailyPush.state === 'planned') {
+    // A plan has no run, no artifact and no delivery yet. Contractually it also
+    // cannot report a status: the UI must render it as 计划, never as 已完成.
+    if (dailyPush.occurrenceStatus !== null || dailyPush.occurrenceSource !== null || dailyPush.runId !== null
+      || dailyPush.runStatus !== null || dailyPush.localDateKey !== null || dailyPush.artifact !== null
+      || dailyPush.obsidianRelativePath !== null || dailyPush.delivery !== null) {
+      context.addIssue({ code: 'custom', path: ['dailyPush'], message: 'A planned daily-push slot must not report a run, artifact or delivery outcome.' })
+    }
+  } else if (dailyPush.occurrenceStatus === null) {
+    context.addIssue({ code: 'custom', path: ['dailyPush'], message: 'A stored daily-push occurrence must carry its occurrence status.' })
   }
 })
 export type CalendarEvent = z.infer<typeof CalendarEventSchema>
@@ -189,6 +284,8 @@ export const CalendarRangeInputSchema = z.object({
   endsAt: IsoInstantSchema,
   timezone: IanaTimezoneSchema,
   projectId: ProjectIdSchema.nullable().optional(),
+  /** Filtering by `daily_push` is how the UI asks for the read-only push
+   * projection only; omitting `types` returns every projection. */
   types: z.array(CalendarEventTypeSchema).optional(),
   /** Shared task filter applied only to read-only task projections. */
   taskDateRange: DateRangeSchema.optional()
@@ -216,7 +313,7 @@ const CalendarEventInputFieldsSchema = z.object({
   projectId: ProjectIdSchema.nullable().default(null),
   title: z.string().trim().min(1).max(240),
   description: z.string().max(20_000).default(''),
-  type: CalendarEventTypeSchema.default('event'),
+  type: CalendarUserEventTypeSchema.default('event'),
   startsAt: IsoInstantSchema,
   endsAt: IsoInstantSchema,
   timezone: IanaTimezoneSchema,
@@ -494,7 +591,11 @@ export const NoteSchema = z.object({
   updatedAt: IsoInstantSchema,
   fingerprint: z.string().min(1),
   content: z.string().optional(),
-  isFolder: z.boolean().optional()
+  isFolder: z.boolean().optional(),
+  /** Controlled frontmatter projection; the Obsidian file remains authoritative. */
+  projectId: ProjectIdSchema.nullable().optional(),
+  kind: z.string().trim().min(1).nullable().optional(),
+  parentRelativePath: ObsidianIndexedRelativePathSchema.nullable().optional()
 })
 export type Note = z.infer<typeof NoteSchema>
 
@@ -552,6 +653,27 @@ const hasWindowsUnsafeComponent = (value: string): boolean => {
     ...Array.from({ length: 9 }, (_, index) => `COM${index + 1}`),
     ...Array.from({ length: 9 }, (_, index) => `LPT${index + 1}`)
   ]).has(baseName)
+}
+
+/**
+ * Structural safety of one Vault-relative POSIX path.
+ *
+ * This is the single predicate behind `ObsidianLayoutRelativePathSchema` and
+ * the schedule output-folder contract: an absolute path, a Windows drive/UNC
+ * prefix, a backslash, an empty segment, `.`/`..` traversal, the `.obsidian`
+ * internal directory and a Windows-unsafe segment (reserved device name,
+ * control character, `<>:"|?*`, trailing dot/space) are all rejected here.
+ */
+export function isSafeVaultRelativePath(value: string): boolean {
+  if (value.length === 0 || value.startsWith('/') || value.includes('\\') || /^[A-Za-z]:/u.test(value)) return false
+  const segments = value.split('/')
+  return !segments.some((segment) => !segment || segment === '.' || segment === '..' || isObsidianSegmentName(segment) || hasWindowsUnsafeComponent(segment))
+}
+
+/** Trim and convert backslashes so a Windows-style entry can be validated by
+ * the POSIX-relative predicate instead of being rejected for its separator. */
+export function normalizeVaultRelativePath(value: string): string {
+  return value.trim().replace(/\\/gu, '/')
 }
 
 const ObsidianDirectoryNameSchema = z.string().trim().min(1).max(180).refine((value) => !hasWindowsUnsafeComponent(value), {
@@ -616,11 +738,7 @@ export type WindowsSafeSlug = ObsidianProjectSlug
 /** Vault-relative POSIX path used for layout directories and Markdown files. */
 export const ObsidianLayoutRelativePathSchema = z.string().min(1).max(8_000).refine((value) => [...value].length <= 4_000, {
   message: 'Vault-relative paths must be at most 4,000 Unicode code points.'
-}).refine((value) => {
-  if (value.startsWith('/') || value.includes('\\') || /^[A-Za-z]:/u.test(value)) return false
-  const segments = value.split('/')
-  return !segments.some((segment) => !segment || segment === '.' || segment === '..' || isObsidianSegmentName(segment) || hasWindowsUnsafeComponent(segment))
-}, { message: 'Expected a vault-relative POSIX path without traversal.' })
+}).refine((value) => isSafeVaultRelativePath(value), { message: 'Expected a vault-relative POSIX path without traversal.' })
 export type ObsidianLayoutRelativePath = z.infer<typeof ObsidianLayoutRelativePathSchema>
 export const ObsidianRelativeDirectorySchema = ObsidianLayoutRelativePathSchema
 export const LayoutRelativePathSchema = ObsidianLayoutRelativePathSchema
@@ -648,6 +766,138 @@ export type NoteFolderDeleteReceipt = z.infer<typeof NoteFolderDeleteReceiptSche
 export const ObsidianLayoutMarkdownPathSchema = ObsidianLayoutRelativePathSchema.refine((value) => value.toLocaleLowerCase('en-US').endsWith('.md'), {
   message: 'Expected a vault-relative Markdown path.'
 })
+
+/**
+ * Note authoring commands.  Creating a folder is idempotent and refuses
+ * `.md` names, traversal and `.obsidian`; moving never overwrites an existing
+ * target and uses the last-seen fingerprint as a compare-and-swap guard for
+ * notes.  Nothing here can reach outside the authorized Vault.
+ */
+export const CreateNoteFolderInputSchema = z.strictObject({
+  vaultId: IdSchema,
+  relativePath: ObsidianLayoutRelativePathSchema
+})
+export type CreateNoteFolderInput = z.infer<typeof CreateNoteFolderInputSchema>
+export const NoteFolderCreateReceiptSchema = z.strictObject({
+  vaultId: IdSchema,
+  relativePath: ObsidianLayoutRelativePathSchema,
+  status: z.enum(['created', 'exists'])
+})
+export type NoteFolderCreateReceipt = z.infer<typeof NoteFolderCreateReceiptSchema>
+
+export const NoteMoveKindSchema = z.enum(['file', 'directory'])
+export type NoteMoveKind = z.infer<typeof NoteMoveKindSchema>
+export const MoveNoteInputSchema = z.strictObject({
+  vaultId: IdSchema,
+  kind: NoteMoveKindSchema,
+  fromRelativePath: ObsidianLayoutRelativePathSchema,
+  toRelativePath: ObsidianLayoutRelativePathSchema,
+  expectedFingerprint: z.string().min(1).nullable().default(null)
+}).refine(
+  (value) => value.kind !== 'directory' || (!value.fromRelativePath.includes('/') && !value.toRelativePath.includes('/')),
+  { message: 'A Vault category move must stay at the root level.', path: ['fromRelativePath'] }
+).refine(
+  (value) => value.kind !== 'file' || (value.fromRelativePath.toLocaleLowerCase('en-US').endsWith('.md') && value.toRelativePath.toLocaleLowerCase('en-US').endsWith('.md')),
+  { message: 'A note move only accepts Markdown paths.', path: ['toRelativePath'] }
+)
+export type MoveNoteInput = z.infer<typeof MoveNoteInputSchema>
+export const NoteMoveReceiptSchema = z.strictObject({
+  vaultId: IdSchema,
+  kind: NoteMoveKindSchema,
+  fromRelativePath: ObsidianLayoutRelativePathSchema,
+  toRelativePath: ObsidianLayoutRelativePathSchema,
+  fingerprint: z.string().min(1).nullable()
+})
+export type NoteMoveReceipt = z.infer<typeof NoteMoveReceiptSchema>
+
+/**
+ * Controlled frontmatter metadata.  The patch only names managed keys; every
+ * unknown field in the user's frontmatter is reported and preserved verbatim.
+ * `parentRelativePath` expresses a child-note relation.
+ */
+export const NoteMetadataPatchSchema = z.strictObject({
+  projectId: ProjectIdSchema.nullable().optional(),
+  kind: ObsidianLayoutKindSchema.nullable().optional(),
+  title: z.string().trim().min(1).max(500).optional(),
+  date: z.string().trim().min(1).max(64).optional(),
+  paperIds: z.array(PaperIdSchema).max(500).optional(),
+  taskIds: z.array(TaskIdSchema).max(500).optional(),
+  parentRelativePath: z.string().min(1).max(8_000).nullable().optional(),
+  labels: z.array(z.string().trim().min(1).max(200)).max(100).optional()
+})
+export type NoteMetadataPatch = z.infer<typeof NoteMetadataPatchSchema>
+
+export const NoteMetadataSummarySchema = z.strictObject({
+  projectId: z.string().nullable(),
+  kind: ObsidianLayoutKindSchema.nullable(),
+  title: z.string().nullable(),
+  date: z.string().nullable(),
+  parentRelativePath: z.string().nullable(),
+  paperIds: z.array(z.string()),
+  taskIds: z.array(z.string()),
+  labels: z.array(z.string())
+})
+export type NoteMetadataSummary = z.infer<typeof NoteMetadataSummarySchema>
+
+export const NoteMetadataPreviewInputSchema = z.strictObject({
+  vaultId: IdSchema,
+  relativePath: ObsidianRelativePathSchema,
+  patch: NoteMetadataPatchSchema
+})
+export type NoteMetadataPreviewInput = z.infer<typeof NoteMetadataPreviewInputSchema>
+export const NoteMetadataPreviewSchema = z.strictObject({
+  vaultId: IdSchema,
+  relativePath: ObsidianRelativePathSchema,
+  fingerprint: z.string().min(1),
+  before: NoteMetadataSummarySchema,
+  after: NoteMetadataSummarySchema,
+  changedFields: z.array(z.string()),
+  preservedUnknownFields: z.array(z.string()),
+  warnings: z.array(z.string()),
+  canApply: z.boolean()
+})
+export type NoteMetadataPreview = z.infer<typeof NoteMetadataPreviewSchema>
+
+/** Applying metadata is a preview-confirmed write: it requires the exact
+ * fingerprint the preview was computed from, so a file edited in Obsidian in
+ * the meantime fails the CAS instead of being overwritten. */
+export const ApplyNoteMetadataInputSchema = z.strictObject({
+  vaultId: IdSchema,
+  relativePath: ObsidianRelativePathSchema,
+  patch: NoteMetadataPatchSchema,
+  expectedFingerprint: z.string().min(1),
+  confirmed: z.literal(true)
+})
+export type ApplyNoteMetadataInput = z.infer<typeof ApplyNoteMetadataInputSchema>
+
+/**
+ * Duplicate probe used before a note-import write.  Matching is intentionally
+ * conservative (exact path or normalized title) and never guesses a DOI or
+ * content identity that the Vault cannot prove.
+ */
+export const NoteDuplicateInputSchema = z.strictObject({
+  vaultId: IdSchema,
+  relativePath: ObsidianRelativePathSchema,
+  title: z.string().trim().min(1).max(500).optional()
+})
+export type NoteDuplicateInput = z.infer<typeof NoteDuplicateInputSchema>
+export const NoteDuplicateCandidateSchema = z.strictObject({
+  relativePath: ObsidianRelativePathSchema,
+  title: z.string().min(1),
+  fingerprint: z.string().min(1),
+  updatedAt: IsoInstantSchema,
+  match: z.enum(['path', 'title'])
+})
+export type NoteDuplicateCandidate = z.infer<typeof NoteDuplicateCandidateSchema>
+export const NoteDuplicateReportSchema = z.strictObject({
+  vaultId: IdSchema,
+  relativePath: ObsidianRelativePathSchema,
+  status: z.enum(['new', 'exists', 'duplicate']),
+  /** Fingerprint of the existing target so the caller can update instead of overwrite. */
+  targetFingerprint: z.string().min(1).nullable(),
+  candidates: z.array(NoteDuplicateCandidateSchema)
+})
+export type NoteDuplicateReport = z.infer<typeof NoteDuplicateReportSchema>
 
 function isObsidianSegmentName(value: string): boolean {
   return value.normalize('NFC').replace(/[. ]+$/gu, '').toLocaleLowerCase('en-US') === '.obsidian'
@@ -959,9 +1209,23 @@ export const ZoteroCapabilitySchema = z.object({
 export type ZoteroCapability = z.infer<typeof ZoteroCapabilitySchema>
 export const ZoteroCapabilityKindSchema = z.enum(['read', 'write', 'unsupported'])
 export type ZoteroCapabilityKind = z.infer<typeof ZoteroCapabilityKindSchema>
+/** Why a probed Zotero connection can read but not write.  The Renderer must
+ * explain a read-only Local API (for example Zotero 9, which does not return
+ * `Zotero-Server-ID`) instead of offering a write that always fails. */
+export const ZoteroWriteBlockedReasonSchema = z.enum([
+  'server-id-missing', 'credential-missing', 'probe-failed',
+  // Zotero 10 local writes need a key from `/api/local/authorize`.  The
+  // authorization dialog offers a one-time "Allow" and a persistent "Always
+  // Allow"; only the persistent key can carry a multi-item import.
+  'key-single-use', 'key-unverified', 'key-invalid', 'authorization-denied',
+  'rate-limited'
+])
+export type ZoteroWriteBlockedReason = z.infer<typeof ZoteroWriteBlockedReasonSchema>
 export const ZoteroCapabilityStatusSchema = z.strictObject({
   status: ZoteroProbeStatusSchema,
   capability: ZoteroCapabilitySchema,
+  /** `null` when a write is possible; otherwise the explicit read-only cause. */
+  writeBlockedReason: ZoteroWriteBlockedReasonSchema.nullable().default(null),
   checkedAt: IsoInstantSchema
 })
 export type ZoteroCapabilityStatus = z.infer<typeof ZoteroCapabilityStatusSchema>
@@ -971,6 +1235,10 @@ export const ZoteroAuthorizeInputSchema = z.strictObject({ profileId: IdSchema }
 export type ZoteroAuthorizeInput = z.infer<typeof ZoteroAuthorizeInputSchema>
 export const ZoteroAuthorizeResultSchema = z.strictObject({ authorized: z.literal(true), remember: z.boolean() })
 export type ZoteroAuthorizeResult = z.infer<typeof ZoteroAuthorizeResultSchema>
+/** The authorization dialog also exposes a third button (Deny); Zotero answers
+ * it with 403 + `{"denied":true}`, which must be reported as a user decision
+ * rather than a transport failure. */
+export const ZoteroAuthorizeDeniedSchema = z.strictObject({ denied: z.literal(true) })
 
 export const ZoteroPageStatusSchema = z.enum([
   'connected', 'partial', 'offline', 'unauthorized', 'rate_limited', 'error', 'unsupported'
@@ -1009,6 +1277,135 @@ export const ZoteroItemPageSchema = z.strictObject({
 })
 export type ZoteroItemPage = z.infer<typeof ZoteroItemPageSchema>
 
+/**
+ * Zotero two-sided deletion.
+ *
+ * The remote half is the documented item erase route
+ * (`DELETE <library>/items/<itemKey>` with `If-Unmodified-Since-Version`), so a
+ * receipt may only claim a remote deletion after Zotero answered `204`/`200`.
+ * The local half removes the Workbench projection only for items that are
+ * confirmed gone remotely; every other outcome keeps the local records and is
+ * reported per item.
+ */
+export const ZoteroDeleteOutcomeStatusSchema = z.enum([
+  /** Zotero erased the item (`204`/`200`). */
+  'deleted',
+  /** Zotero answered `404`: the item is already gone, so the local projection
+   * can be removed without claiming we deleted it. */
+  'absent',
+  /** `412`/`428`: the frozen revision no longer matches, so nothing was erased. */
+  'conflict',
+  /** `401`: the local key is missing or was consumed. */
+  'unauthorized',
+  /** `403`: the user denied the authorization prompt. */
+  'forbidden',
+  /** `429`: the authorization/API rate limit was hit. */
+  'rate-limited',
+  /** Network, timeout or an unmapped status: the remote state is unknown. */
+  'unavailable'
+])
+export type ZoteroDeleteOutcomeStatus = z.infer<typeof ZoteroDeleteOutcomeStatusSchema>
+
+/** What happened to the Workbench projection of the same item.  `removed` is
+ * only produced after the remote library is confirmed not to hold the item. */
+export const ZoteroDeleteLocalStatusSchema = z.enum(['removed', 'kept', 'no-local-record'])
+export type ZoteroDeleteLocalStatus = z.infer<typeof ZoteroDeleteLocalStatusSchema>
+
+/** One frozen delete target.  `remoteRevision` is what the preview observed and
+ * what the execute call both re-checks and sends as the HTTP precondition. */
+export const ZoteroDeleteTargetSchema = z.strictObject({
+  itemKey: ZoteroItemKeySchema,
+  remoteRevision: z.string().trim().min(1).max(512),
+  /** The Workbench Paper this Zotero item is projected onto, when a local link
+   * exists.  Resolved by the service at preview time, never by the Renderer. */
+  paperId: IdSchema.nullable(),
+  title: z.string().trim().max(500).nullable(),
+  localRevision: z.int().nonnegative().nullable()
+})
+export type ZoteroDeleteTarget = z.infer<typeof ZoteroDeleteTargetSchema>
+
+export const ZoteroRemoteDeletePreviewInputSchema = z.strictObject({
+  profileId: IdSchema,
+  itemKeys: z.array(ZoteroItemKeySchema).min(1).max(100)
+})
+export type ZoteroRemoteDeletePreviewInput = z.infer<typeof ZoteroRemoteDeletePreviewInputSchema>
+
+export const ZoteroRemoteDeletePreviewSchema = z.strictObject({
+  profileId: IdSchema,
+  /** CAS token for the connection profile, re-checked by execute. */
+  profileRevision: z.int().nonnegative(),
+  /** Items whose current remote version was read successfully. */
+  targets: z.array(ZoteroDeleteTargetSchema).min(1),
+  /** Requested keys that could not be previewed at all, with the real reason.
+   * They are never sent to execute, so a preview can never hide an item. */
+  unavailable: z.array(z.strictObject({
+    itemKey: ZoteroItemKeySchema,
+    message: z.string().trim().min(1).max(1_000)
+  })),
+  /** Non-null when the connection cannot delete at all (missing key, Zotero 9,
+   * one-time key, rate limit).  The Renderer must show it and keep the entry
+   * visible but disabled, exactly like the write entry. */
+  writeBlockedReason: ZoteroWriteBlockedReasonSchema.nullable(),
+  message: z.string().trim().min(1).max(1_000)
+})
+export type ZoteroRemoteDeletePreview = z.infer<typeof ZoteroRemoteDeletePreviewSchema>
+
+/** `confirmed: true` is a literal so a delete can never run unattended. */
+export const ZoteroRemoteDeleteExecuteInputSchema = z.strictObject({
+  profileId: IdSchema,
+  expectedProfileRevision: z.int().nonnegative(),
+  targets: z.array(ZoteroDeleteTargetSchema).min(1).max(100),
+  confirmed: z.literal(true)
+})
+export type ZoteroRemoteDeleteExecuteInput = z.infer<typeof ZoteroRemoteDeleteExecuteInputSchema>
+
+export const ZoteroRemoteDeleteItemReceiptSchema = z.strictObject({
+  itemKey: ZoteroItemKeySchema,
+  remote: ZoteroDeleteOutcomeStatusSchema,
+  remoteVersion: z.string().trim().max(512).nullable(),
+  local: ZoteroDeleteLocalStatusSchema,
+  paperId: IdSchema.nullable(),
+  title: z.string().trim().max(500).nullable(),
+  message: z.string().trim().min(1).max(1_000),
+  retryable: z.boolean()
+})
+export type ZoteroRemoteDeleteItemReceipt = z.infer<typeof ZoteroRemoteDeleteItemReceiptSchema>
+
+/**
+ * The receipt is required to be internally consistent: the counts have to match
+ * the per-item rows, a `removed` local state has to be backed by a confirmed
+ * remote deletion, and a `blocked` receipt cannot report any deletion at all.
+ */
+export const ZoteroRemoteDeleteReceiptSchema = z.strictObject({
+  profileId: IdSchema,
+  status: z.enum(['completed', 'partial', 'blocked']),
+  remoteDeletedCount: z.int().nonnegative(),
+  localRemovedCount: z.int().nonnegative(),
+  items: z.array(ZoteroRemoteDeleteItemReceiptSchema).min(1),
+  message: z.string().trim().min(1).max(1_000)
+}).superRefine((value, context) => {
+  const remoteDeleted = value.items.filter((item) => item.remote === 'deleted').length
+  const stillRemote = value.items.filter((item) => item.remote !== 'deleted' && item.remote !== 'absent').length
+  if (value.remoteDeletedCount !== remoteDeleted) {
+    context.addIssue({ code: 'custom', path: ['remoteDeletedCount'], message: 'remoteDeletedCount must equal the number of items Zotero confirmed as deleted.' })
+  }
+  if (value.localRemovedCount !== value.items.filter((item) => item.local === 'removed').length) {
+    context.addIssue({ code: 'custom', path: ['localRemovedCount'], message: 'localRemovedCount must equal the number of removed local projections.' })
+  }
+  for (const item of value.items) {
+    if (item.local === 'removed' && item.remote !== 'deleted' && item.remote !== 'absent') {
+      context.addIssue({ code: 'custom', path: ['items'], message: 'A local projection may only be removed after Zotero confirmed the item is gone.' })
+    }
+  }
+  if (value.status === 'completed' && stillRemote > 0) {
+    context.addIssue({ code: 'custom', path: ['status'], message: 'A completed delete receipt cannot keep any item in Zotero.' })
+  }
+  if (value.status === 'blocked' && (value.remoteDeletedCount > 0 || value.localRemovedCount > 0)) {
+    context.addIssue({ code: 'custom', path: ['status'], message: 'A blocked Zotero delete receipt must not report any deletion.' })
+  }
+})
+export type ZoteroRemoteDeleteReceipt = z.infer<typeof ZoteroRemoteDeleteReceiptSchema>
+
 export const ZoteroImportFormatSchema = z.enum(['ris', 'bibtex'])
 export type ZoteroImportFormat = z.infer<typeof ZoteroImportFormatSchema>
 export const ZoteroImportTransportSchema = z.enum(['api', 'save-file', 'mailto-draft', 'external-bridge'])
@@ -1018,10 +1415,21 @@ export const ZoteroDuplicateDecisionSchema = z.enum([
 ])
 export type ZoteroDuplicateDecision = z.infer<typeof ZoteroDuplicateDecisionSchema>
 export const ZoteroDuplicateMatchSchema = z.strictObject({
-  kind: z.enum(['doi', 'title', 'external-id']),
+  kind: z.enum(['doi', 'url', 'title', 'external-id']),
   existingPaperId: PaperIdSchema,
   decision: ZoteroDuplicateDecisionSchema
 })
+/** What a confirmed write actually did with the frozen target collection.
+ *  - `set`: the target collection key was applied (create: the new item is
+ *    added to it; update: the item's membership is replaced with exactly it).
+ *  - `unchanged`: nothing was sent, so an existing item keeps its current
+ *    membership and a new item joins no collection.  The frozen
+ *    `targetCollectionKey` was `null`; a locally cached value must never be
+ *    written back silently.
+ *  - `not-written`: no remote write happened (generated handoff, skip or
+ *    failure), so the target collection is only recorded, not applied. */
+export const ZoteroCollectionWriteSchema = z.enum(['set', 'unchanged', 'not-written'])
+export type ZoteroCollectionWrite = z.infer<typeof ZoteroCollectionWriteSchema>
 export type ZoteroDuplicateMatch = z.infer<typeof ZoteroDuplicateMatchSchema>
 export const ZoteroImportPreviewItemSchema = z.strictObject({
   itemKey: ZoteroItemKeySchema,
@@ -1029,7 +1437,11 @@ export const ZoteroImportPreviewItemSchema = z.strictObject({
   decision: ZoteroDuplicateDecisionSchema,
   duplicate: ZoteroDuplicateMatchSchema.nullable(),
   locator: z.string().trim().min(1).max(4_000).nullable(),
-  remoteRevision: z.string().trim().min(1).max(512).nullable().optional()
+  remoteRevision: z.string().trim().min(1).max(512).nullable().optional(),
+  /** Human-readable explanation of an ambiguous decision (for example a
+   *  title-only match in Zotero or a library too large to check for
+   *  duplicates).  Never contains a path, URL or credential. */
+  note: z.string().trim().min(1).max(300).nullable().default(null)
 })
 export type ZoteroImportPreviewItem = z.infer<typeof ZoteroImportPreviewItemSchema>
 export const ZoteroImportPreviewInputSchema = z.strictObject({
@@ -1071,6 +1483,10 @@ export const ZoteroImportPreviewSchema = z.strictObject({
   format: ZoteroImportFormatSchema,
   transport: ZoteroImportTransportSchema,
   capability: ZoteroCapabilityKindSchema,
+  /** Revision of the integration profile the preview was frozen against.  A
+   * confirmed execution re-checks it so a connection edit cannot be applied
+   * under an old confirmation. */
+  profileRevision: z.int().nonnegative(),
   items: z.array(ZoteroImportPreviewItemSchema),
   total: z.int().nonnegative(),
   requiresConfirmation: z.literal(true)
@@ -1096,6 +1512,9 @@ export const ZoteroImportReceiptSchema = z.strictObject({
   locator: z.string().trim().min(1).max(4_000).nullable(),
   remoteRevision: z.string().trim().min(1).max(512).nullable(),
   duplicateDecision: ZoteroDuplicateDecisionSchema.nullable(),
+  /** The collection frozen by the preview and the actual outcome for it. */
+  targetCollectionKey: ZoteroItemKeySchema.nullable().default(null),
+  collectionWrite: ZoteroCollectionWriteSchema.default('not-written'),
   error: z.union([
     z.lazy(() => IntegrationErrorSchema),
     z.object({
@@ -1157,6 +1576,18 @@ export const PaperToZoteroPreviewInputSchema = z.strictObject({
   paperIds: z.array(PaperIdSchema).min(1).max(500),
   targetCollectionKey: ZoteroItemKeySchema.nullable().default(null),
   format: ZoteroImportFormatSchema.default('ris'),
+  /**
+   * Top-level project classification for this write.
+   *
+   * - omitted: every Paper keeps its own project binding (unchanged legacy
+   *   behaviour for the Paper -> Zotero route);
+   * - `null`: the write is explicitly classified as unclassified (未分类);
+   * - a project id: every written item is tagged with exactly `#<项目名>`.
+   *
+   * The value is frozen by the preview and re-checked by execution, so the
+   * project tag is never re-derived from a later UI selection.
+   */
+  projectId: ProjectIdSchema.nullable().optional(),
   /** Additional Zotero tags applied to every selected Paper after the
    * project binding tag has been resolved in Core. */
   tags: z.array(z.string().trim().min(1).max(100)).max(20).default([]),
@@ -1181,6 +1612,18 @@ export const LiteratureStagingToZoteroPreviewInputSchema = z.strictObject({
   stagingIds: z.array(IdSchema).min(1).max(500),
   targetCollectionKey: ZoteroItemKeySchema.nullable().default(null),
   format: ZoteroImportFormatSchema.default('ris'),
+  /**
+   * Top-level project classification for the whole staging write.
+   *
+   * - omitted: derive it from the selected records (their shared project
+   *   binding, or 未分类 when they differ);
+   * - `null`: explicitly classify the write as 未分类;
+   * - a project id: every written item is tagged with exactly `#<项目名>`.
+   *
+   * The resolved value is frozen by the preview and repeated in every receipt
+   * so the confirm step can never silently apply a different project tag.
+   */
+  projectId: ProjectIdSchema.nullable().optional(),
   /** User-entered tags are carried through the one-use preview so the
    * confirmed external write is reproducible and auditable. */
   tags: z.array(z.string().trim().min(1).max(100)).max(20).default([]),
@@ -1198,7 +1641,8 @@ export const LiteratureStagingToZoteroPreviewItemSchema = z.strictObject({
   decision: ZoteroDuplicateDecisionSchema,
   duplicate: ZoteroDuplicateMatchSchema.nullable(),
   locator: z.string().trim().min(1).max(4_000).nullable(),
-  remoteRevision: z.string().trim().min(1).max(512).nullable().optional()
+  remoteRevision: z.string().trim().min(1).max(512).nullable().optional(),
+  note: z.string().trim().min(1).max(300).nullable().default(null)
 })
 export type LiteratureStagingToZoteroPreviewItem = z.infer<typeof LiteratureStagingToZoteroPreviewItemSchema>
 export const LiteratureStagingToZoteroPreviewSchema = z.strictObject({
@@ -1209,6 +1653,15 @@ export const LiteratureStagingToZoteroPreviewSchema = z.strictObject({
   format: ZoteroImportFormatSchema,
   transport: ZoteroImportTransportSchema,
   capability: ZoteroCapabilityKindSchema,
+  /** Top-level project classification frozen by the preview.  `null` means the
+   * whole write is classified as 未分类; the confirm step may change it only by
+   * regenerating the preview. */
+  projectId: ProjectIdSchema.nullable().default(null),
+  /** Exact Zotero tag (stored without the presentation `#`) every item in this
+   * frozen write receives, resolved from `projectId` at preview time. */
+  projectTag: z.string().trim().min(1).max(100).nullable().default(null),
+  /** Profile revision frozen by the preview; re-checked on execution. */
+  profileRevision: z.int().nonnegative(),
   items: z.array(LiteratureStagingToZoteroPreviewItemSchema),
   total: z.int().nonnegative(),
   requiresConfirmation: z.literal(true)
@@ -1227,6 +1680,13 @@ export const LiteratureStagingToZoteroReceiptSchema = z.strictObject({
   locator: z.string().trim().min(1).max(4_000).nullable(),
   remoteRevision: z.string().trim().min(1).max(512).nullable(),
   duplicateDecision: ZoteroDuplicateDecisionSchema.nullable(),
+  targetCollectionKey: ZoteroItemKeySchema.nullable().default(null),
+  collectionWrite: ZoteroCollectionWriteSchema.default('not-written'),
+  /** Top-level project classification frozen by the consumed preview. */
+  projectId: ProjectIdSchema.nullable().default(null),
+  /** Exact Zotero tag (without the presentation `#`) this receipt applied for
+   * the frozen classification, repeated so the receipt is self-describing. */
+  projectTag: z.string().trim().min(1).max(100).nullable().default(null),
   error: z.union([
     z.lazy(() => IntegrationErrorSchema),
     z.lazy(() => ExternalWriteErrorSchema)
@@ -1642,7 +2102,7 @@ export const WorkspaceApiV2Methods = [
   'matrix.list', 'matrix.upsert', 'matrix.remove', 'matrix.bulkDelete',
   'artifacts.list', 'artifacts.create', 'artifacts.update', 'artifacts.archive',
   'resourceLinks.list', 'resourceLinks.create', 'resourceLinks.remove',
-  'integrations.list', 'integrations.save', 'integrations.remove', 'integrations.test', 'integrations.sync', 'integrations.runs', 'integrations.links',
+  'integrations.list', 'integrations.save', 'integrations.remove', 'integrations.bulkRemove', 'integrations.removeRun', 'integrations.bulkRemoveRuns', 'integrations.test', 'integrations.sync', 'integrations.runs', 'integrations.links',
   'calendar.list', 'calendar.create', 'calendar.update', 'calendar.remove',
   'calendar.markers.list', 'calendar.markers.create', 'calendar.markers.update', 'calendar.markers.remove',
   'literature.search', 'literature.sessions', 'literature.clearSession', 'literature.resultsPage',
@@ -1652,10 +2112,12 @@ export const WorkspaceApiV2Methods = [
   'literature.batch.retry', 'literature.importResult', 'literature.scholar.status',
   'obsidian.indexStatus', 'obsidian.layout.preview', 'obsidian.layout.initialize',
   'obsidian.vaultLayout.preview', 'obsidian.vaultLayout.initialize',
-  'notes.list', 'notes.read', 'notes.write', 'notes.delete',
+  'notes.list', 'notes.read', 'notes.write', 'notes.delete', 'notes.deleteFolder',
+  'notes.createFolder', 'notes.move', 'notes.metadata.preview', 'notes.metadata.apply', 'notes.duplicates',
   'zotero.capability', 'zotero.authorize', 'zotero.collectionsPage', 'zotero.itemsPage', 'zotero.bibtexExport', 'zotero.import',
   'zotero.importSelected.preview', 'zotero.importSelected.execute',
   'zotero.paperToZotero.preview', 'zotero.paperToZotero.execute',
+  'zotero.deleteRemote.preview', 'zotero.deleteRemote.execute',
   'papers.importFromZotero',
   'knowledge.engines.list', 'knowledge.engines.save', 'knowledge.engines.test',
   'workspace.status', 'system.openExternal', 'system.health', 'system.selectFolder', 'system.revealPath', 'system.saveTextFile'

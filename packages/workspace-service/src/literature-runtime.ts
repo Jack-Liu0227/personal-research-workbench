@@ -42,6 +42,7 @@ import type {
   IntegrationError,
   ExternalWriteError
 } from '@prw/contracts'
+import type { ProjectId } from '@prw/contracts'
 import {
   ProjectIdSchema,
   LiteratureBatchPreviewInputSchema,
@@ -88,6 +89,17 @@ function fetchWithConfiguredProxy(repository: WorkbenchRepository, url: URL, ini
   return fetch(url, { ...init, dispatcher: agent } as RequestInit & { dispatcher: ProxyAgent })
 }
 
+/**
+ * The single project classification shared by every selected staging record.
+ * Records that deliberately belong to different projects (or to none) yield
+ * `null` so the preview freezes 未分类 instead of writing per-record tags that
+ * the confirm step never showed.
+ */
+function sharedStagingProjectId(records: readonly LiteratureStagingRecord[]): ProjectId | null {
+  const ids = new Set<ProjectId | null>(records.map((record) => record.projectId))
+  return ids.size === 1 ? [...ids][0] ?? null : null
+}
+
 type StoredStagingZoteroPreview = {
   readonly profileId: string
   readonly stagingIds: string[]
@@ -96,6 +108,10 @@ type StoredStagingZoteroPreview = {
   readonly targetCollectionKey: string | null
   readonly format: LiteratureStagingToZoteroPreviewInput['format']
   readonly transport: LiteratureStagingToZoteroPreview['transport']
+  /** Top-level project classification frozen by the preview (null = 未分类). */
+  readonly projectId: ProjectId | null
+  /** Exact Zotero tag resolved from `projectId` when the preview was frozen. */
+  readonly projectTag: string
 }
 
 type BatchOperation = {
@@ -477,15 +493,28 @@ export class LiteratureCoordinator {
     if (bridge === undefined) throw new IntegrationRuntimeError('UNSUPPORTED_CAPABILITY', 'Zotero staging integration is unavailable')
     const records = parsed.stagingIds.map((id) => this.repository.getLiteratureStagingRecord(id))
     const projections = records.map((record) => this.ensureStagingPaper(record))
+    // One frozen top-level classification per confirmed write.  An explicit
+    // projectId (including `null` = 未分类) always wins; otherwise the selected
+    // records' shared binding is used so a homogeneous selection keeps the
+    // existing automatic tag, and a mixed selection is previewed as 未分类
+    // instead of writing different tags than the one shown before confirming.
+    const projectId = parsed.projectId === undefined ? sharedStagingProjectId(records) : parsed.projectId
+    const projectTag = this.zoteroProjectTag(projectId)
     const paperPreview = await bridge.previewPaperToZotero({
       profileId: parsed.profileId,
       paperIds: projections.map(({ paperId }) => paperId),
       targetCollectionKey: parsed.targetCollectionKey,
       format: parsed.format,
+      // The classification is resolved here so the exact tag written by the
+      // confirmed external write is the one shown in the preview.
+      projectId,
       tags: parsed.tags,
-      // Import means an API write. A manual export must be chosen explicitly;
-      // unavailable write access must not silently turn into an import package.
-      transport: parsed.transport ?? 'api',
+      // An import is an API write only when the capability probe granted write
+      // access.  When the caller did not freeze a transport, the integration
+      // layer derives it from that same probe, so a read-only connection
+      // (Zotero 9 without a server id) yields the RIS/BibTeX fallback package
+      // instead of an API request that is guaranteed to fail.
+      ...(parsed.transport === undefined ? {} : { transport: parsed.transport }),
       secret
     })
     const previewId = randomUUID()
@@ -497,6 +526,9 @@ export class LiteratureCoordinator {
       format: parsed.format,
       transport: paperPreview.transport,
       capability: paperPreview.capability,
+      projectId,
+      projectTag,
+      profileRevision: paperPreview.profileRevision,
       items: projections.map(({ record }, index) => {
         const item = paperPreview.items[index]
         if (item === undefined) throw new IntegrationRuntimeError('TEMPORARILY_UNAVAILABLE', 'Zotero preview returned an incomplete item list')
@@ -507,7 +539,8 @@ export class LiteratureCoordinator {
           decision: item.decision,
           duplicate: item.duplicate,
           locator: item.locator,
-          remoteRevision: item.remoteRevision ?? null
+          remoteRevision: item.remoteRevision ?? null,
+          note: item.note ?? null
         }
       }),
       total: projections.length,
@@ -520,9 +553,20 @@ export class LiteratureCoordinator {
       integrationPreviewId: paperPreview.previewId,
       targetCollectionKey: parsed.targetCollectionKey,
       format: parsed.format,
-      transport: paperPreview.transport
+      transport: paperPreview.transport,
+      projectId,
+      projectTag
     })
     return result
+  }
+
+  /** The automatic Zotero tag for a project classification.  `null` is the
+   * explicit 未分类 case; an unknown/deleted project falls back to it as well
+   * instead of inventing a name.  The integration layer resolves the same value
+   * from the frozen `projectId` at write time, so preview and write agree. */
+  private zoteroProjectTag(projectId: string | null): string {
+    if (projectId === null) return '未分类'
+    return this.repository.listProjects().find((project) => project.id === projectId)?.name ?? '未分类'
   }
 
   /** Consume the staging preview and delegate the confirmed external write to
@@ -569,6 +613,10 @@ export class LiteratureCoordinator {
         locator: receipt.locator ?? null,
         remoteRevision: receipt.remoteRevision ?? null,
         duplicateDecision: receipt.duplicateDecision ?? null,
+        targetCollectionKey: receipt.targetCollectionKey ?? stored.targetCollectionKey,
+        collectionWrite: receipt.collectionWrite ?? 'not-written',
+        projectId: stored.projectId,
+        projectTag: stored.projectTag,
         error: mapStagingZoteroError(receipt.error)
       }
     })

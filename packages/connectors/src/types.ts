@@ -18,7 +18,38 @@ export interface AdapterProbe {
   readonly ok: boolean
   readonly message: string
   readonly capabilities: AdapterCapabilities
+  /** Set when the adapter can read but cannot write, so callers can explain a
+   * read-only connection instead of presenting a write that always fails. */
+  readonly writeBlockedReason?: AdapterWriteBlockedReason | null | undefined
 }
+
+/**
+ * - `server-id-missing`: a loopback Zotero Local API did not return
+ *   `Zotero-Server-ID` (for example Zotero 9), so the local write
+ *   authorization handshake is impossible.
+ * - `credential-missing`: no API key / local write key is configured.
+ * - `probe-failed`: the connection could not be probed at all.
+ * - `key-single-use`: the local key was granted with Zotero's one-time
+ *   "Allow" button.  Zotero consumes such a key on the first write that
+ *   validates it, so a multi-item import can never complete; the user must
+ *   authorize again and pick "Always Allow".
+ * - `key-unverified`: a local key exists but its persistence mode was never
+ *   recorded (credential stored by an older build), so a zero-effect write
+ *   check cannot be run without risking consumption of a one-time key.
+ * - `key-invalid`: the stored local key is no longer accepted by Zotero
+ *   (consumed, revoked, or cleared).
+ * - `authorization-denied`: the user declined the Zotero authorization
+ *   dialog, or Zotero refused to show it.
+ */
+export type AdapterWriteBlockedReason =
+  | 'server-id-missing'
+  | 'credential-missing'
+  | 'probe-failed'
+  | 'key-single-use'
+  | 'key-unverified'
+  | 'key-invalid'
+  | 'authorization-denied'
+  | 'rate-limited'
 
 export interface NormalizedExternalPaper {
   readonly externalId: string
@@ -71,6 +102,14 @@ export interface ProjectionTarget {
   readonly externalId: string
   readonly locator: string
   readonly remoteRevision?: string | null | undefined
+  /**
+   * Explicit Zotero collection intent for this write.  `undefined`/`null`
+   * leaves the remote item's membership untouched: an update must not write a
+   * stale locally cached collection list back over the user's own choice, and
+   * a create must not silently join a collection nobody selected.  A non-empty
+   * key replaces the membership with exactly that collection.
+   */
+  readonly collectionKey?: string | null | undefined
 }
 
 export interface ProjectionReceipt {

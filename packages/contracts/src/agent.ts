@@ -1,5 +1,6 @@
 import { z } from 'zod'
-import { AgentWorkflowKeySchema, ArtifactKindSchema } from './research.js'
+import { AgentLookbackDaysSchema, AgentOutputFolderSchema, AgentResponseLanguageSchema, AgentSourceListSchema, AgentWorkflowKeySchema, ArchiveBulkInputSchema, ArtifactKindSchema, DEFAULT_DAILY_PUSH_SCHEDULE_INPUT } from './research.js'
+import type { AgentScheduleSkillCatalogEntry, ArchiveBulkInput, ArchiveBulkReceipt, ArchiveBulkResult } from './research.js'
 import { IdSchema, IsoInstantSchema, PageInputSchema, ProjectIdSchema } from './v2.js'
 
 const IsoDateSchema = IsoInstantSchema
@@ -19,6 +20,75 @@ export const AgentPermissionModeSchema = z.enum(['read-only', 'auto', 'full-acce
 export type AgentPermissionMode = z.infer<typeof AgentPermissionModeSchema>
 export const AgentApprovalPolicySchema = z.enum(['on-request', 'never'])
 export type AgentApprovalPolicy = z.infer<typeof AgentApprovalPolicySchema>
+
+/**
+ * Runtime credentials are owned by Electron Main's `safeStorage` vault.
+ *
+ * The workbench never reads, copies or reuses the login state a user may have
+ * created for `~/.codex` or `~/.pi`: every CLI child process runs against an
+ * app-owned profile directory and receives exactly one provider credential,
+ * injected for the lifetime of that single process. A provider that is not in
+ * this catalog is rejected instead of being guessed into an environment
+ * variable name.
+ */
+export const AgentCredentialProviderSchema = z.enum([
+  'openai',
+  'anthropic',
+  'gemini',
+  'xai',
+  'openrouter',
+  'deepseek',
+  'groq',
+  'mistral',
+  'moonshot'
+])
+export type AgentCredentialProvider = z.infer<typeof AgentCredentialProviderSchema>
+
+/** Provider → documented CLI environment variable. Codex only accepts an
+ * OpenAI credential; Pi documents one variable per provider. */
+const credentialProviders: Record<AgentRuntimeKind, ReadonlyArray<{ readonly provider: AgentCredentialProvider; readonly envVar: string; readonly label: string }>> = {
+  codex: [{ provider: 'openai', envVar: 'OPENAI_API_KEY', label: 'OpenAI' }],
+  pi: [
+    { provider: 'openai', envVar: 'OPENAI_API_KEY', label: 'OpenAI' },
+    { provider: 'anthropic', envVar: 'ANTHROPIC_API_KEY', label: 'Anthropic Claude' },
+    { provider: 'gemini', envVar: 'GEMINI_API_KEY', label: 'Google Gemini' },
+    { provider: 'xai', envVar: 'XAI_API_KEY', label: 'xAI Grok' },
+    { provider: 'openrouter', envVar: 'OPENROUTER_API_KEY', label: 'OpenRouter' },
+    { provider: 'deepseek', envVar: 'DEEPSEEK_API_KEY', label: 'DeepSeek' },
+    { provider: 'groq', envVar: 'GROQ_API_KEY', label: 'Groq' },
+    { provider: 'mistral', envVar: 'MISTRAL_API_KEY', label: 'Mistral' },
+    { provider: 'moonshot', envVar: 'MOONSHOT_API_KEY', label: 'Moonshot' }
+  ]
+}
+
+export function agentCredentialProviders(runtime: AgentRuntimeKind): ReadonlyArray<{ readonly provider: AgentCredentialProvider; readonly envVar: string; readonly label: string }> {
+  return credentialProviders[runtime]
+}
+
+/** `null` means "this runtime/provider has no documented variable", so the
+ * caller must fail closed rather than invent one. */
+export function agentCredentialEnvVar(runtime: AgentRuntimeKind, provider: string): string | null {
+  return credentialProviders[runtime].find((entry) => entry.provider === provider)?.envVar ?? null
+}
+
+/** Non-secret status. The secret itself never leaves Main. */
+export const AgentCredentialStatusSchema = z.strictObject({
+  runtime: AgentRuntimeKindSchema,
+  provider: AgentCredentialProviderSchema.nullable(),
+  credentialPresent: z.boolean(),
+  /** Documented environment variable the credential is injected as. */
+  envVar: z.string().max(100).nullable(),
+  updatedAt: IsoDateSchema.nullable()
+})
+export type AgentCredentialStatus = z.infer<typeof AgentCredentialStatusSchema>
+
+/** Main-only write. An empty `apiKey` clears the stored credential. */
+export const AgentCredentialSaveInputSchema = z.strictObject({
+  runtime: AgentRuntimeKindSchema,
+  provider: AgentCredentialProviderSchema,
+  apiKey: z.string().max(20_000).nullable().default(null)
+})
+export type AgentCredentialSaveInput = z.infer<typeof AgentCredentialSaveInputSchema>
 
 /** Proxy endpoints are optional, non-secret runtime metadata. Credentials in
  * proxy URLs are rejected so this configuration can safely live in SQLite. */
@@ -80,6 +150,17 @@ export const AgentConnectorSchema = z.strictObject({
   message: z.string().max(500),
   /** Volatile status from the installed CLI's own auth check. */
   authReady: z.boolean().optional(),
+  /** `app-isolated` means every probe and run used the workbench-owned profile
+   * directory. The renderer can therefore never show a user's personal
+   * `~/.pi`/`~/.codex` login as an app capability. */
+  profileSource: z.enum(['app-isolated', 'unspecified']).optional(),
+  /** Redaction-safe profile directory label. */
+  profileLabel: z.string().max(500).nullable().optional(),
+  /** `app-safeStorage` when an app-owned runtime credential is configured. */
+  authSource: z.enum(['app-safeStorage', 'cli-login', 'none']).optional(),
+  /** Interactive approval channel of this transport. Both supported CLIs run
+   * non-interactively, so a policy of `on-request` cannot prompt. */
+  approvalChannel: z.enum(['none', 'interactive']).optional(),
   proxyEnabled: z.boolean(),
   httpProxy: AgentProxyUrlSchema,
   httpsProxy: AgentProxyUrlSchema,
@@ -131,6 +212,21 @@ export const AgentBindingSaveInputSchema = z.strictObject({
 })
 export type AgentBindingSaveInput = z.infer<typeof AgentBindingSaveInputSchema>
 
+/** Immutable, redaction-safe description of the skill a run resolved. It is
+ * stored on the run so a retry reproduces the original selection instead of
+ * re-resolving whatever happens to be installed later. */
+export const AgentSkillSnapshotSchema = z.strictObject({
+  key: z.string().max(100),
+  source: z.enum(['env', 'project', 'packaged']),
+  version: z.string().max(100).nullable().default(null),
+  commit: z.string().max(100).nullable().default(null),
+  /** Redaction-safe label (`%REPO%/…/SKILL.md`), never an absolute path. */
+  skillPath: z.string().max(500),
+  enginePath: z.string().max(500).nullable().default(null),
+  pythonVersion: z.string().max(50).nullable().default(null)
+})
+export type AgentSkillSnapshot = z.infer<typeof AgentSkillSnapshotSchema>
+
 export const AgentRunRecordSchema = z.strictObject({
   id: IdSchema,
   jobId: IdSchema.nullable(),
@@ -144,6 +240,13 @@ export const AgentRunRecordSchema = z.strictObject({
   toolProfile: AgentToolProfileSchema,
   permissionMode: AgentPermissionModeSchema.default('read-only'),
   approvalPolicy: AgentApprovalPolicySchema.default('on-request'),
+  /** Skill selected for this run. `null` means the workflow prompt only. */
+  skillKey: z.string().max(100).nullable().default(null),
+  /** Frozen skill identity resolved when the run started; a retry reuses it. */
+  skillSnapshot: AgentSkillSnapshotSchema.nullable().default(null),
+  /** Where the run's runtime credential came from. `none` is a real, visible
+   * state: the run was started without an app-owned credential. */
+  credentialSource: z.enum(['app-safeStorage', 'none']).default('none'),
   status: AgentRunStatusSchema,
   input: z.record(z.string(), z.string()),
   output: z.string(),
@@ -163,13 +266,19 @@ export const AgentRunStartInputSchema = z.strictObject({
   /** Per-run reasoning/thinking override. Null follows the runtime profile. */
   thinking: z.string().trim().max(50).nullable().default(null),
   workflowKey: AgentWorkflowKeySchema,
+  /** Optional project-pinned skill. Null means use the workflow prompt only. */
+  skillKey: z.string().trim().max(100).nullable().default(null),
   projectId: ProjectIdSchema.nullable().default(null),
   paperIds: z.array(IdSchema).max(500).default([]),
   instructions: z.string().trim().min(1).max(100_000),
   toolProfile: AgentToolProfileSchema.default('read-only'),
   permissionMode: AgentPermissionModeSchema.default('read-only'),
   approvalPolicy: AgentApprovalPolicySchema.default('on-request'),
-  idempotencyKey: z.string().trim().max(512).nullable().default(null)
+  idempotencyKey: z.string().trim().max(512).nullable().default(null),
+  /** Set by `retry`: the run whose *stored* skill selection and snapshot this
+   * run resumes from. The pinning data therefore always comes from the
+   * persisted ledger, never from a client-supplied snapshot. */
+  resumeFromRunId: IdSchema.nullable().default(null)
 })
 export type AgentRunStartInput = z.infer<typeof AgentRunStartInputSchema>
 
@@ -256,6 +365,20 @@ export const AgentConversationArchiveBulkInputSchema = z.strictObject({
   })
 })
 export type AgentConversationArchiveBulkInput = z.infer<typeof AgentConversationArchiveBulkInputSchema>
+
+/** One conversation delete lock for the bulk delete command.
+ *
+ * The history rail exposes “删除” while the write itself stays a soft archive:
+ * the conversation row keeps its runs, events and messages, and only leaves the
+ * default list projection. Delete reuses the shared archive lock/receipt
+ * vocabulary (`ArchiveBulkInput` / `ArchiveBulkResult`) so the conversation
+ * list reports the same succeeded/skipped/conflict/failed outcomes as every
+ * other list instead of a second, weaker receipt shape. */
+export const AgentConversationRemoveInputSchema = z.strictObject({
+  conversationId: IdSchema,
+  expectedRevision: z.int().nonnegative()
+})
+export type AgentConversationRemoveInput = z.infer<typeof AgentConversationRemoveInputSchema>
 
 export const AgentRunListInputSchema = z.strictObject({
   status: AgentRunStatusSchema.optional(),
@@ -404,7 +527,15 @@ export const AgentApprovalSchema = z.strictObject({
   runId: IdSchema,
   operation: z.string().min(1).max(200),
   summary: z.string().max(2_000),
-  status: z.enum(['pending', 'approved', 'rejected', 'expired']),
+  /** `auto-approved`/`denied` are not user decisions: they record what the
+   * non-interactive CLI transport actually did with the requested permission
+   * mode, so the ledger never shows an empty approval list as "nothing to
+   * approve" when a run silently escalated. */
+  status: z.enum(['pending', 'auto-approved', 'denied', 'approved', 'rejected', 'expired']),
+  /** Policy that produced this row. */
+  policy: AgentApprovalPolicySchema.default('on-request'),
+  /** Machine-readable reason (`cli-non-interactive`, `security-gate`, ...). */
+  reason: z.string().max(200).nullable().default(null),
   createdAt: IsoDateSchema,
   decidedAt: IsoDateSchema.nullable()
 })
@@ -414,6 +545,7 @@ export const AgentApprovalDecisionInputSchema = z.strictObject({
   id: IdSchema,
   decision: z.enum(['approve', 'reject'])
 })
+
 export type AgentApprovalDecisionInput = z.infer<typeof AgentApprovalDecisionInputSchema>
 
 export const AutomationRuleSchema = z.strictObject({
@@ -430,7 +562,12 @@ export const AutomationRuleSchema = z.strictObject({
   prompt: z.string().max(100_000),
   skillKey: z.string().trim().max(100).nullable().default(null),
   topic: z.string().trim().max(500).default(''),
-  outputFolder: z.string().trim().max(180).default('每日文献推送'),
+  sources: AgentSourceListSchema.default([]),
+  lookbackDays: AgentLookbackDaysSchema.default(30),
+  /** Narrative language of the delivered push; see
+   *`AgentResponseLanguageSchema`. */
+  responseLanguage: AgentResponseLanguageSchema.default('zh-CN'),
+  outputFolder: z.string().trim().max(180).default(DEFAULT_DAILY_PUSH_SCHEDULE_INPUT.outputFolder),
   permissionMode: AgentPermissionModeSchema.default('read-only'),
   approvalPolicy: AgentApprovalPolicySchema.default('on-request'),
   projectId: ProjectIdSchema.nullable(),
@@ -457,7 +594,13 @@ export const AutomationRuleSaveInputSchema = z.strictObject({
   prompt: z.string().trim().max(100_000).default(''),
   skillKey: z.string().trim().max(100).nullable().default(null),
   topic: z.string().trim().max(500).default(''),
-  outputFolder: z.string().trim().max(180).default('每日文献推送'),
+  sources: AgentSourceListSchema.default([]),
+  lookbackDays: AgentLookbackDaysSchema.default(30),
+  responseLanguage: AgentResponseLanguageSchema.default('zh-CN'),
+  /** Write path is schema-checked: an absolute/traversing/reserved output
+   * folder never reaches the coordinator. The read-side `AutomationRuleSchema`
+   * stays tolerant so a legacy row cannot make the task list unreadable. */
+  outputFolder: AgentOutputFolderSchema.default(DEFAULT_DAILY_PUSH_SCHEDULE_INPUT.outputFolder),
   permissionMode: AgentPermissionModeSchema.default('read-only'),
   approvalPolicy: AgentApprovalPolicySchema.default('on-request'),
   projectId: ProjectIdSchema.nullable().default(null),
@@ -467,6 +610,90 @@ export const AutomationRuleSaveInputSchema = z.strictObject({
   expectedRevision: z.int().nonnegative().nullable().default(null)
 })
 export type AutomationRuleSaveInput = z.infer<typeof AutomationRuleSaveInputSchema>
+
+/**
+ * One claimed cron occurrence of a schedule.
+ *
+ * The row is the durable "run lock" for a time slot: it is written in the same
+ * transaction that advances the schedule cursor, so a crash, a shutdown or a
+ * policy refusal can never leave "the cursor moved but nothing ever ran"
+ * without a visible record. `idempotencyKey` is the same key the run itself is
+ * started with, so a duplicate tick, a duplicate “Run now” and the once-per-`
+ * start catch-up all collapse onto one row.
+ */
+export const ScheduleOccurrenceSourceSchema = z.enum(['scheduler', 'catchup', 'manual'])
+export type ScheduleOccurrenceSource = z.infer<typeof ScheduleOccurrenceSourceSchema>
+
+export const ScheduleOccurrenceStatusSchema = z.enum([
+  'claimed',
+  'running',
+  'completed',
+  'failed',
+  'blocked',
+  'canceled',
+  'missed',
+  'skipped'
+])
+export type ScheduleOccurrenceStatus = z.infer<typeof ScheduleOccurrenceStatusSchema>
+
+export const ScheduleOccurrenceSchema = z.strictObject({
+  id: IdSchema,
+  scheduleId: IdSchema,
+  occurrenceAt: IsoDateSchema,
+  /** Local day the occurrence belongs to, in the rule's own timezone. */
+  localDateKey: z.string().min(1).max(20),
+  idempotencyKey: z.string().min(1).max(512),
+  source: ScheduleOccurrenceSourceSchema,
+  status: ScheduleOccurrenceStatusSchema,
+  runId: IdSchema.nullable(),
+  /** Concrete reason for a non-successful occurrence (policy gate, missing
+   * credential, interrupted app, capability block). Never a stack trace. */
+  reason: z.string().max(1_000).default(''),
+  claimedAt: IsoDateSchema,
+  settledAt: IsoDateSchema.nullable(),
+  revision: z.int().nonnegative()
+})
+export type ScheduleOccurrence = z.infer<typeof ScheduleOccurrenceSchema>
+
+/**
+ * Automation page projection of one scheduled run: the run's terminal status,
+ * the occurrence it consumed (including the reason a slot produced nothing) and
+ * the delivered artifact / Obsidian outcome.
+ *
+ * `output` is deliberately not part of this view: the run detail page owns the
+ * full body, while the schedule card only needs a bounded reason.
+ */
+export const AutomationRunHistoryEntrySchema = z.strictObject({
+  runId: IdSchema,
+  /** CAS token for the RUN HISTORY delete commands, exactly like every other
+   * archivable row: a record that changed after it was selected (a run that just
+   * finished) reports a revision conflict instead of being removed blindly. */
+  revision: z.int().nonnegative(),
+  scheduleId: IdSchema,
+  status: AgentRunStatusSchema,
+  startedAt: IsoDateSchema,
+  finishedAt: IsoDateSchema.nullable(),
+  occurrenceAt: IsoDateSchema.nullable(),
+  occurrenceStatus: ScheduleOccurrenceStatusSchema.nullable(),
+  occurrenceSource: ScheduleOccurrenceSourceSchema.nullable(),
+  /** Why this slot did not produce a usable push (occurrence reason or run error). */
+  blockedReason: z.string().max(1_000).nullable(),
+  artifact: z.strictObject({ id: IdSchema, title: z.string().max(500) }).nullable(),
+  delivery: z.strictObject({
+    status: z.enum(['written', 'skipped']),
+    relativePath: z.string().max(500).nullable(),
+    reason: z.string().max(100).nullable(),
+    message: z.string().max(500).nullable()
+  }).nullable()
+})
+export type AutomationRunHistoryEntry = z.infer<typeof AutomationRunHistoryEntrySchema>
+
+export const AutomationRunHistoryInputSchema = z.strictObject({
+  /** `undefined` returns the newest runs of every rule. */
+  scheduleId: IdSchema.optional(),
+  limit: z.int().min(1).max(20).default(5)
+})
+export type AutomationRunHistoryInput = z.infer<typeof AutomationRunHistoryInputSchema>
 
 export const AgentInboxItemSchema = z.strictObject({
   id: IdSchema,
@@ -487,10 +714,17 @@ export const AgentRpcMethodPayloadSchemas = {
   'agent.conversations.messages': AgentConversationMessagesInputSchema,
   'agent.conversations.archive': z.strictObject({ conversationId: IdSchema, expectedRevision: z.int().nonnegative() }),
   'agent.conversations.archiveBulk': AgentConversationArchiveBulkInputSchema,
+  // CONVERSATION delete: the same CAS-locked soft archive as `archive`, but
+  // every record reports its own outcome instead of throwing a single error
+  // for the whole command.
+  'agent.conversations.remove': AgentConversationRemoveInputSchema,
+  'agent.conversations.removeBulk': ArchiveBulkInputSchema,
   'agent.connectors.list': z.null(),
   'agent.connectors.test': z.strictObject({ runtime: AgentRuntimeKindSchema }),
   'agent.connectors.save': AgentConnectorSaveInputSchema,
   'agent.bindings.list': z.null(),
+  'agent.credentials.status': z.null(),
+  'agent.credentials.save': AgentCredentialSaveInputSchema,
   'agent.bindings.save': AgentBindingSaveInputSchema,
   'agent.proxyProfiles.list': z.null(),
   'agent.proxyProfiles.save': AgentProxyProfileSaveInputSchema,
@@ -507,10 +741,20 @@ export const AgentRpcMethodPayloadSchemas = {
   'agent.approvals.list': z.strictObject({ runId: IdSchema.optional() }),
   'agent.approvals.decide': AgentApprovalDecisionInputSchema,
   'automation.rules.list': z.null(),
+  'automation.skills.list': z.null(),
   'automation.rules.save': AutomationRuleSaveInputSchema,
   'automation.rules.archive': z.strictObject({ id: IdSchema, expectedRevision: z.int().nonnegative() }),
+  /** Archive several rules in one transaction. Archiving a rule stops it from
+   * running but deliberately keeps its run/occurrence history and delivered
+   * artifacts: the receipts below describe rules, never history rows. */
+  'automation.rules.bulkArchive': ArchiveBulkInputSchema,
   'automation.rules.runNow': z.strictObject({ id: IdSchema }),
   'automation.runs.list': z.strictObject({ limit: z.int().min(1).max(100).default(50) }),
+  'automation.runs.history': AutomationRunHistoryInputSchema,
+  // RUN HISTORY record removal: a CAS lock per record, soft archive only.
+  'automation.runs.archive': z.strictObject({ runId: IdSchema, expectedRevision: z.int().nonnegative() }),
+  'automation.runs.archiveBulk': ArchiveBulkInputSchema,
+  'automation.runs.retry': z.strictObject({ runId: IdSchema }),
   'inbox.ai.list': z.strictObject({ unreadOnly: z.boolean().default(false) }),
   'inbox.ai.markRead': z.strictObject({ id: IdSchema }),
   'inbox.ai.archive': z.strictObject({ id: IdSchema })
@@ -526,6 +770,27 @@ export const AgentRpcRequestSchema = z.discriminatedUnion('method', [
 ] as [ReturnType<typeof agentRpc>, ...ReturnType<typeof agentRpc>[]])
 export type AgentRpcRequest = z.infer<typeof AgentRpcRequestSchema>
 
+/**
+ * Private Main→Core envelope for Agent RPCs that need a credential.
+ *
+ * Electron Main owns the `safeStorage` vault, so it resolves the credential for
+ * the runtime the request targets and attaches it for exactly one dispatch.
+ * The renderer never sees this envelope, Core never stores it, and the secret
+ * is dropped as soon as the child process has started. An empty `credentials`
+ * list is a valid, meaningful request: Core then fails closed instead of
+ * reaching for the user's personal CLI login.
+ */
+export const AgentCredentialEnvelopeSchema = z.strictObject({
+  type: z.literal('prw.agent-rpc-with-credential'),
+  request: AgentRpcRequestSchema,
+  credentials: z.array(z.strictObject({
+    runtime: AgentRuntimeKindSchema,
+    provider: AgentCredentialProviderSchema,
+    secret: z.string().min(1).max(20_000)
+  })).max(4).default([])
+})
+export type AgentCredentialEnvelope = z.infer<typeof AgentCredentialEnvelopeSchema>
+
 export interface WorkbenchAgentApiV1 {
   conversations: {
     list(input?: AgentConversationListInput): Promise<AgentConversation[]>
@@ -536,6 +801,14 @@ export interface WorkbenchAgentApiV1 {
     records(input: AgentConversationRecordsInput): Promise<AgentRunRecordEntry[]>
     archive(conversationId: string, expectedRevision: number): Promise<void>
     archiveBulk(items: AgentConversationArchiveItem[]): Promise<void>
+    /** Delete one conversation record. Delete is a revision-checked soft archive
+     * (the row, its runs, events and messages stay readable) that reports its
+     * own outcome instead of a shared all-or-nothing error. */
+    remove(conversationId: string, expectedRevision: number): Promise<ArchiveBulkReceipt>
+    /** Delete a selected conversation set with one per-record receipt each. A
+     * stale lock is a `conflict`, an already-removed conversation is `skipped`,
+     * so a bulk delete can never report a row it did not actually remove. */
+    removeBulk(items: ReadonlyArray<{ id: string; expectedRevision: number }>): Promise<ArchiveBulkResult>
   }
   connectors: {
     list(): Promise<AgentConnector[]>
@@ -545,6 +818,12 @@ export interface WorkbenchAgentApiV1 {
   bindings: {
     list(): Promise<AgentBinding[]>
     save(input: AgentBindingSaveInput): Promise<AgentBinding>
+  }
+  /** Runtime credentials live in Main's safeStorage vault; the renderer only
+   * ever sees the non-secret status. */
+  credentials: {
+    status(): Promise<AgentCredentialStatus[]>
+    save(input: AgentCredentialSaveInput): Promise<AgentCredentialStatus[]>
   }
   proxyProfiles: { list(): Promise<AgentProxyProfile[]>; save(input: AgentProxyProfileSaveInput): Promise<AgentProxyProfile> }
   proxyBindings: { list(): Promise<AgentProxyBinding[]>; save(input: AgentProxyBindingSaveInput): Promise<AgentProxyBinding> }
@@ -567,10 +846,31 @@ export interface WorkbenchAgentApiV1 {
   }
   automation: {
     rules(): Promise<AutomationRule[]>
+    /** Selectable skills with their real installed state. A reserved key or a
+     * missing `SKILL.md` is reported as not runnable with the blocked reason;
+     * the editor shows it as not installed instead of as a usable option. */
+    skills(): Promise<AgentScheduleSkillCatalogEntry[]>
     save(input: AutomationRuleSaveInput): Promise<AutomationRule>
     archive(id: string, expectedRevision: number): Promise<void>
+    /** Archive the selected rules in one transaction with per-rule receipts;
+     * run history, occurrences and delivered artifacts are left intact. */
+    bulkArchive(input: ArchiveBulkInput): Promise<ArchiveBulkResult>
     runNow(id: string): Promise<AgentRunRecord>
     runs(limit?: number): Promise<AgentRunRecord[]>
+    /** Recent runs of one rule (or of every rule) with the consumed occurrence,
+     * the blocked/skipped reason, the artifact and the Obsidian delivery state. */
+    history(input?: AutomationRunHistoryInput): Promise<AutomationRunHistoryEntry[]>
+    /** Soft-archive one RUN HISTORY record with a CAS revision lock: the audit
+     * row stays in the local database, the rule/occurrence cursor, the Artifact,
+     * Obsidian output and every credential are untouched. */
+    archiveRun(runId: string, expectedRevision: number): Promise<void>
+    /** Archive the selected RUN HISTORY records in one transaction with per-run
+     * receipts; stale locks report a conflict and are never written. */
+    bulkArchiveRuns(input: ArchiveBulkInput): Promise<ArchiveBulkResult>
+    /** Safe retry entry: re-runs the owning *schedule*, so the recorded
+     * permission/approval policy, the skill selection and the occurrence lock
+     * all still apply. It never replays a run with elevated permissions. */
+    retryRun(runId: string): Promise<AgentRunRecord>
   }
   inbox: {
     list(unreadOnly?: boolean): Promise<AgentInboxItem[]>

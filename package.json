@@ -16,10 +16,32 @@
     "test": "node -e \"console.log('Test suite intentionally removed; use typecheck and build gates.')\"",
     "test:e2e": "node scripts/e2e-electron.cjs",
     "test:e2e:zotero": "node scripts/e2e-zotero-real.cjs",
-    "check": "pnpm typecheck && pnpm build"
+    "test:last30days": "node scripts/last30days-skill-smoke.cjs",
+    "test:last30days:network": "node scripts/last30days-skill-smoke.cjs --network",
+    "test:last30days:app": "node scripts/last30days-skill-run-check.cjs",
+    "test:literature-skills": "node scripts/literature-skills-smoke.cjs",
+    "test:last30days:cli": "node scripts/last30days-skill-cli-run.cjs",
+    "test:daily-literature": "jiti scripts/daily-literature-push-check.ts",
+    "test:calendar-daily-push": "node --import jiti/register --test packages/workspace-service/tests/calendar-daily-push.test.ts",
+    "test:agent-credentials": "node --import jiti/register --test apps/desktop/test/agent-credentials.test.ts",
+    "test:zotero-write": "node --import jiti/register --test apps/desktop/test/zotero-write.test.ts",
+    "test:zotero-connector": "node --import jiti/register --test packages/connectors/test/zotero.test.ts",
+    "test:zotero-delete": "node --import jiti/register --test packages/workspace-service/tests/zotero-delete.test.ts",
+    "test:dashboard-push": "node --import jiti/register --test apps/desktop/test/dashboard-push.test.ts",
+    "test:external-url": "node --import jiti/register --test apps/desktop/test/external-url.test.ts",
+    "test:markdown-sections": "node --import jiti/register --test apps/desktop/test/markdown-sections.test.ts",
+    "test:connection-bulk-delete": "node --import jiti/register --test packages/database/tests/connection-bulk-remove.test.ts",
+    "test:default-schedules": "node --import jiti/register --test packages/database/tests/default-schedules.test.ts",
+    "test:sync-run-bulk-delete": "node --import jiti/register --test packages/database/tests/sync-run-bulk-remove.test.ts",
+    "test:automation-run-history-delete": "node --import jiti/register --test packages/database/tests/automation-run-history-archive.test.ts",
+    "test:agent-history-delete": "node --import jiti/register --test packages/database/tests/agent-conversation-remove.test.ts",
+    "test:literature-zotero": "node --import jiti/register --test packages/workspace-service/tests/literature-runtime.test.ts",
+    "check": "pnpm typecheck && pnpm build",
+    "test:last30days:digest": "jiti scripts/last30days-ai-digest-check.ts"
   },
   "devDependencies": {
     "@types/node": "24.10.14",
+    "jiti": "2.7.0",
     "playwright-core": "1.58.2",
     "typescript": "7.0.2"
   }

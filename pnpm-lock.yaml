@@ -11,6 +11,9 @@ importers:
       '@types/node':
         specifier: 24.10.14
         version: 24.10.14
+      jiti:
+        specifier: 2.7.0
+        version: 2.7.0
       playwright-core:
         specifier: 1.58.2
         version: 1.58.2

@@ -595,6 +595,180 @@ export async function deleteObsidianFolder(
   return { relativePath: normalized, status: 'deleted', remainingEntries: 0 }
 }
 
+/**
+ * Normalize a Vault-relative path into validated POSIX segments.  Shared by
+ * the folder/move primitives so both reject traversal, drive letters,
+ * `.obsidian` and Windows-unsafe names before any filesystem call.
+ */
+function requireVaultRelativeSegments(relativePath: string, label: string): string[] {
+  if (typeof relativePath !== 'string' || !relativePath || isAbsolute(relativePath) || relativePath.startsWith('/') || relativePath.startsWith('\\') || /^[A-Za-z]:/u.test(relativePath)) {
+    throw new IntegrationRuntimeError('INVALID_MAPPING', `${label}必须是 Vault 内的相对路径`)
+  }
+  const normalized = relativePath.replaceAll('\\', '/').replace(/^\/+|\/+$/gu, '')
+  const segments = normalized.split('/')
+  if (segments.some((segment) => !segment || segment === '.' || segment === '..')) {
+    throw new IntegrationRuntimeError('INVALID_MAPPING', `${label}不能包含空段或目录遍历`)
+  }
+  rejectObsidianSegment(normalized, `${label}不能进入 .obsidian`)
+  for (const segment of segments) {
+    if (/[<>:"|?*\u0000-\u001f]/u.test(segment) || /[. ]$/u.test(segment) || segment.length > 255) {
+      throw new IntegrationRuntimeError('INVALID_MAPPING', `${label}包含 Windows 不支持的字符`)
+    }
+  }
+  return segments
+}
+
+/**
+ * Create a folder inside the Vault one segment at a time.  Every level is
+ * validated before it is created, so the command cannot follow a link out of
+ * the Vault, cannot write into `.obsidian`, and cannot replace a file.  An
+ * already existing folder is reported as `exists` instead of failing, which
+ * makes the operation idempotent for the UI.
+ */
+export async function createObsidianFolder(
+  profile: AdapterProfile,
+  relativePath: string
+): Promise<{ relativePath: string; status: 'created' | 'exists' }> {
+  const { root, realRoot } = await requireSafeVaultRoot(profile)
+  const segments = requireVaultRelativeSegments(relativePath, 'Obsidian 目录路径')
+  if (segments.some((segment) => segment.toLocaleLowerCase('en-US').endsWith('.md'))) {
+    // `.md` is reserved for notes; a folder with that suffix would make the
+    // path ambiguous for every later read/write and for the README convention.
+    throw new IntegrationRuntimeError('INVALID_MAPPING', 'Obsidian 目录名不能使用 .md 扩展名')
+  }
+  let current = root
+  let created = false
+  for (const segment of segments) {
+    current = resolve(current, segment)
+    if (!insideRoot(root, current)) throw new IntegrationRuntimeError('INVALID_MAPPING', 'Obsidian 目录路径越过 Vault 根目录')
+    await validateExistingParentChain(root, realRoot, dirname(current))
+    let entry
+    try {
+      entry = await lstat(current)
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error
+      // The parent chain was validated above, so a single-level mkdir cannot
+      // follow a link that appeared outside the Vault.
+      await mkdir(current)
+      created = true
+      continue
+    }
+    if (entry.isSymbolicLink()) throw new IntegrationRuntimeError('INVALID_MAPPING', 'Obsidian 目录不能是符号链接或 junction')
+    const realEntry = await realpath(current)
+    if (!insideRoot(realRoot, realEntry)) throw new IntegrationRuntimeError('INVALID_MAPPING', 'Obsidian 目录位于 Vault 外部')
+    if (!entry.isDirectory()) throw new IntegrationRuntimeError('INVALID_MAPPING', 'Obsidian 目录目标已被同名文件占用')
+  }
+  return { relativePath: segments.join('/'), status: created ? 'created' : 'exists' }
+}
+
+export interface ObsidianMoveReceipt {
+  readonly kind: 'file' | 'directory'
+  readonly fromRelativePath: string
+  readonly toRelativePath: string
+  /** Fingerprint of the moved note after the rename; folders have none. */
+  readonly fingerprint: string | null
+}
+
+/**
+ * Rename or move one Markdown note or one root-level Vault folder.
+ *
+ * The command never overwrites an existing target: a collision fails with
+ * `INVALID_MAPPING` so the caller has to preview the conflict.  Notes are
+ * additionally guarded by the last-seen fingerprint (`REVISION_CONFLICT`), and
+ * files, folders and every traversed parent are checked for links and Vault
+ * containment before and after the rename.
+ */
+export async function moveObsidianEntry(
+  profile: AdapterProfile,
+  kind: ObsidianMoveReceipt['kind'],
+  fromRelativePath: string,
+  toRelativePath: string,
+  expectedFingerprint: string | null
+): Promise<ObsidianMoveReceipt> {
+  const { root, realRoot } = await requireSafeVaultRoot(profile)
+  const fromSegments = requireVaultRelativeSegments(fromRelativePath, 'Obsidian 源路径')
+  const toSegments = requireVaultRelativeSegments(toRelativePath, 'Obsidian 目标路径')
+  if (kind === 'directory' && (fromSegments.length !== 1 || toSegments.length !== 1)) {
+    throw new IntegrationRuntimeError('INVALID_MAPPING', 'Obsidian 分类移动只支持 Vault 根目录下的单层目录')
+  }
+  const fromPath = resolve(root, ...fromSegments)
+  const toPath = resolve(root, ...toSegments)
+  if (!insideRoot(root, fromPath) || !insideRoot(root, toPath)) {
+    throw new IntegrationRuntimeError('INVALID_MAPPING', 'Obsidian 移动路径越过 Vault 根目录')
+  }
+  if (kind === 'file') {
+    if (extname(fromPath).toLowerCase() !== '.md' || extname(toPath).toLowerCase() !== '.md') {
+      throw new IntegrationRuntimeError('INVALID_MAPPING', 'Obsidian 笔记移动只支持 Markdown 文件')
+    }
+  } else if (expectedFingerprint !== null) {
+    throw new IntegrationRuntimeError('INVALID_MAPPING', 'Obsidian 目录移动不支持指纹校验')
+  }
+  const fromKey = fromSegments.join('/')
+  const toKey = toSegments.join('/')
+  let sourceEntry
+  try {
+    sourceEntry = await lstat(fromPath)
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') {
+      throw new IntegrationRuntimeError('NOT_FOUND', 'Obsidian 源路径已不存在，请重新加载知识库')
+    }
+    throw error
+  }
+  if (fromKey === toKey) return { kind, fromRelativePath: fromKey, toRelativePath: toKey, fingerprint: expectedFingerprint }
+  if (sourceEntry.isSymbolicLink()) throw new IntegrationRuntimeError('INVALID_MAPPING', 'Obsidian 移动的源不能是符号链接或 junction')
+  if (kind === 'directory' && !sourceEntry.isDirectory()) throw new IntegrationRuntimeError('INVALID_MAPPING', 'Obsidian 源路径不是文件夹')
+  const realFrom = await realpath(fromPath)
+  if (!insideRoot(realRoot, realFrom)) throw new IntegrationRuntimeError('INVALID_MAPPING', 'Obsidian 源路径位于 Vault 外部')
+  await validateExistingParentChain(root, realRoot, dirname(toPath))
+  // Moving must not invent new folders inside the user's Vault: the target
+  // parent has to exist already and is validated as a real directory.
+  let targetParentStat
+  try {
+    const targetParentEntry = await lstat(dirname(toPath))
+    targetParentStat = targetParentEntry.isSymbolicLink() ? await stat(await realpath(dirname(toPath))) : targetParentEntry
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') {
+      throw new IntegrationRuntimeError('INVALID_MAPPING', 'Obsidian 目标文件夹不存在，请先创建目标分类目录')
+    }
+    throw error
+  }
+  if (!targetParentStat.isDirectory()) throw new IntegrationRuntimeError('INVALID_MAPPING', 'Obsidian 目标父路径不是文件夹')
+  let currentFingerprint: string | null = null
+  if (kind === 'file') {
+    const fromStat = await stat(fromPath)
+    currentFingerprint = `${fromStat.mtimeMs}:${fromStat.size}`
+    if (expectedFingerprint !== null && expectedFingerprint !== currentFingerprint) {
+      throw new IntegrationRuntimeError('REVISION_CONFLICT', 'Obsidian 笔记已在外部修改，移动已取消')
+    }
+  }
+  try {
+    const targetEntry = await lstat(toPath)
+    if (targetEntry.isSymbolicLink()) throw new IntegrationRuntimeError('INVALID_MAPPING', 'Obsidian 移动目标不能是符号链接或 junction')
+    throw new IntegrationRuntimeError('INVALID_MAPPING', 'Obsidian 目标路径已存在，拒绝覆盖现有内容')
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error
+  }
+  try {
+    await rename(fromPath, toPath)
+  } catch (error) {
+    const code = (error as NodeJS.ErrnoException).code
+    if (code === 'ENOENT') throw new IntegrationRuntimeError('NOT_FOUND', 'Obsidian 源路径在移动完成前消失，请重新加载知识库')
+    if (code === 'ENOTEMPTY' || code === 'EEXIST') throw new IntegrationRuntimeError('INVALID_MAPPING', 'Obsidian 目标路径已存在，拒绝覆盖现有内容')
+    throw error
+  }
+  if (kind === 'directory') {
+    const realTarget = await realpath(toPath)
+    if (!insideRoot(realRoot, realTarget)) {
+      // Fail closed: move the folder back rather than leave it outside the root.
+      await rename(toPath, fromPath).catch(() => undefined)
+      throw new IntegrationRuntimeError('INVALID_MAPPING', 'Obsidian 分类移动后越过了 Vault 根目录')
+    }
+    return { kind, fromRelativePath: fromKey, toRelativePath: toKey, fingerprint: null }
+  }
+  const afterStat = await stat(toPath)
+  return { kind, fromRelativePath: fromKey, toRelativePath: toKey, fingerprint: `${afterStat.mtimeMs}:${afterStat.size}` }
+}
+
 export async function writeObsidianNote(
   profile: AdapterProfile,
   relativePath: string,

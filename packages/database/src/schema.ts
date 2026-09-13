@@ -1,5 +1,7 @@
 import type {
   AgentRun,
+  AgentApproval,
+  AgentApprovalPolicy,
   AgentEventKind,
   AgentRecordKind,
   AgentRecordStatus,
@@ -25,6 +27,7 @@ import type {
   ResourceRelationship,
   ResearchArtifact,
   Schedule,
+  ScheduleOccurrence,
   SyncRun,
   TaskPriority,
   TaskStatus,
@@ -492,7 +495,13 @@ export const syncRuns = sqliteTable(
     conflicts: integer('conflicts').notNull().default(0),
     message: text('message').notNull().default(''),
     startedAt: text('started_at').notNull(),
-    finishedAt: text('finished_at')
+    finishedAt: text('finished_at'),
+    // Sync runs are audit records: "removing" one from the Settings list only
+    // soft-archives it (kept in the local database), never drops the row or
+    // cascades into connections, links or external data. `revision` is the
+    // CAS token the delete commands lock on, like every other archivable row.
+    archivedAt: text('archived_at'),
+    revision: integer('revision').notNull().default(0)
   },
   (table) => [index('sync_runs_profile_started_idx').on(table.profileId, table.startedAt)]
 )
@@ -562,6 +571,9 @@ export const agentRuns = sqliteTable(
       .references(() => promptTemplates.id, { onDelete: 'restrict' }),
     projectId: text('project_id').references(() => projects.id, { onDelete: 'set null' }),
     paperIdsJson: text('paper_ids_json').notNull().default('[]'),
+    skillKey: text('skill_key'),
+    skillSnapshotJson: text('skill_snapshot_json'),
+    credentialSource: text('credential_source').$type<'app-safeStorage' | 'none'>().notNull().default('none'),
     status: text('status').$type<AgentRun['status']>().notNull().default('queued'),
     inputJson: text('input_json').notNull().default('{}'),
     output: text('output').notNull().default(''),
@@ -569,7 +581,14 @@ export const agentRuns = sqliteTable(
     error: text('error'),
     createdAt: text('created_at').notNull(),
     startedAt: text('started_at'),
-    finishedAt: text('finished_at')
+    finishedAt: text('finished_at'),
+    // The Automation page's RUN HISTORY is an audit ledger: "删除" only
+    // soft-archives the run record (still readable in the local database), never
+    // drops the row and never touches the schedule rule, its occurrence cursor,
+    // the delivered Artifact, Obsidian output or any credential. `revision` is
+    // the CAS token the per-row/bulk delete commands lock on.
+    archivedAt: text('archived_at'),
+    revision: integer('revision').notNull().default(0)
   },
   (table) => [
     index('agent_runs_created_idx').on(table.createdAt),
@@ -600,7 +619,14 @@ export const schedules = sqliteTable(
     prompt: text('prompt').notNull().default(''),
     skillKey: text('skill_key'),
     topic: text('topic').notNull().default(''),
-    outputFolder: text('output_folder').notNull().default('每日文献推送'),
+    /** Requested last30days engine sources; `[]` means all available. */
+    sourcesJson: text('sources_json').notNull().default('[]'),
+    lookbackDays: integer('lookback_days').notNull().default(30),
+    /** Narrative language of the delivered push (`zh-CN` is the frozen default).
+     * The value is passed to the skill briefing, so it is authoritative for the
+     * rendered article and not a renderer-only hint. */
+    responseLanguage: text('response_language').$type<NonNullable<Schedule['responseLanguage']>>().notNull().default('zh-CN'),
+    outputFolder: text('output_folder').notNull().default('每日资讯推送'),
     permissionMode: text('permission_mode').$type<'read-only' | 'auto' | 'full-access'>().notNull().default('read-only'),
     approvalPolicy: text('approval_policy').$type<'on-request' | 'never'>().notNull().default('on-request'),
     projectId: text('project_id').references(() => projects.id, { onDelete: 'set null' }),
@@ -618,6 +644,40 @@ export const schedules = sqliteTable(
   (table) => [
     index('schedules_enabled_next_run_idx').on(table.enabled, table.nextRunAt),
     index('schedules_archived_at_idx').on(table.archivedAt)
+  ]
+)
+
+/**
+ * Durable occurrence ledger for schedules.
+ *
+ * One row per claimed cron time slot. It is inserted in the *same* transaction
+ * that advances `schedules.next_run_at` (see `claimScheduleOccurrence`), which
+ * is what makes a crash between “the cursor moved” and “the runtime started”
+ * observable instead of a silently skipped day. `idempotency_key` is unique
+ * and equals the run's own idempotency key, so a duplicate 30-second tick, a
+ * duplicate manual trigger and the startup catch-up collapse onto one row. */
+export const scheduleOccurrences = sqliteTable(
+  'schedule_occurrences',
+  {
+    id: text('id').primaryKey(),
+    scheduleId: text('schedule_id')
+      .notNull()
+      .references(() => schedules.id, { onDelete: 'cascade' }),
+    occurrenceAt: text('occurrence_at').notNull(),
+    localDateKey: text('local_date_key').notNull(),
+    idempotencyKey: text('idempotency_key').notNull().unique(),
+    source: text('source').$type<ScheduleOccurrence['source']>().notNull(),
+    status: text('status').$type<ScheduleOccurrence['status']>().notNull(),
+    runId: text('run_id').references(() => agentRuns.id, { onDelete: 'set null' }),
+    reason: text('reason').notNull().default(''),
+    claimedAt: text('claimed_at').notNull(),
+    settledAt: text('settled_at'),
+    updatedAt: text('updated_at').notNull(),
+    revision: integer('revision').notNull().default(0)
+  },
+  (table) => [
+    index('schedule_occurrences_schedule_idx').on(table.scheduleId, table.occurrenceAt),
+    index('schedule_occurrences_status_idx').on(table.status, table.claimedAt)
   ]
 )
 
@@ -690,6 +750,27 @@ export const agentBindings = sqliteTable(
     revision: integer('revision').notNull().default(0)
   },
   (table) => [uniqueIndex('agent_bindings_project_idx').on(table.projectId)]
+)
+
+/** Approval audit trail (migration 24). One row per approval-relevant
+ * decision the coordinator made for a run; `status` is never a placeholder. */
+export const agentApprovals = sqliteTable(
+  'agent_approvals',
+  {
+    id: text('id').primaryKey(),
+    runId: text('run_id').notNull().references(() => agentRuns.id, { onDelete: 'cascade' }),
+    operation: text('operation').notNull(),
+    summary: text('summary').notNull().default(''),
+    status: text('status').$type<AgentApproval['status']>().notNull(),
+    policy: text('policy').$type<AgentApprovalPolicy>().notNull().default('on-request'),
+    reason: text('reason'),
+    createdAt: text('created_at').notNull(),
+    decidedAt: text('decided_at')
+  },
+  (table) => [
+    index('agent_approvals_run_created_idx').on(table.runId, table.createdAt),
+    index('agent_approvals_status_created_idx').on(table.status, table.createdAt)
+  ]
 )
 
 export const agentRunEvents = sqliteTable(
@@ -827,11 +908,13 @@ export type PromptTemplateRow = typeof promptTemplates.$inferSelect
 export type AiProviderProfileRow = typeof aiProviderProfiles.$inferSelect
 export type AgentRunRow = typeof agentRuns.$inferSelect
 export type ScheduleRow = typeof schedules.$inferSelect
+export type ScheduleOccurrenceRow = typeof scheduleOccurrences.$inferSelect
 export type AgentConnectorRow = typeof agentConnectors.$inferSelect
 export type AgentProxyProfileRow = typeof agentProxyProfiles.$inferSelect
 export type AgentProxyBindingRow = typeof agentProxyBindings.$inferSelect
 export type AgentBindingRow = typeof agentBindings.$inferSelect
 export type AgentRunEventRow = typeof agentRunEvents.$inferSelect
+export type AgentApprovalRow = typeof agentApprovals.$inferSelect
 export type AgentRunRecordRow = typeof agentRunRecords.$inferSelect
 export type AgentInboxItemRow = typeof agentInboxItems.$inferSelect
 export type AgentConversationRow = typeof agentConversations.$inferSelect

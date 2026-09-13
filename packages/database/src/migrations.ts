@@ -1020,6 +1020,12 @@ const migrations: readonly Migration[] = [
       -- tick seeds the next future 09:00 occurrence instead of replaying an
       -- old occurrence immediately.  Subsequent user pause/enable choices are
       -- retained because this migration runs exactly once.
+      --
+      -- It is gated on revision = 0 so that a user who had already paused
+      -- the built-in rule on an older install is never silently re-enabled by
+      -- an upgrade: any user save bumps revision (saveSchedule + the timing
+      -- update), while a row still at revision 0 has never been touched by the
+      -- user, so only that row may receive the product default.
       UPDATE schedules
       SET enabled = 1,
           next_run_at = NULL,
@@ -1030,7 +1036,7 @@ const migrations: readonly Migration[] = [
           timezone = 'Asia/Shanghai',
           updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now'),
           revision = revision + 1
-      WHERE id = 'builtin.schedule.last30days' AND archived_at IS NULL;
+      WHERE id = 'builtin.schedule.last30days' AND archived_at IS NULL AND revision = 0;
     `
   },
   {
@@ -1218,6 +1224,232 @@ const migrations: readonly Migration[] = [
             WHERE e.run_id = m.run_id AND e.kind = 'assistant_message'
           )
       ) AS source;
+    `
+  },
+  {
+    id: 23,
+    name: 'daily_literature_push_closure',
+    sql: `
+      -- Rule fields the daily last30days push needs in order to be reproducible:
+      -- which sources were requested and how far back the run may look.  An
+      -- empty source list keeps the previous "all available sources" behavior.
+      ALTER TABLE schedules ADD COLUMN sources_json TEXT NOT NULL DEFAULT '[]'
+        CHECK (json_valid(sources_json));
+      ALTER TABLE schedules ADD COLUMN lookback_days INTEGER NOT NULL DEFAULT 30
+        CHECK (lookback_days BETWEEN 1 AND 365);
+
+      -- Directory naming had drifted: the built-in schedule (and any schedule
+      -- saved by an older renderer default) wrote to 每日资讯推送 while the
+      -- contracts, the Obsidian layout and the safe-write default all used
+      -- 每日文献推送.  Earlier migrations keep their historical text; this one
+      -- is the single normalization point for already-installed databases so a
+      -- Vault can no longer end up with two competing "daily push" folders.
+      UPDATE schedules
+      SET output_folder = '每日文献推送',
+          updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+      WHERE output_folder = '每日资讯推送';
+
+      UPDATE schedules
+      SET name = 'Last 30 days 每日文献推送',
+          updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+      WHERE id = 'builtin.schedule.last30days'
+        AND name = 'Last 30 days 每日资讯推送';
+    `
+  },
+  {
+    id: 24,
+    name: 'agent_skill_snapshot_credentials_and_approvals',
+    sql: `
+      -- A run records the skill it actually resolved, so a retry reproduces the
+      -- pinned selection instead of re-resolving whatever is installed later.
+      -- The snapshot stores redaction-safe labels only.
+      ALTER TABLE agent_runs ADD COLUMN skill_key TEXT;
+      ALTER TABLE agent_runs ADD COLUMN skill_snapshot_json TEXT;
+
+      -- Where the runtime credential for this run came from. Runtime secrets
+      -- stay in Electron Main's safeStorage vault and are never stored here;
+      -- 'none' means the run was started with no app-owned credential at all,
+      -- which is a real state the run ledger has to be able to show.
+      ALTER TABLE agent_runs ADD COLUMN credential_source TEXT NOT NULL DEFAULT 'none'
+        CHECK (credential_source IN ('app-safeStorage', 'none'));
+
+      -- Approval audit rows. Both supported CLIs execute as non-interactive
+      -- batch processes, so 'on-request' can never prompt: the coordinator
+      -- records what the transport actually did (auto-approved / denied)
+      -- instead of pretending an interactive approval queue exists.
+      CREATE TABLE agent_approvals (
+        id TEXT PRIMARY KEY NOT NULL,
+        run_id TEXT NOT NULL REFERENCES agent_runs(id) ON DELETE CASCADE,
+        operation TEXT NOT NULL,
+        summary TEXT NOT NULL DEFAULT '',
+        status TEXT NOT NULL CHECK (status IN ('pending', 'auto-approved', 'denied', 'approved', 'rejected', 'expired')),
+        policy TEXT NOT NULL DEFAULT 'on-request' CHECK (policy IN ('on-request', 'never')),
+        reason TEXT,
+        created_at TEXT NOT NULL,
+        decided_at TEXT
+      );
+      CREATE INDEX agent_approvals_run_created_idx ON agent_approvals(run_id, created_at);
+      CREATE INDEX agent_approvals_status_created_idx ON agent_approvals(status, created_at);
+    `
+  },
+  {
+    id: 25,
+    name: 'schedule_occurrence_ledger',
+    sql: `
+      -- One row per claimed cron time slot.  The scheduler writes the claim and
+      -- advances schedules.next_run_at inside a single transaction, so "the
+      -- cursor moved but nothing ran" (crash, forced shutdown) is a durable,
+      -- visible occurrence instead of a silently skipped day.  The unique
+      -- idempotency key is the run's own key, which collapses a duplicate
+      -- 30-second tick, a duplicate manual trigger and the once-per-start
+      -- catch-up onto one row.  No schedule flag is modified here: a user
+      -- pause stays a pause.
+      CREATE TABLE schedule_occurrences (
+        id TEXT PRIMARY KEY NOT NULL,
+        schedule_id TEXT NOT NULL REFERENCES schedules(id) ON DELETE CASCADE,
+        occurrence_at TEXT NOT NULL,
+        local_date_key TEXT NOT NULL,
+        idempotency_key TEXT NOT NULL UNIQUE,
+        source TEXT NOT NULL CHECK (source IN ('scheduler', 'catchup', 'manual')),
+        status TEXT NOT NULL CHECK (status IN ('claimed', 'running', 'completed', 'failed', 'blocked', 'canceled', 'missed', 'skipped')),
+        run_id TEXT REFERENCES agent_runs(id) ON DELETE SET NULL,
+        reason TEXT NOT NULL DEFAULT '',
+        claimed_at TEXT NOT NULL,
+        settled_at TEXT,
+        updated_at TEXT NOT NULL,
+        revision INTEGER NOT NULL DEFAULT 0 CHECK (revision >= 0)
+      ) STRICT;
+
+      CREATE INDEX schedule_occurrences_schedule_idx ON schedule_occurrences(schedule_id, occurrence_at);
+      CREATE INDEX schedule_occurrences_status_idx ON schedule_occurrences(status, claimed_at);
+    `
+  },
+  {
+    id: 26,
+    name: 'generic_skill_schedule_contract',
+    sql: `
+      -- The generic schedule contract adds an explicit output language.  The
+      -- default is the frozen product default (Simplified Chinese narrative,
+      -- evidence left verbatim), so every already-installed rule keeps its
+      -- behavior without a user action.
+      ALTER TABLE schedules ADD COLUMN response_language TEXT NOT NULL DEFAULT 'zh-CN'
+        CHECK (response_language IN ('zh-CN', 'en'));
+
+      -- The shipped daily-push default moved from skill "last30days" with
+      -- topic "research updates" into 每日文献推送 to topic "AI 最新资讯" into
+      -- 每日资讯推送.  Only a row that still holds that exact triple is the
+      -- *unmodified* old default; this migration normalizes exactly those rows
+      -- and leaves every user-edited rule (custom topic, custom folder, other
+      -- skill or no skill at all) untouched, including its history.
+      UPDATE schedules
+      SET topic = 'AI 最新资讯',
+          output_folder = '每日资讯推送',
+          updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+      WHERE skill_key = 'last30days'
+        AND trim(topic) = 'research updates'
+        AND output_folder = '每日文献推送';
+
+      -- The built-in rule is the shipped default itself, so its display name
+      -- follows the same rename (migration 23 renamed it the other way for the
+      -- same reason).  A user-renamed rule keeps its name.
+      UPDATE schedules
+      SET name = 'Last 30 days 每日资讯推送',
+          updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+      WHERE id = 'builtin.schedule.last30days'
+        AND name = 'Last 30 days 每日文献推送';
+    `
+  },
+  {
+    id: 27,
+    name: 'sync_run_archive_and_revision',
+    sql: `
+      -- Settings → 最近同步 gets the same delete contract as every other
+      -- multi-select list: a CAS lock and a soft archive. Existing rows keep
+      -- their audit value (revision 0) and stay visible until the user removes
+      -- them; nothing is dropped here and no sync data is deleted.
+      ALTER TABLE sync_runs ADD COLUMN archived_at TEXT;
+      ALTER TABLE sync_runs ADD COLUMN revision INTEGER NOT NULL DEFAULT 0 CHECK (revision >= 0);
+    `
+  },
+  {
+    id: 28,
+    name: 'three_builtin_schedule_rules',
+    sql: `
+      -- The shipped schedule surface is exactly three enabled rules: the
+      -- last30days news push plus the two project-owned instruction skills
+      -- (literature-matrix / literature-review-push). A fresh install already
+      -- received the first rule from migration 15 (then normalized by
+      -- 16/18/19/23/26); this migration adds the two missing rules and
+      -- re-asserts the daily push row for a database where it is gone.
+      --
+      -- Every statement is INSERT OR IGNORE, i.e. write-only-when-absent:
+      -- an existing rule (renamed, re-foldered, retopiced, paused or archived
+      -- by the user) keeps every stored value, its revision and its schedule
+      -- cursor. Nothing here ever UPDATEs a rule, so an upgrade can neither
+      -- re-enable a pause nor resurrect an archived rule. The literals match
+      -- DEFAULT_AGENT_SCHEDULE_RULES in @prw/contracts; the focused
+      -- default-schedules test fails if the two drift apart.
+      INSERT OR IGNORE INTO schedules (
+        id, name, workflow_key, prompt_template_id, provider_profile_id,
+        project_id, cron, timezone, enabled, missed_policy, next_run_at,
+        last_run_at, archived_at, created_at, updated_at, revision,
+        skill_key, topic, sources_json, lookback_days, response_language,
+        output_folder, permission_mode, approval_policy,
+        runtime, assistant_key, frequency
+      ) VALUES (
+        'builtin.schedule.last30days', 'Last 30 days 每日资讯推送', 'daily_digest',
+        'builtin.prompt.daily-reading', NULL, NULL, '0 9 * * *', 'Asia/Shanghai',
+        1, 'coalesce_one', NULL, NULL, NULL,
+        strftime('%Y-%m-%dT%H:%M:%fZ', 'now'), strftime('%Y-%m-%dT%H:%M:%fZ', 'now'), 0,
+        'last30days', 'AI 最新资讯', '[]', 30, 'zh-CN',
+        '每日资讯推送', 'read-only', 'on-request',
+        'codex', 'researcher', 'daily'
+      );
+      INSERT OR IGNORE INTO schedules (
+        id, name, workflow_key, prompt_template_id, provider_profile_id,
+        project_id, cron, timezone, enabled, missed_policy, next_run_at,
+        last_run_at, archived_at, created_at, updated_at, revision,
+        skill_key, topic, sources_json, lookback_days, response_language,
+        output_folder, permission_mode, approval_policy,
+        runtime, assistant_key, frequency
+      ) VALUES (
+        'builtin.schedule.literature-matrix', '文献矩阵推送', 'literature_matrix',
+        'builtin.prompt.matrix-extraction', NULL, NULL, '0 9 * * *', 'Asia/Shanghai',
+        1, 'coalesce_one', NULL, NULL, NULL,
+        strftime('%Y-%m-%dT%H:%M:%fZ', 'now'), strftime('%Y-%m-%dT%H:%M:%fZ', 'now'), 0,
+        'literature-matrix', '长上下文检索', '[]', 30, 'zh-CN',
+        '文献矩阵', 'read-only', 'on-request',
+        'codex', 'researcher', 'daily'
+      );
+      INSERT OR IGNORE INTO schedules (
+        id, name, workflow_key, prompt_template_id, provider_profile_id,
+        project_id, cron, timezone, enabled, missed_policy, next_run_at,
+        last_run_at, archived_at, created_at, updated_at, revision,
+        skill_key, topic, sources_json, lookback_days, response_language,
+        output_folder, permission_mode, approval_policy,
+        runtime, assistant_key, frequency
+      ) VALUES (
+        'builtin.schedule.literature-review-push', '文献综述推送', 'literature_review',
+        'builtin.prompt.review-outline', NULL, NULL, '0 9 * * *', 'Asia/Shanghai',
+        1, 'coalesce_one', NULL, NULL, NULL,
+        strftime('%Y-%m-%dT%H:%M:%fZ', 'now'), strftime('%Y-%m-%dT%H:%M:%fZ', 'now'), 0,
+        'literature-review-push', '长上下文检索', '[]', 30, 'zh-CN',
+        '文献综述', 'read-only', 'on-request',
+        'codex', 'researcher', 'daily'
+      );
+    `
+  },
+  {
+    id: 29,
+    name: 'automation_run_history_archive_and_revision',
+    sql: `
+      -- The Automation page's RUN HISTORY gets the same delete contract as every
+      -- other multi-select list: a CAS lock plus a soft archive. Existing rows
+      -- stay visible (revision 0) until the user removes them; nothing is
+      -- dropped here, and no schedule rule, occurrence cursor, Artifact,
+      -- Obsidian note or credential is touched by the archive commands.
+      ALTER TABLE agent_runs ADD COLUMN archived_at TEXT;
+      ALTER TABLE agent_runs ADD COLUMN revision INTEGER NOT NULL DEFAULT 0 CHECK (revision >= 0);
     `
   }
 ]

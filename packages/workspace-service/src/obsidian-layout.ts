@@ -650,6 +650,9 @@ export interface ParsedFrontmatter {
   readonly date: string | null
   readonly paperIds: readonly string[]
   readonly taskIds: readonly string[]
+  readonly parent: string | null
+  /** Non-project labels. `project:<id>` bindings are returned separately as projectId. */
+  readonly tags: readonly string[]
   /** Unknown keys are returned as raw scalar/list values and never rewritten. */
   readonly unknownFields: Readonly<Record<string, unknown>>
   readonly unknownRaw: Readonly<Record<string, string>>
@@ -732,6 +735,16 @@ function entryValue(entries: readonly FrontmatterEntry[], ...keys: string[]): Fr
   return keys.map((key) => entries.find((entry) => entry.key === key)).find((entry): entry is FrontmatterEntry => entry !== undefined)
 }
 
+/** Merge `labels` and `tags` from both their inline and YAML-list forms. */
+function collectLabelValues(entries: readonly FrontmatterEntry[]): unknown[] {
+  const values: unknown[] = []
+  for (const entry of entries) {
+    if (entry.key !== 'labels' && entry.key !== 'tags') continue
+    values.push(...(Array.isArray(entry.value) ? entry.value : [entry.value]))
+  }
+  return values
+}
+
 function parseIdList(entry: FrontmatterEntry | undefined, schema: typeof PaperIdSchema | typeof TaskIdSchema, label: string, warnings: string[]): string[] {
   if (!entry) return []
   const values = Array.isArray(entry.value) ? entry.value : [entry.value]
@@ -746,13 +759,12 @@ function parseIdList(entry: FrontmatterEntry | undefined, schema: typeof PaperId
 
 export function parseObsidianFrontmatter(markdown: string): ParsedFrontmatter {
   const parsed = extractFrontmatter(markdown)
-  if (!parsed) return { present: false, projectId: null, kind: null, kindValid: true, title: null, date: null, paperIds: [], taskIds: [], unknownFields: {}, unknownRaw: {}, warnings: [] }
+  if (!parsed) return { present: false, projectId: null, kind: null, kindValid: true, title: null, date: null, paperIds: [], taskIds: [], parent: null, tags: [], unknownFields: {}, unknownRaw: {}, warnings: [] }
   const warnings: string[] = []
   const projectEntry = entryValue(parsed.entries, 'workbench_project_id', 'workbench.projectId', 'projectId', 'project_id')
   const projectResult = projectEntry ? ProjectIdSchema.safeParse(projectEntry.value) : null
   if (projectEntry && !projectResult?.success) warnings.push('workbench_project_id 无效，未建立项目关联。')
-  const labelEntry = entryValue(parsed.entries, 'labels', 'tags')
-  const labelValues = labelEntry === undefined ? [] : Array.isArray(labelEntry.value) ? labelEntry.value : [labelEntry.value]
+  const labelValues = collectLabelValues(parsed.entries)
   const labelProjectResult = labelValues
     .filter((value): value is string => typeof value === 'string')
     .map((value) => value.trim())
@@ -775,7 +787,8 @@ export function parseObsidianFrontmatter(markdown: string): ParsedFrontmatter {
     const count = parsed.entries.filter((entry) => group.includes(entry.key)).length
     if (count > 1) warnings.push(`${group[0]} 在 frontmatter 中重复，已采用第一个值。`)
   }
-  const knownKeys = new Set(['workbench', 'workbench_project_id', 'workbench.projectId', 'projectId', 'project_id', 'labels', 'tags', 'workbench_kind', 'workbench.kind', 'workbench_title', 'title', 'workbench_date', 'workbench.date', 'paper_ids', 'paperIds', 'workbench.paperIds', 'task_ids', 'taskIds', 'workbench.taskIds'])
+  const parentEntry = entryValue(parsed.entries, 'workbench_parent', 'parent')
+  const knownKeys = new Set(['workbench', 'workbench_project_id', 'workbench.projectId', 'projectId', 'project_id', 'labels', 'tags', 'workbench_kind', 'workbench.kind', 'workbench_title', 'title', 'workbench_date', 'workbench.date', 'paper_ids', 'paperIds', 'workbench.paperIds', 'task_ids', 'taskIds', 'workbench.taskIds', 'workbench_parent', 'parent'])
   const unknownFields: Record<string, unknown> = {}
   const unknownRaw: Record<string, string> = {}
   for (const entry of parsed.entries) {
@@ -793,6 +806,11 @@ export function parseObsidianFrontmatter(markdown: string): ParsedFrontmatter {
     date: typeof entryValue(parsed.entries, 'workbench_date', 'workbench.date')?.value === 'string' ? String(entryValue(parsed.entries, 'workbench_date', 'workbench.date')!.value) : null,
     paperIds: parseIdList(entryValue(parsed.entries, 'paper_ids', 'paperIds', 'workbench.paperIds'), PaperIdSchema, 'paper_ids', warnings),
     taskIds: parseIdList(entryValue(parsed.entries, 'task_ids', 'taskIds', 'workbench.taskIds'), TaskIdSchema, 'task_ids', warnings),
+    parent: typeof parentEntry?.value === 'string' ? parentEntry.value : null,
+    tags: [...new Set(labelValues
+      .filter((value): value is string => typeof value === 'string')
+      .map((value) => value.trim())
+      .filter((value) => value.length > 0 && !value.toLocaleLowerCase('en-US').startsWith('project:')))],
     unknownFields,
     unknownRaw,
     warnings
@@ -860,15 +878,35 @@ export interface ManagedFrontmatterPatch {
   readonly date?: string
   readonly paperIds?: readonly string[]
   readonly taskIds?: readonly string[]
+  /** Parent note for a child note; `null` clears the relation. */
+  readonly parent?: string | null
+  /** Non-project labels. The `project:<id>` label is derived from `projectId`. */
+  readonly labels?: readonly string[]
 }
 
-const managedFieldNames: Readonly<Record<keyof ManagedFrontmatterPatch, string>> = {
-  projectId: 'workbench_project_id',
-  kind: 'workbench_kind',
-  title: 'workbench_title',
-  date: 'workbench_date',
-  paperIds: 'paper_ids',
-  taskIds: 'task_ids'
+/** Every managed key owns one or more frontmatter field names.  Aliases are
+ * kept in sync so a legacy `projectId:` line cannot contradict the canonical
+ * `workbench_project_id:` value. */
+const managedFieldNames: Readonly<Record<keyof ManagedFrontmatterPatch, readonly string[]>> = {
+  projectId: ['workbench_project_id', 'projectId'],
+  kind: ['workbench_kind'],
+  title: ['workbench_title'],
+  date: ['workbench_date'],
+  paperIds: ['paper_ids'],
+  taskIds: ['task_ids'],
+  parent: ['workbench_parent'],
+  labels: ['labels', 'tags']
+}
+
+export const MANAGED_FRONTMATTER_FIELDS: Readonly<Record<keyof ManagedFrontmatterPatch, readonly string[]>> = managedFieldNames
+
+function nonProjectLabels(values: readonly string[]): string[] {
+  return [...new Set(values.map((value) => value.trim()).filter((value) => value.length > 0 && !value.toLocaleLowerCase('en-US').startsWith('project:')))]
+}
+
+/** Project labels always mirror the controlled project binding. */
+function labelsWithProject(labels: readonly string[], projectId: string | null | undefined): string[] {
+  return [...nonProjectLabels(labels), ...(typeof projectId === 'string' ? [`project:${projectId}`] : [])]
 }
 
 function patchValue(value: unknown): string {
@@ -888,22 +926,51 @@ function validateManagedPatch(patch: ManagedFrontmatterPatch): void {
   if (patch.taskIds !== undefined) {
     for (const id of patch.taskIds) TaskIdSchema.parse(id)
   }
+  if (patch.parent !== undefined && patch.parent !== null) {
+    normalizeVaultRelativePath(patch.parent, true)
+  }
+  for (const label of patch.labels ?? []) {
+    if (typeof label !== 'string' || label.trim().length === 0 || label.length > 200 || /[\r\n]/u.test(label)) {
+      throw new ObsidianLayoutError('FRONTMATTER_INVALID', '标签必须是非空的单行文本')
+    }
+  }
 }
 
-/** Update only controlled keys while retaining every unknown frontmatter line. */
+/** Update only controlled keys while retaining every unknown frontmatter line.
+ *
+ * Notes that already carry both `labels` and `tags` keep both; the project
+ * label is always derived from `projectId` so binding/unbinding cannot leave a
+ * stale `project:<id>` behind. */
 export function updateManagedFrontmatter(markdown: string, patch: ManagedFrontmatterPatch): string {
   validateManagedPatch(patch)
   const parsed = extractFrontmatter(markdown)
   const patchEntries = (Object.keys(managedFieldNames) as Array<keyof ManagedFrontmatterPatch>).filter((key) => patch[key] !== undefined)
-  if (patchEntries.length === 0) return markdown
-  for (const key of patchEntries) {
-    const fieldName = managedFieldNames[key]
-    const duplicates = parsed?.entries.filter((entry) => entry.key === fieldName).length ?? 0
-    if (duplicates > 1) throw new ObsidianLayoutError('FRONTMATTER_INVALID', `frontmatter 中存在重复的 ${fieldName}`)
+  // A project binding change has to rewrite the label list even when the
+  // caller did not supply labels, otherwise the reserved `project:` label
+  // would contradict `workbench_project_id`.
+  const syncLabels = patch.labels !== undefined || patch.projectId !== undefined
+  if (patchEntries.length === 0 && !syncLabels) return markdown
+  const values: Partial<Record<keyof ManagedFrontmatterPatch, unknown>> = { ...patch }
+  if (syncLabels) {
+    const sourceLabels = patch.labels !== undefined
+      ? patch.labels
+      : collectLabelValues(parsed?.entries ?? []).filter((value): value is string => typeof value === 'string')
+    values.labels = labelsWithProject(sourceLabels, patch.projectId)
+  }
+  const fieldValues = (key: keyof ManagedFrontmatterPatch): string => patchValue(values[key])
+  const entriesToWrite = (Object.keys(managedFieldNames) as Array<keyof ManagedFrontmatterPatch>)
+    .filter((key) => values[key] !== undefined || (key === 'labels' && syncLabels))
+  for (const key of entriesToWrite) {
+    for (const fieldName of managedFieldNames[key]) {
+      const duplicates = parsed?.entries.filter((entry) => entry.key === fieldName).length ?? 0
+      if (duplicates > 1) throw new ObsidianLayoutError('FRONTMATTER_INVALID', `frontmatter 中存在重复的 ${fieldName}`)
+    }
   }
   if (!parsed) {
     const lines = ['---']
-    for (const key of patchEntries) lines.push(`${managedFieldNames[key]}: ${patchValue(patch[key])}`)
+    for (const key of entriesToWrite) {
+      for (const fieldName of managedFieldNames[key]) lines.push(`${fieldName}: ${fieldValues(key)}`)
+    }
     lines.push('---', markdown)
     return lines.join('\n')
   }
@@ -914,17 +981,24 @@ export function updateManagedFrontmatter(markdown: string, patch: ManagedFrontma
     const match = /^(\s*)([^:#][^:]*?):(?:\s*(.*))?$/u.exec(line)
     if (!match || (match[1] ?? '') !== '') continue
     const fieldName = match[2]?.trim() ?? ''
-    const key = patchEntries.find((entryKey) => managedFieldNames[entryKey] === fieldName)
+    const key = entriesToWrite.find((entryKey) => managedFieldNames[entryKey].includes(fieldName))
     if (!key) continue
-    lines[index] = `${fieldName}: ${patchValue(patch[key])}`
+    lines[index] = `${fieldName}: ${fieldValues(key)}`
     present.add(fieldName)
     // Remove an old indented YAML list belonging to this managed field; the
-    // replacement is an inline JSON array, and unknown fields remain intact.
-    if (Array.isArray(patch[key])) {
+    // replacement is a JSON-encoded array, and unknown fields remain intact.
+    if (Array.isArray(values[key])) {
       while (index + 1 < lines.length && /^\s+-\s*/u.test(lines[index + 1]!)) lines.splice(index + 1, 1)
     }
   }
-  const additions = patchEntries.filter((key) => !present.has(managedFieldNames[key])).map((key) => `${managedFieldNames[key]}: ${patchValue(patch[key])}`)
+  const additions: string[] = []
+  for (const key of entriesToWrite) {
+    // A stale alias (for example `projectId:` when only `workbench_project_id:`
+    // existed) is written too so both names agree.
+    for (const fieldName of managedFieldNames[key]) {
+      if (!present.has(fieldName)) additions.push(`${fieldName}: ${fieldValues(key)}`)
+    }
+  }
   if (additions.length > 0) lines.push(...additions)
   const body = lines.join(parsed.eol)
   const match = /^---\r?\n[\s\S]*?\r?\n---(?:\r?\n|$)/u.exec(markdown)
