@@ -82,8 +82,9 @@ node .agents/skills/windows-release/scripts/release.mjs verify
 # 4. Real install / launch / isolated profile / uninstall smoke
 node .agents/skills/windows-release/scripts/release.mjs smoke
 
-# 5. Commit, then tag + push + publish the GitHub release
-git add -A docs package.json apps/desktop/package.json packages apps/desktop/electron-builder.yml
+# 5. Commit the version bump, then tag + push + publish the GitHub release
+git add package.json apps/desktop/package.json packages/*/package.json docs
+# stage only your own files: never stage another writer's in-flight changes
 git commit -m "chore(release): bump workbench version to 0.0.3"
 git push origin master
 node .agents/skills/windows-release/scripts/release.mjs publish --version 0.0.3 --yes
@@ -162,12 +163,6 @@ node .agents/skills/windows-release/scripts/verify-packaging-filter.mjs
 Without the filter the skill only costs ~20 KB in the installer: the runtime
 resolves an explicit catalog of skill keys, so an unknown directory is never
 listed or injected into an agent session.
-
-Verify with `node .agents/skills/windows-release/scripts/verify-packaging-filter.mjs`
-(reads the real filter list, evaluates it with the installed `app-builder-lib`
-matcher, and exits 1 with the exact line to add when the exclusion is missing).
-`release.mjs verify` additionally warns whenever
-`win-unpacked/resources/skills` still contains `windows-release`.
 
 ## Handoff
 
