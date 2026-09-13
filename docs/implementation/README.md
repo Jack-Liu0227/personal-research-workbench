@@ -37,3 +37,4 @@
 | 18 | `18-default-schedule-rules.md` | 新装/迁移后默认恰好三条已启用规则 | 见文件内证据 |
 | 19 | `19-workbench-followups.md` | 本轮工作台增强（批量删除、Zotero 写入入口、每日推送日历投影、可调布局） | IN_REVIEW（typecheck/build/test:e2e + 聚焦测试 PASS；真实 Zotero/Vault/cron/模型/NSIS 见「未验收与安全边界」） |
 | 20 | `20-zotero-two-sided-delete.md` | Zotero 条目两侧删除（官方 Local API 永久删除 + 本地投影归档） | IN_REVIEW（typecheck/build/test:e2e + `test:zotero-connector` 19/19、`test:zotero-write` 20/20、`test:zotero-delete` 7/7 PASS；真实 Zotero 授权与远程删除 round-trip 未验收） |
+| 21 | `21-windows-nsis-0.0.2-release.md` | 0.0.2 Windows x64 NSIS 构建、安装、首次启动与卸载 smoke | IN_REVIEW（真实安装包已构建并完成安装/启动/隔离 profile/卸载 smoke，证据含 SHA-256、迁移 29 条与默认三条规则；安装包未签名，自动更新与打包态逐页 UI 回归未做） |

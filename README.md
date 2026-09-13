@@ -8,11 +8,17 @@ Windows 本地优先的个人科研工作台。Electron + React 19 桌面端，T
 | --- | --- |
 | 平台 | Windows 10/11 x64（NSIS 安装包） |
 | 技术栈 | Electron 43.4.1、React 19.2.8、electron-vite 5.0.0、TypeScript |
-| 数据 | SQLite（`better-sqlite3` 13.0.3 + Drizzle 0.45.2），22 个版本化 migration |
+| 数据 | SQLite（`better-sqlite3` 13.0.3 + Drizzle 0.45.2），29 个版本化 migration |
 | AI | 固定 `@earendil-works/pi-ai` 0.84.1（MIT），凭据走应用自有 `safeStorage` |
 | 构建 | Node.js ≥ 24、pnpm 11.5.2 |
 
 > 截图说明：下方所有界面截图由 `node scripts/capture-readme-shots.cjs` 在**隔离的临时用户目录**中自动生成，业务数据是通过真实 `window.workbench.v2` 命令面写入的**合成示例数据**（虚构项目、任务、日历与文献），不是任何真实用户的资料。文献检索页为一次真实 Crossref 查询的公开书目结果；Zotero 页展示的是**未连接本机服务时的状态**。证据见 [`docs/assets/screenshots/CAPTURE-REPORT.md`](docs/assets/screenshots/CAPTURE-REPORT.md)。
+
+## 下载与安装
+
+最新安装包见 [Releases](https://github.com/Jack-Liu0227/personal-research-workbench/releases/latest)（`Personal-Research-Workbench-<version>-Setup.exe`，Windows 10/11 x64，NSIS，**未签名**，SmartScreen 会提示未知发布者）。变更记录见 [docs/releases](docs/releases)。
+
+安装后默认以自身 exe 目录作为可移植数据根（`data/workspace.sqlite3`、`config/`、`workbench/`）；需要隔离 profile 时用 `research-workbench.exe --prw-user-data-dir="D:\path\to\profile"` 启动。构建、安装、首次启动与卸载证据见 [`docs/implementation/21-windows-nsis-0.0.2-release.md`](docs/implementation/21-windows-nsis-0.0.2-release.md)。
 
 ## 界面总览
 

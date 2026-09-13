@@ -1,6 +1,6 @@
 # Task 8：全界面 UX、可访问性和发布验收
 
-状态：IN_REVIEW（实现与本地门禁完成；Windows NSIS 安装/卸载 smoke、真实 Zotero/Obsidian/CLI 验收、深浅色成对截图未执行）
+状态：IN_REVIEW（实现与本地门禁完成；Windows x64 NSIS 构建/安装/启动/卸载 smoke 已在 0.0.2 发布轮执行并留证 → [`21-windows-nsis-0.0.2-release.md`](21-windows-nsis-0.0.2-release.md)；真实 Zotero/Obsidian/CLI 验收、打包态逐页 UI 回归、深浅色成对截图仍未执行）
 
 ## 目标
 
@@ -64,7 +64,7 @@ e2e: PASS
 2. **深/浅色成对截图未做**：只截当前主题；`Theme`/`reduced-motion` 只做了静态复核（`motion-reduce:` 用法与 `transition` 类），未做逐页对比。
 3. **键盘全流程未遍历**：已有断言为帮助对话框 Esc 焦点回归、抽屉 Esc 关闭、原生 checkbox 空格全选（Task 04 e2e）；未做整页 Tab 顺序/焦点陷阱遍历，Zotero Collection 树键盘语义未新增断言。
 4. **Dashboard 原地 retry 无法在 e2e 中制造失败**：`preload` 用 `contextBridge.exposeInMainWorld` + `Object.freeze` 暴露 `window.workbench`，renderer 侧实测不可写（`Object.isFrozen(window.workbench.v2) === true`，赋值静默失败），隔离 profile 也没有可安全破坏的依赖，因此该项只有类型/代码路径证据，没有端到端失败注入证据。
-5. **Windows x64 NSIS 未验收**：`electron-builder.yml`（asar、fuses、NSIS x64、`asarUnpack` better-sqlite3/sqlite-vec、`resources/skills` 与 `sidecars`）本轮只做配置复核，未执行 `pnpm package:win`，也未做安装/启动/重启/卸载 smoke。禁止把该门禁记为通过。
+5. **Windows x64 NSIS 已执行但仍有缺口**：0.0.2 轮次已构建真实安装包并完成安装/首次启动/隔离 profile 启动/卸载 smoke，证据（SHA-256、`_prw_migrations` 29 条、默认三条启用规则、`resources/skills` 与 `sidecars` 落盘、快捷方式与注册表项清理）见 [`21-windows-nsis-0.0.2-release.md`](21-windows-nsis-0.0.2-release.md)。仍缺：安装包**未签名**、无自动更新、未对打包态应用做逐页 UI/E2E 回归；且本机存在可复现的 `.asar` 环境锁，使默认 `pnpm package:win` 解包路径失败并导致卸载残留 `resources/*.asar`（细节与替代构建命令见同一文件）。该门禁不记为完全通过。
 6. **真实外部服务未在本轮重跑**：真实 Zotero 9/10 只读/写授权（Task 3）、真实用户 Vault 场景（Task 5）、真实 Codex/Pi 凭据运行（Task 6）、cron 到点投递（Task 7）沿用各自任务文件的 BLOCKED 结论。
 
 ## 发布规则
