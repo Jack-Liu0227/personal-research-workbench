@@ -105,13 +105,30 @@ function readInitialSidebarCollapsed(): boolean {
   }
 }
 
+/**
+ * Narrow viewports cannot show a permanent 232px rail, so the shell switches to
+ * a drawer there. The breakpoint is the same one `styles.css` uses for the
+ * icon-only rail; keeping both in one place is what stops the collapse button
+ * from becoming a no-op on a viewport where CSS already forced the rail.
+ */
+function useNarrowViewport(query = '(max-width: 720px)'): boolean {
+  const [narrow, setNarrow] = useState(() => window.matchMedia(query).matches)
+  useEffect(() => {
+    const media = window.matchMedia(query)
+    const onChange = () => setNarrow(media.matches)
+    media.addEventListener('change', onChange)
+    return () => media.removeEventListener('change', onChange)
+  }, [query])
+  return narrow
+}
+
 function NavigationButton({ item, active, onClick }: { item: NavigationItem; active: boolean; onClick: (event: ReactMouseEvent<HTMLButtonElement>) => void }): React.JSX.Element {
   return <button aria-current={active ? 'page' : undefined} className={cn('nav-item', active && 'nav-item-active')} onClick={onClick} title={item.label} type="button"><span className="nav-icon">{item.icon}</span><span className="sidebar-label min-w-0 flex-1 truncate">{item.label}</span></button>
 }
 
-function Sidebar({ view, onNavigate, theme, onToggleTheme, collapsed, onToggleCollapsed }: { view: ViewId; onNavigate: (view: ViewId, openInNewTab: boolean) => void; theme: Theme; onToggleTheme: () => void; collapsed: boolean; onToggleCollapsed: () => void }): React.JSX.Element {
+function Sidebar({ view, onNavigate, theme, onToggleTheme, collapsed, narrowOpen, onToggleCollapsed }: { view: ViewId; onNavigate: (view: ViewId, openInNewTab: boolean) => void; theme: Theme; onToggleTheme: () => void; collapsed: boolean; narrowOpen: boolean; onToggleCollapsed: () => void }): React.JSX.Element {
   const navigateFromClick = (item: NavigationItem, event: ReactMouseEvent<HTMLButtonElement>) => onNavigate(item.id, event.ctrlKey || event.metaKey)
-  return <aside aria-label="主导航" className={cn('sidebar', collapsed && 'sidebar-collapsed')}><div className="sidebar-brand"><div aria-hidden="true" className="workbench-mark"><span /><span /><span /></div><div className="sidebar-label min-w-0"><p className="truncate text-sm font-bold text-sidebar-foreground">科研工作台</p><p className="mt-0.5 truncate text-[10px] uppercase tracking-[0.18em] text-sidebar-muted">Research workspace</p></div><button aria-label={collapsed ? '展开侧栏' : '折叠侧栏'} aria-pressed={collapsed} className="sidebar-collapse-button" onClick={onToggleCollapsed} title={collapsed ? '展开侧栏' : '折叠侧栏'} type="button">{collapsed ? '›' : '‹'}</button></div><nav className="sidebar-scroll min-h-0 flex-1 overflow-y-auto px-2 py-3"><div className="grid gap-0.5">{primaryNavigation.map((item) => <NavigationButton active={view === item.id} item={item} key={item.id} onClick={(event) => navigateFromClick(item, event)} />)}</div></nav><div className="border-t border-sidebar-border p-2"><button className="nav-item" onClick={onToggleTheme} type="button"><span className="nav-icon">{theme === 'dark' ? <Sun aria-hidden="true" /> : <Moon aria-hidden="true" />}</span><span className="sidebar-label flex-1 text-left">{theme === 'dark' ? '浅色主题' : '深色主题'}</span></button><div className="sidebar-label sidebar-online"><span aria-hidden="true" className="size-1.5 rounded-full bg-online" />Workspace Service 已连接</div></div></aside>
+  return <aside aria-label="主导航" className={cn('sidebar', collapsed && 'sidebar-collapsed', narrowOpen && 'sidebar-narrow-open')}><div className="sidebar-brand"><div aria-hidden="true" className="workbench-mark"><span /><span /><span /></div><div className="sidebar-label min-w-0"><p className="truncate text-sm font-bold text-sidebar-foreground">科研工作台</p><p className="mt-0.5 truncate text-[10px] uppercase tracking-[0.18em] text-sidebar-muted">Research workspace</p></div><button aria-expanded={!collapsed} aria-label={collapsed ? '展开侧栏' : '折叠侧栏'} aria-pressed={collapsed} className="sidebar-collapse-button" onClick={onToggleCollapsed} title={collapsed ? '展开侧栏' : '折叠侧栏'} type="button">{collapsed ? '›' : '‹'}</button></div><nav className="sidebar-scroll min-h-0 flex-1 overflow-y-auto px-2 py-3"><div className="grid gap-0.5">{primaryNavigation.map((item) => <NavigationButton active={view === item.id} item={item} key={item.id} onClick={(event) => navigateFromClick(item, event)} />)}</div></nav><div className="border-t border-sidebar-border p-2"><button className="nav-item" onClick={onToggleTheme} type="button"><span className="nav-icon">{theme === 'dark' ? <Sun aria-hidden="true" /> : <Moon aria-hidden="true" />}</span><span className="sidebar-label flex-1 text-left">{theme === 'dark' ? '浅色主题' : '深色主题'}</span></button><div className="sidebar-label sidebar-online"><span aria-hidden="true" className="size-1.5 rounded-full bg-online" />Workspace Service 已连接</div></div></aside>
 }
 
 function AgentSidebar({ projects, view, onNavigate, onOpenProject, theme, onToggleTheme }: { projects: Project[]; view: ViewId; onNavigate: (view: ViewId, openInNewTab: boolean) => void; onOpenProject: (projectId: string, openInNewTab: boolean) => void; theme: Theme; onToggleTheme: () => void }): React.JSX.Element {
@@ -134,7 +151,15 @@ export default function App(): React.JSX.Element {
 function AppContent(): React.JSX.Element {
   const [theme, setTheme] = useState<Theme>(readInitialTheme)
   const [fontScale, setFontScale] = useState<FontScale>(readInitialFontScale)
-  const [sidebarCollapsed, setSidebarCollapsed] = useState(readInitialSidebarCollapsed)
+  /** Persisted desktop preference: a permanently collapsed icon rail. */
+  const [sidebarCollapsedPreference, setSidebarCollapsedPreference] = useState(readInitialSidebarCollapsed)
+  const narrowViewport = useNarrowViewport()
+  /** Narrow-viewport drawer: opened on demand instead of a permanent rail. */
+  const [narrowNavOpen, setNarrowNavOpen] = useState(false)
+  // One derived value drives both the rendered class and the toggle's
+  // aria-pressed/aria-label, so the control can never claim "expanded" while
+  // the shell shows a 68px rail.
+  const sidebarCollapsed = narrowViewport ? !narrowNavOpen : sidebarCollapsedPreference
   const mainRef = useRef<HTMLElement | null>(null)
   const projectsQuery = useProjectsQuery()
   const serviceQuery = useQuery({ queryKey: ['workspace-status'], queryFn: () => getWorkbenchApi().workspace.status(), refetchInterval: 10_000 })
@@ -164,9 +189,24 @@ function AppContent(): React.JSX.Element {
     return () => window.removeEventListener('workbench-preferences-change', applyExternalPreferences)
   }, [])
   useEffect(() => {
-    document.querySelector('.sidebar')?.classList.toggle('sidebar-collapsed', sidebarCollapsed)
-    try { localStorage.setItem('workbench-sidebar-collapsed', String(sidebarCollapsed)) } catch { /* optional renderer storage */ }
-  }, [sidebarCollapsed])
+    try { localStorage.setItem('workbench-sidebar-collapsed', String(sidebarCollapsedPreference)) } catch { /* optional renderer storage */ }
+  }, [sidebarCollapsedPreference])
+  useEffect(() => {
+    // Leaving the narrow breakpoint must not leave a drawer covering content.
+    if (!narrowViewport) setNarrowNavOpen(false)
+  }, [narrowViewport])
+  useEffect(() => {
+    if (!narrowNavOpen) return
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') setNarrowNavOpen(false)
+    }
+    window.addEventListener('keydown', onKeyDown)
+    return () => window.removeEventListener('keydown', onKeyDown)
+  }, [narrowNavOpen])
+  const toggleSidebar = () => {
+    if (narrowViewport) setNarrowNavOpen((current) => !current)
+    else setSidebarCollapsedPreference((current) => !current)
+  }
   useEffect(() => { mainRef.current?.focus({ preventScroll: true }) }, [view])
   const updateProjectContext = (projectId: string | null) => {
     const validatedProjectId = projectId ? ProjectIdSchema.parse(projectId) : null
@@ -180,6 +220,7 @@ function AppContent(): React.JSX.Element {
   }
   const navigate = (next: ViewId, openInNewTab = false, projectId: string | null = selectedProjectId) => {
     const route = routeForView(next)
+    if (narrowViewport) setNarrowNavOpen(false)
     const validatedProjectId = projectId ? ProjectIdSchema.parse(projectId) : null
     const context = { projectId: validatedProjectId, resource: route === 'project' && validatedProjectId ? { kind: 'project' as const, id: validatedProjectId } : null }
     const title = route === 'project' && validatedProjectId ? projects.find((project) => project.id === validatedProjectId)?.name ?? viewTitle(next) : viewTitle(next)
@@ -267,11 +308,11 @@ function AppContent(): React.JSX.Element {
   else if (view === 'literature') page = <LiteraturePage projects={projects} />
   else if (view === 'obsidian') page = <ObsidianPage projects={projects} />
   else if (view === 'zotero') page = <ZoteroPage projects={projects} />
-  else if (view === 'agent') page = <AgentPage projects={projects} />
+  else if (view === 'agent') page = <AgentPage onNavigate={navigate} projects={projects} />
   else if (view === 'automation') page = <AutomationPage projects={projects} />
   else if (view === 'settings') page = <IntegrationsSettingsPage projects={projects} />
   else page = <ViewNotFound />
   const connectorStatuses = serviceQuery.data?.connectors
   const literatureFocus = view === 'literature'
-  return <div className={cn('app-shell', literatureFocus && 'literature-focus-shell')}><a className="skip-link" href="#main-content">跳到主要内容</a><Sidebar collapsed={sidebarCollapsed} onNavigate={navigate} onToggleCollapsed={() => setSidebarCollapsed((current) => !current)} onToggleTheme={() => setTheme((current) => current === 'dark' ? 'light' : 'dark')} theme={theme} view={view} /><div className="app-shell-content min-w-0 flex-1 overflow-hidden">{literatureFocus ? null : <Topbar onNavigate={navigate} onOpenProject={openProject} onSelectProject={updateProjectContext} projects={projects} selectedProjectId={selectedProjectId} />}{literatureFocus ? null : <WorkspaceTabsBar activeTabId={activeTab?.tabId ?? null} onCloseRequest={closeRequest} onDuplicate={(tabId) => { tabsApi.duplicateTab(tabId) }} onOpenNew={() => navigate('tasks', true)} onPin={tabsApi.togglePin} onSelect={selectTab} tabs={tabsApi.tabs} />}<div className="workspace-body"><main ref={mainRef} className="main-content focus:outline-none" id="main-content" tabIndex={-1}>{projectsQuery.isLoading ? <div className="workspace-warmup"><InlineLoadingState label="项目列表后台加载中；页面内容仍可继续查看。" /></div> : null}{projectsQuery.error ? <div className="workspace-warmup"><ErrorState compact error={projectsQuery.error} onRetry={() => void projectsQuery.refetch()} /></div> : null}{page}</main></div><footer className="status-bar"><span><span className="status-led" />Workspace Service {serviceQuery.data?.status === 'ready' ? '正常' : serviceQuery.data?.status ?? '启动中'}</span><span><span className="status-led" />SQLite {serviceQuery.data?.database === 'ready' ? '正常' : '异常'}</span><span>Obsidian {connectorStatusLabel(connectorStatuses?.['obsidian'])}</span><span>Zotero {connectorStatusLabel(connectorStatuses?.['zotero'])}</span></footer></div></div>
+  return <div className={cn('app-shell', literatureFocus && 'literature-focus-shell')}><a className="skip-link" href="#main-content">跳到主要内容</a><Sidebar collapsed={sidebarCollapsed} narrowOpen={!sidebarCollapsed && narrowViewport} onNavigate={navigate} onToggleCollapsed={toggleSidebar} onToggleTheme={() => setTheme((current) => current === 'dark' ? 'light' : 'dark')} theme={theme} view={view} />{narrowViewport && !sidebarCollapsed ? <button aria-label="关闭导航抽屉" className="sidebar-scrim" onClick={() => setNarrowNavOpen(false)} type="button" /> : null}<div className="app-shell-content min-w-0 flex-1 overflow-hidden">{literatureFocus ? null : <Topbar onNavigate={navigate} onOpenProject={openProject} onSelectProject={updateProjectContext} projects={projects} selectedProjectId={selectedProjectId} />}{literatureFocus ? null : <WorkspaceTabsBar activeTabId={activeTab?.tabId ?? null} onCloseRequest={closeRequest} onDuplicate={(tabId) => { tabsApi.duplicateTab(tabId) }} onOpenNew={() => navigate('tasks', true)} onPin={tabsApi.togglePin} onSelect={selectTab} tabs={tabsApi.tabs} />}<div className="workspace-body"><main ref={mainRef} className="main-content focus:outline-none" id="main-content" tabIndex={-1}>{projectsQuery.isLoading ? <div className="workspace-warmup"><InlineLoadingState label="项目列表后台加载中；页面内容仍可继续查看。" /></div> : null}{projectsQuery.error ? <div className="workspace-warmup"><ErrorState compact error={projectsQuery.error} onRetry={() => void projectsQuery.refetch()} /></div> : null}{page}</main></div><footer className="status-bar"><span><span className="status-led" />Workspace Service {serviceQuery.data?.status === 'ready' ? '正常' : serviceQuery.data?.status ?? '启动中'}</span><span><span className="status-led" />SQLite {serviceQuery.data?.database === 'ready' ? '正常' : '异常'}</span><span>Obsidian {connectorStatusLabel(connectorStatuses?.['obsidian'])}</span><span>Zotero {connectorStatusLabel(connectorStatuses?.['zotero'])}</span></footer></div></div>
 }

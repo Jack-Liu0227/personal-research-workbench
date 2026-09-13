@@ -1,13 +1,14 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import type { AgentConnector, AgentProxyProfile, AgentRuntimeKind, IntegrationProfile, IntegrationProvider, KnowledgeEngineConfig, KnowledgeEngineKind, Project } from '@prw/contracts'
-import { Cable, ChevronDown, ChevronUp, Edit3, FolderOpen, Plus, RefreshCw, Save, TestTube2 } from 'lucide-react'
-import { Fragment, useEffect, useId, useState, type FormEvent, type ReactElement } from 'react'
+import type { AgentConnector, AgentProxyProfile, AgentRuntimeKind, ArchiveBulkResult, IntegrationProfile, IntegrationProvider, KnowledgeEngineConfig, KnowledgeEngineKind, Project, SyncRun } from '@prw/contracts'
+import { Cable, ChevronDown, ChevronUp, Edit3, FolderOpen, Plus, RefreshCw, Save, TestTube2, Trash2 } from 'lucide-react'
+import { Fragment, useEffect, useId, useRef, useState, type FormEvent, type ReactElement } from 'react'
+import { ArchiveReceiptList, SelectionBar, SelectionCheckbox } from '../../components/selection'
 import { EmptyState, ErrorState, LoadingState, PageHeader } from '../../components/states'
 import { Button, Dialog, DialogClose, DialogContent, DialogTrigger, Field, Input, Textarea } from '../../components/ui'
 import { cn, formatDateTime, getErrorMessage } from '../../lib/utils'
 import { getWorkbenchAgentApi, getWorkbenchApi } from '../../lib/workbench'
 import { queryKeys, useIntegrationsQuery, useSyncRunsQuery } from '../queries'
-import { MutationFeedback, ResearchPanel, ResearchTabs, StatusBadge, SyncRunList } from './shared'
+import { describeSyncRun, MutationFeedback, ResearchPanel, ResearchTabs, StatusBadge, SyncRunList } from './shared'
 
 type SettingsTab = 'general' | 'workspace' | 'literature' | 'proxy' | 'connectors' | 'agent' | 'engines' | 'mcp' | 'security'
 
@@ -235,6 +236,74 @@ function ConnectorsPanel(): React.JSX.Element {
   const queryClient = useQueryClient()
   const integrations = useIntegrationsQuery()
   const syncRuns = useSyncRunsQuery()
+  const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set())
+  const [receipt, setReceipt] = useState<ArchiveBulkResult | null>(null)
+  const [deleteFeedback, setDeleteFeedback] = useState<string | null>(null)
+  // Receipt copy has to survive the refetch that follows a delete, where the
+  // archived row is no longer in the list and its name would be lost.
+  const receiptNames = useRef<Map<string, string>>(new Map())
+  const profiles = integrations.data ?? []
+  // `integrations.list` only returns active records. A record that disappeared
+  // (deleted in another window, or through the single-record path) must not stay
+  // selected, otherwise the count would name a scope the bulk command cannot
+  // reach. Returning the current set unchanged keeps this effect render-safe.
+  useEffect(() => {
+    setSelectedIds((current) => {
+      if (current.size === 0) return current
+      const next = new Set([...current].filter((id) => (integrations.data ?? []).some((profile) => profile.id === id)))
+      return next.size === current.size ? current : next
+    })
+  }, [integrations.data])
+  const selectedProfiles = profiles.filter((profile) => selectedIds.has(profile.id))
+  const toggleProfile = (id: string, checked: boolean): void => {
+    setSelectedIds((current) => {
+      const next = new Set(current)
+      if (checked) next.add(id)
+      else next.delete(id)
+      return next
+    })
+  }
+  const deleteMutation = useMutation({
+    mutationFn: (locks: { id: string; expectedRevision: number }[]) => getWorkbenchApi().integrations.bulkRemove({ items: locks }),
+    onSuccess: async (result) => {
+      setReceipt(result)
+      setDeleteFeedback(result.conflict > 0 || result.failed > 0 ? '部分连接记录未删除：修订冲突或失败的记录保持原状，请刷新列表后重试。' : `已删除 ${result.succeeded} 条连接记录（跳过 ${result.skipped} 条）。`)
+      setSelectedIds(new Set())
+      await queryClient.invalidateQueries({ queryKey: queryKeys.integrations })
+    },
+    onError: (error) => { setReceipt(null); setDeleteFeedback(getErrorMessage(error)) }
+  })
+  const removeOneMutation = useMutation({
+    mutationFn: (profile: IntegrationProfile) => getWorkbenchApi().integrations.remove(profile.id, profile.revision),
+    onSuccess: async (_value, profile) => {
+      setReceipt(null)
+      setDeleteFeedback(`已删除连接“${profile.name}”；该连接记录与本机安全存储中属于它的凭据已移除，Obsidian Vault 与 Zotero 数据库不受影响。`)
+      await queryClient.invalidateQueries({ queryKey: queryKeys.integrations })
+    },
+    onError: (error) => setDeleteFeedback(getErrorMessage(error))
+  })
+  const removeOne = (profile: IntegrationProfile): void => {
+    if (removeOneMutation.isPending || deleteMutation.isPending) return
+    const confirmed = window.confirm(`删除连接“${profile.name}”？将删除该连接记录，并移除主进程安全存储中属于它的凭据（该连接之后需重新填写凭据）。Obsidian Vault 与 Zotero 数据库不会被改动。`)
+    if (!confirmed) return
+    setDeleteFeedback(null)
+    removeOneMutation.mutate(profile)
+  }
+  const removeSelected = (): void => {
+    if (deleteMutation.isPending || removeOneMutation.isPending) return
+    if (selectedProfiles.length === 0) return
+    const names = selectedProfiles.map((profile) => profile.name).join('、')
+    const confirmed = window.confirm([
+      `将删除选中的 ${selectedProfiles.length} 条连接记录（当前列表共 ${profiles.length} 条）：${names}。`,
+      '删除范围仅限“设置 → 工具连接”当前列表中的连接记录本身；本机安全存储中的密钥、同步记录/外部链接，以及 Obsidian Vault 与 Zotero 数据库都不会被改动。',
+      '其中已被其他操作修改过的记录会以“修订冲突”逐条回报且不会被写入。确认继续？'
+    ].join('\n'))
+    if (!confirmed) return
+    receiptNames.current = new Map(selectedProfiles.map((profile) => [profile.id, profile.name]))
+    setDeleteFeedback(null)
+    deleteMutation.mutate(selectedProfiles.map((profile) => ({ id: profile.id, expectedRevision: profile.revision })))
+  }
+  const describeReceipt = (id: string): string => profiles.find((profile) => profile.id === id)?.name ?? receiptNames.current.get(id) ?? '该连接记录（已不在当前列表）'
   const testMutation = useMutation({
     mutationFn: (id: string) => getWorkbenchApi().integrations.test(id),
     onSuccess: async () => { await queryClient.invalidateQueries({ queryKey: queryKeys.integrations }) }
@@ -249,6 +318,79 @@ function ConnectorsPanel(): React.JSX.Element {
     }
   })
 
+  // --- Settings → 最近同步 (connection sync run records) ---------------------
+  // The loaded range is the whole query result, and every rendered run owns a
+  // checkbox, so "全选" here can never name a row the user cannot see. Removal
+  // is a CAS-locked soft archive: the audit row, the connection record, its
+  // safeStorage credential, external links and external systems stay intact.
+  const runs = syncRuns.data ?? []
+  const [selectedRunIds, setSelectedRunIds] = useState<Set<string>>(new Set())
+  const [runReceipt, setRunReceipt] = useState<ArchiveBulkResult | null>(null)
+  const [runFeedback, setRunFeedback] = useState<string | null>(null)
+  // Receipt copy has to survive the refetch that follows a removal, where the
+  // archived run is no longer in the list and its label would be lost.
+  const runReceiptLabels = useRef<Map<string, string>>(new Map())
+  useEffect(() => {
+    setSelectedRunIds((current) => {
+      if (current.size === 0) return current
+      const next = new Set([...current].filter((id) => (syncRuns.data ?? []).some((run) => run.id === id)))
+      return next.size === current.size ? current : next
+    })
+  }, [syncRuns.data])
+  const selectedRuns = runs.filter((run) => selectedRunIds.has(run.id))
+  const toggleRun = (id: string, checked: boolean): void => {
+    setSelectedRunIds((current) => {
+      const next = new Set(current)
+      if (checked) next.add(id)
+      else next.delete(id)
+      return next
+    })
+  }
+  const removeRunMutation = useMutation({
+    mutationFn: (run: SyncRun) => getWorkbenchApi().integrations.removeRun(run.id, run.revision),
+    onSuccess: async (_value, run) => {
+      setRunReceipt(null)
+      setRunFeedback(`已删除同步记录“${describeSyncRun(run)}”；该记录已从列表移除（本机审计行保留），连接配置、密钥、外链索引与外部数据均未改动。`)
+      await queryClient.invalidateQueries({ queryKey: ['sync-runs'] })
+    },
+    onError: (error) => setRunFeedback(getErrorMessage(error))
+  })
+  const removeRunsMutation = useMutation({
+    mutationFn: (locks: { id: string; expectedRevision: number }[]) => getWorkbenchApi().integrations.bulkRemoveRuns({ items: locks }),
+    onSuccess: async (result) => {
+      setRunReceipt(result)
+      setRunFeedback(result.conflict > 0 || result.failed > 0 ? '部分同步记录未删除：修订冲突或失败的记录保持原状，请刷新列表后重试。' : `已删除 ${result.succeeded} 条同步记录（跳过 ${result.skipped} 条）。`)
+      setSelectedRunIds(new Set())
+      await queryClient.invalidateQueries({ queryKey: ['sync-runs'] })
+    },
+    onError: (error) => { setRunReceipt(null); setRunFeedback(getErrorMessage(error)) }
+  })
+  const removeOneRun = (run: SyncRun): void => {
+    if (removeRunMutation.isPending || removeRunsMutation.isPending) return
+    const confirmed = window.confirm(`删除同步记录“${describeSyncRun(run)}”？该记录会从“最近同步”列表移除，本机数据库中的审计行保留；连接配置、密钥、外链索引与任何外部数据都不会被改动。`)
+    if (!confirmed) return
+    setRunFeedback(null)
+    removeRunMutation.mutate(run)
+  }
+  const removeSelectedRuns = (): void => {
+    if (removeRunsMutation.isPending || removeRunMutation.isPending) return
+    if (selectedRuns.length === 0) return
+    const labels = selectedRuns.map((run) => describeSyncRun(run)).join('、')
+    const confirmed = window.confirm([
+      `将删除选中的 ${selectedRuns.length} 条同步记录（当前加载 ${runs.length} 条）：${labels}。`,
+      '删除范围仅限“设置 → 最近同步”当前加载的同步记录；本机数据库保留审计行，连接配置、safeStorage 密钥、外链索引（external_links）以及 Obsidian Vault / Zotero / Notion 等外部数据都不会被改动。',
+      '其中已被其他操作更新过的记录会以“修订冲突”逐条回报且不会被写入。确认继续？'
+    ].join('\n'))
+    if (!confirmed) return
+    runReceiptLabels.current = new Map(selectedRuns.map((run) => [run.id, describeSyncRun(run)]))
+    setRunFeedback(null)
+    removeRunsMutation.mutate(selectedRuns.map((run) => ({ id: run.id, expectedRevision: run.revision })))
+  }
+  const describeRunReceipt = (id: string): string => {
+    const run = runs.find((candidate) => candidate.id === id)
+    return run ? describeSyncRun(run) : runReceiptLabels.current.get(id) ?? '该同步记录（已不在当前列表）'
+  }
+
   if (integrations.isLoading) return <LoadingState label="正在读取集成配置…" />
   if (integrations.error) return <ErrorState error={integrations.error} onRetry={() => void integrations.refetch()} />
 
@@ -257,9 +399,33 @@ function ConnectorsPanel(): React.JSX.Element {
       <ResearchPanel action={<IntegrationDialog profile={null} trigger={<Button variant="primary"><Plus aria-hidden="true" className="size-4" />新建连接</Button>} />} eyebrow="CONNECTORS / PROFILES" title="Obsidian · Zotero · Notion">
         <p className="border-b border-border px-4 py-3 text-xs leading-5 text-muted-foreground">连接地址和字段设置保存在工作区数据库，重启后继续生效；凭据仅由主进程安全存储。开发环境可用 .env 作为新建配置的默认值，打包后请直接在此处填写并验证。</p>
         {integrations.data?.length === 0 ? <div className="p-4"><EmptyState description="保存 Obsidian 配置后必须先验证；其他连接的读写仍保持显式、手动触发。" title="尚无连接配置" /></div> : null}
+        <SelectionBar
+          allSelected={profiles.length > 0 && selectedProfiles.length === profiles.length}
+          disabled={profiles.length === 0}
+          indeterminate={selectedProfiles.length > 0 && selectedProfiles.length < profiles.length}
+          label="连接记录批量操作"
+          onClear={() => setSelectedIds(new Set())}
+          onToggleAll={(checked) => setSelectedIds(checked ? new Set(profiles.map((profile) => profile.id)) : new Set())}
+          scope={`全选仅覆盖“设置 → 工具连接”当前列表的 ${profiles.length} 条连接记录（不含已归档；本列表无分页、无筛选）`}
+          selectAllLabel="全选当前列表连接记录"
+          selectedCount={selectedProfiles.length}
+          totalCount={profiles.length}
+        >
+          <Button
+            aria-label={`删除选中的 ${selectedProfiles.length} 条连接记录`}
+            disabled={selectedProfiles.length === 0 || removeOneMutation.isPending}
+            loading={deleteMutation.isPending}
+            onClick={removeSelected}
+            size="sm"
+            variant="secondary"
+          ><Trash2 aria-hidden="true" className="size-3.5" />删除选中</Button>
+        </SelectionBar>
+        {deleteFeedback ? <p aria-live="polite" className={receipt && (receipt.conflict > 0 || receipt.failed > 0) ? 'form-feedback form-feedback-error mx-4 mt-3' : 'form-feedback form-feedback-success mx-4 mt-3'} role="status">{deleteFeedback}</p> : null}
+        {receipt ? <ArchiveReceiptList className="m-3" describe={describeReceipt} result={receipt} succeededVerb="已删除" /> : null}
         <div className="divide-y divide-border">
           {integrations.data?.map((profile) => (
             <article className="settings-row" key={profile.id}>
+              <SelectionCheckbox ariaLabel={`选择连接：${profile.name}`} checked={selectedIds.has(profile.id)} onChange={(checked) => toggleProfile(profile.id, checked)} title={`选择连接：${profile.name}`} />
               <div className="grid size-9 shrink-0 place-items-center rounded-md border border-border bg-muted text-primary"><Cable aria-hidden="true" className="size-4" /></div>
               <div className="min-w-0 flex-1">
                 <div className="flex flex-wrap items-center gap-2"><h3 className="text-sm font-bold text-foreground">{profile.name}</h3><StatusBadge status={profile.status} /><span className="research-tag">{integrationLabels[profile.provider]}</span></div>
@@ -267,13 +433,51 @@ function ConnectorsPanel(): React.JSX.Element {
                 {profile.lastError ? <p className="mt-1 text-xs text-danger">{profile.provider === 'obsidian' ? 'Vault 探测失败（错误摘要已脱敏）' : profile.lastError}</p> : null}
                 {testMutation.variables === profile.id && testMutation.data ? <p className={testMutation.data.ok ? 'mt-1 text-xs text-success' : 'mt-1 text-xs text-danger'} role="status">{testMutation.data.message}</p> : null}
               </div>
-              <div className="flex flex-wrap items-center justify-end gap-2"><IntegrationDialog profile={profile} trigger={<Button aria-label={`编辑连接：${profile.name}`} size="icon" variant="ghost"><Edit3 aria-hidden="true" className="size-4" /></Button>} /><Button loading={testMutation.isPending && testMutation.variables === profile.id} onClick={() => testMutation.mutate(profile.id)} size="sm"><TestTube2 aria-hidden="true" className="size-3.5" />{profile.provider === 'obsidian' ? '验证' : '测试'}</Button><Button disabled={!profile.enabled} loading={syncMutation.isPending && syncMutation.variables?.id === profile.id && syncMutation.variables.direction === 'pull'} onClick={() => syncMutation.mutate({ id: profile.id, direction: 'pull' })} size="sm"><RefreshCw aria-hidden="true" className="size-3.5" />拉取</Button><Button disabled={!profile.enabled} loading={syncMutation.isPending && syncMutation.variables?.id === profile.id && syncMutation.variables.direction === 'push'} onClick={() => { if (profile.provider === 'notion' && !window.confirm('将按最近一次拉取的页面版本写回 Workbench Summary、Tags 和 Collections。Notion API 不提供原子条件更新；若页面刚被他人修改，本次写回仍可能冲突。确认继续？')) return; syncMutation.mutate({ id: profile.id, direction: 'push' }) }} size="sm" variant="primary"><RefreshCw aria-hidden="true" className="size-3.5" />写回</Button></div>
+              <div className="flex flex-wrap items-center justify-end gap-2"><IntegrationDialog profile={profile} trigger={<Button aria-label={`编辑连接：${profile.name}`} size="icon" variant="ghost"><Edit3 aria-hidden="true" className="size-4" /></Button>} /><Button loading={testMutation.isPending && testMutation.variables === profile.id} onClick={() => testMutation.mutate(profile.id)} size="sm"><TestTube2 aria-hidden="true" className="size-3.5" />{profile.provider === 'obsidian' ? '验证' : '测试'}</Button><Button aria-label={`删除连接：${profile.name}`} disabled={deleteMutation.isPending} loading={removeOneMutation.isPending && removeOneMutation.variables?.id === profile.id} onClick={() => removeOne(profile)} size="sm" variant="secondary"><Trash2 aria-hidden="true" className="size-3.5" />删除</Button><Button disabled={!profile.enabled} loading={syncMutation.isPending && syncMutation.variables?.id === profile.id && syncMutation.variables.direction === 'pull'} onClick={() => syncMutation.mutate({ id: profile.id, direction: 'pull' })} size="sm"><RefreshCw aria-hidden="true" className="size-3.5" />拉取</Button><Button disabled={!profile.enabled} loading={syncMutation.isPending && syncMutation.variables?.id === profile.id && syncMutation.variables.direction === 'push'} onClick={() => { if (profile.provider === 'notion' && !window.confirm('将按最近一次拉取的页面版本写回 Workbench Summary、Tags 和 Collections。Notion API 不提供原子条件更新；若页面刚被他人修改，本次写回仍可能冲突。确认继续？')) return; syncMutation.mutate({ id: profile.id, direction: 'push' }) }} size="sm" variant="primary"><RefreshCw aria-hidden="true" className="size-3.5" />写回</Button></div>
             </article>
           ))}
         </div>
         <MutationFeedback error={testMutation.error ?? syncMutation.error} success={syncMutation.isSuccess ? '同步任务已提交。' : undefined} />
       </ResearchPanel>
-      <ResearchPanel eyebrow="SYNC / RECENT" title="最近同步">{syncRuns.isLoading ? <p className="research-empty-inline">正在读取…</p> : null}{syncRuns.error ? <p className="form-feedback form-feedback-error m-3" role="alert">{getErrorMessage(syncRuns.error)}</p> : null}{syncRuns.data ? <SyncRunList runs={syncRuns.data} /> : null}</ResearchPanel>
+      <ResearchPanel eyebrow="SYNC / RECENT" title="最近同步">
+        <p className="border-b border-border px-4 py-3 text-xs leading-5 text-muted-foreground">最近同步记录来自本机数据库的审计表。勾选后可逐条删除或批量删除：只会把记录从本列表移除（审计行保留），连接配置、密钥、外链索引与外部数据都不会被改动。</p>
+        {syncRuns.isLoading ? <p className="research-empty-inline">正在读取…</p> : null}
+        {syncRuns.error ? <p className="form-feedback form-feedback-error m-3" role="alert">{getErrorMessage(syncRuns.error)}</p> : null}
+        {syncRuns.data ? <>
+          <div className="px-3 pt-2">
+            <SelectionBar
+              allSelected={runs.length > 0 && selectedRuns.length === runs.length}
+              className="selection-bar-compact"
+              disabled={runs.length === 0}
+              indeterminate={selectedRuns.length > 0 && selectedRuns.length < runs.length}
+              label="同步记录批量操作"
+              onClear={() => setSelectedRunIds(new Set())}
+              onToggleAll={(checked) => setSelectedRunIds(checked ? new Set(runs.map((run) => run.id)) : new Set())}
+              scope={`全选仅覆盖“设置 → 最近同步”当前加载的 ${runs.length} 条同步记录（无分页、无筛选；不含定时任务 RUN HISTORY）`}
+              selectAllLabel="全选当前加载的同步记录"
+              selectedCount={selectedRuns.length}
+              totalCount={runs.length}
+            >
+              <Button
+                aria-label={`删除选中的 ${selectedRuns.length} 条同步记录`}
+                disabled={selectedRuns.length === 0 || removeRunMutation.isPending}
+                loading={removeRunsMutation.isPending}
+                onClick={removeSelectedRuns}
+                size="sm"
+                variant="secondary"
+              ><Trash2 aria-hidden="true" className="size-3.5" />删除选中</Button>
+            </SelectionBar>
+          </div>
+          {runFeedback ? <p aria-live="polite" className={runReceipt && (runReceipt.conflict > 0 || runReceipt.failed > 0) ? 'form-feedback form-feedback-error mx-3 mt-2' : 'form-feedback form-feedback-success mx-3 mt-2'} role="status">{runFeedback}</p> : null}
+          {runReceipt ? <ArchiveReceiptList className="m-3" describe={describeRunReceipt} result={runReceipt} succeededVerb="已删除" /> : null}
+          <SyncRunList
+            emptyText="尚无同步记录；执行拉取或写回后会出现逐条记录。"
+            rowAction={(run) => <Button aria-label={`删除同步记录：${describeSyncRun(run)}`} disabled={removeRunsMutation.isPending} loading={removeRunMutation.isPending && removeRunMutation.variables?.id === run.id} onClick={() => removeOneRun(run)} size="sm" variant="secondary"><Trash2 aria-hidden="true" className="size-3.5" />删除</Button>}
+            runs={runs}
+            selection={{ selectedIds: selectedRunIds, onToggle: toggleRun }}
+          />
+        </> : null}
+      </ResearchPanel>
     </div>
   )
 }

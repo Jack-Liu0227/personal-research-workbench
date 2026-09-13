@@ -26,10 +26,12 @@ export function PanelSkeleton({ lines = 4 }: { lines?: number }): React.JSX.Elem
   return <div aria-busy="true" aria-label="正在加载面板" className="panel-skeleton" role="status">{Array.from({ length: lines }, (_, index) => <span className="panel-skeleton-line" key={index} />)}</div>
 }
 
-export function ErrorState({ error, onRetry, compact = false }: {
+export function ErrorState({ error, onRetry, compact = false, retryLabel }: {
   error: unknown
   onRetry: () => void
   compact?: boolean
+  /** Unique accessible name when several retry actions render on the same page. */
+  retryLabel?: string
 }): React.JSX.Element {
   return (
     <div
@@ -46,7 +48,7 @@ export function ErrorState({ error, onRetry, compact = false }: {
           <p className="mt-1 text-xs leading-5 text-muted-foreground">{getErrorMessage(error)}</p>
         </div>
       </div>
-      <Button aria-label={uiCopy.action.retry} className={compact ? 'shrink-0' : 'mt-4'} onClick={onRetry} size="sm">
+      <Button aria-label={retryLabel ?? uiCopy.action.retry} className={compact ? 'shrink-0' : 'mt-4'} onClick={onRetry} size="sm">
         <RefreshCw aria-hidden="true" className="size-3.5" />
         {uiCopy.action.retry}
       </Button>

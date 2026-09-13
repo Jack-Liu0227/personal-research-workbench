@@ -1,5 +1,5 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { BookOpen, Check, ChevronLeft, ChevronRight, Download, ExternalLink, RefreshCw, Trash2 } from 'lucide-react'
+import { BookOpen, Check, ChevronLeft, ChevronRight, Download, RefreshCw, Trash2 } from 'lucide-react'
 import { useEffect, useMemo, useState } from 'react'
 import { PaperIdSchema, ProjectIdSchema } from '@prw/contracts'
 import type {
@@ -11,17 +11,34 @@ import type {
   ZoteroImportPreview,
   ZoteroImportResult,
   ZoteroItem,
+  ZoteroRemoteDeleteReceipt,
+  ZoteroRemoteDeletePreview,
   PaperToZoteroPreview,
   ZoteroHandoff
 } from '@prw/contracts'
+import { SelectionBar } from '../components/selection'
+import { PaneResizeSeparator, paneBoundaryOffset, usePaneResizeEnabled, usePaneWidth } from '../components/resizable-pane'
+import { ExternalUrlLink } from '../components/external-link'
 import { EmptyState, ErrorState, InlineLoadingState, PageHeader, PanelSkeleton } from '../components/states'
 import { Button, Input } from '../components/ui'
 import { cn, formatDateTime, getErrorMessage } from '../lib/utils'
+import { useDefaultProjectId } from '../lib/recent-project'
+import { collectionWriteLabel, confirmLabels, remoteDeleteLabels, remoteDeleteReceiptRows, remoteDeleteReceiptSummary, writeBlockedExplanation } from '../lib/zotero-write'
 import { getWorkbenchApi } from '../lib/workbench'
 import { useIntegrationsQuery } from './queries'
 import { ResearchPanel, StatusBadge } from './research/shared'
 
 const PAGE_SIZE = 50
+
+/** Zotero workspace rails. The bounds are shared by drag, keyboard and the
+ * published aria-valuemin/max. The defaults match the previous fixed grid
+ * (16rem Collections / 18rem Inspector). */
+const ZOTERO_COLLECTIONS_MIN_WIDTH = 224
+const ZOTERO_COLLECTIONS_MAX_WIDTH = 400
+const ZOTERO_COLLECTIONS_DEFAULT_WIDTH = 256
+const ZOTERO_INSPECTOR_MIN_WIDTH = 224
+const ZOTERO_INSPECTOR_MAX_WIDTH = 440
+const ZOTERO_INSPECTOR_DEFAULT_WIDTH = 288
 
 function parseTagInput(value: string): string[] {
   return [...new Set(value.split(/[\s,，;；]+/u).map((tag) => tag.replace(/^#+/u, '').trim()).filter(Boolean))].slice(0, 20)
@@ -217,7 +234,7 @@ function ItemInspector({ item, link }: { item: ZoteroItem | null; link: External
       </dl>
       <div><p className="text-[11px] text-muted-foreground">摘要</p><p className="mt-1 whitespace-pre-wrap leading-5 text-foreground">{item.abstract || '未提供摘要。'}</p></div>
       {item.tags.length > 0 ? <div className="flex flex-wrap gap-1">{item.tags.map((tag) => <span className="research-tag" key={tag}>{displayTag(tag)}</span>)}</div> : null}
-      {item.url ? <a className="inline-flex items-center gap-1 text-primary underline" href={item.url} rel="noreferrer" target="_blank"><ExternalLink aria-hidden="true" className="size-3" />打开条目链接</a> : null}
+      {item.url ? <ExternalUrlLink className="zotero-item-link" fieldLabel="条目链接" href={item.url} label="打开条目链接" /> : null}
       <p className="text-[11px] leading-5 text-muted-foreground">附件只保留 Zotero locator/链接，不复制 PDF 或上传附件正文。</p>
     </div>
   )
@@ -247,15 +264,37 @@ export function ZoteroPage({ projects }: { projects: Project[] }): React.JSX.Ele
   const [paperPreview, setPaperPreview] = useState<PaperToZoteroPreview | null>(null)
   const [paperResult, setPaperResult] = useState<ZoteroImportResult | null>(null)
   const [bibtexExport, setBibtexExport] = useState<ZoteroBibtexExport | null>(null)
-  const [exportProjectId, setExportProjectId] = useState<string>('')
+  const { chooseProjectId: setExportProjectId, projectId: exportProjectId } = useDefaultProjectId(projects)
   const [exportTags, setExportTags] = useState('')
   const [operationMessage, setOperationMessage] = useState<string | null>(null)
   const [operationMessageKind, setOperationMessageKind] = useState<'error' | 'status'>('status')
+  const [remoteDeleteReceipt, setRemoteDeleteReceipt] = useState<ZoteroRemoteDeleteReceipt | null>(null)
+  const [remoteDeletePreview, setRemoteDeletePreview] = useState<ZoteroRemoteDeletePreview | null>(null)
   // Keep the two navigation/preview rails visible on first load. Collapsing
   // them remains available, but a blank center pane made a healthy Zotero
   // connection look like a failed read in the previous default state.
   const [collectionsOpen, setCollectionsOpen] = useState(true)
   const [inspectorOpen, setInspectorOpen] = useState(true)
+  // Collections/条目详情 rails are user widths now, clamped to [224, 400] and
+  // [224, 440] and persisted with the repository's optional-storage convention.
+  // The three-column grid is only laid out above 721px (below that the CSS
+  // stacks the workspace).
+  const collectionsPane = usePaneWidth({ storageKey: 'zotero-collections-width', defaultWidth: ZOTERO_COLLECTIONS_DEFAULT_WIDTH, min: ZOTERO_COLLECTIONS_MIN_WIDTH, max: ZOTERO_COLLECTIONS_MAX_WIDTH })
+  const inspectorPane = usePaneWidth({ storageKey: 'zotero-inspector-width', defaultWidth: ZOTERO_INSPECTOR_DEFAULT_WIDTH, min: ZOTERO_INSPECTOR_MIN_WIDTH, max: ZOTERO_INSPECTOR_MAX_WIDTH })
+  const workspaceSplitEnabled = usePaneResizeEnabled('(min-width: 721px)')
+  // Both Zotero rails scroll internally, so the splitters are positioned inside
+  // the (non-scrolling) grid container instead of inside the panes: a handle
+  // that scrolls away with a pane is not a usable drag affordance. Collapsed
+  // rails drop their splitter, and a stacked workspace keeps it as disabled.
+  const workspaceStyle = workspaceSplitEnabled
+    ? {
+        gridTemplateColumns: `${collectionsOpen ? `minmax(0, ${collectionsPane.width}px)` : '3rem'} minmax(0, 1fr) ${inspectorOpen ? `minmax(0, ${inspectorPane.width}px)` : '3rem'}`
+      }
+    : undefined
+  const workspaceSeparators = <>
+    {collectionsOpen ? <PaneResizeSeparator defaultValue={ZOTERO_COLLECTIONS_DEFAULT_WIDTH} disabled={!workspaceSplitEnabled} label="调整 Collections 宽度（左右方向键调整，Home 最小，End 最大，双击恢复默认）" max={ZOTERO_COLLECTIONS_MAX_WIDTH} min={ZOTERO_COLLECTIONS_MIN_WIDTH} onReset={collectionsPane.resetWidth} onResize={collectionsPane.setWidth} style={{ left: paneBoundaryOffset(collectionsPane.width) }} value={collectionsPane.width} /> : null}
+    {inspectorOpen ? <PaneResizeSeparator defaultValue={ZOTERO_INSPECTOR_DEFAULT_WIDTH} disabled={!workspaceSplitEnabled} invert label="调整条目详情宽度（左右方向键调整，Home 最小，End 最大，双击恢复默认）" max={ZOTERO_INSPECTOR_MAX_WIDTH} min={ZOTERO_INSPECTOR_MIN_WIDTH} onReset={inspectorPane.resetWidth} onResize={inspectorPane.setWidth} style={{ right: paneBoundaryOffset(inspectorPane.width) }} value={inspectorPane.width} /> : null}
+  </>
 
   useEffect(() => {
     const fallbackProfile = zoteroProfiles.find((item) => item.enabled) ?? zoteroProfiles[0]
@@ -371,6 +410,43 @@ export function ZoteroPage({ projects }: { projects: Project[] }): React.JSX.Ele
     onSuccess: async () => { await queryClient.invalidateQueries({ queryKey: ['integrations'] }); setOperationMessage('Collection 绑定已更新。'); setOperationMessageKind('status') },
     onError: (error) => { setOperationMessage(error instanceof Error ? error.message : 'Collection 绑定更新失败。'); setOperationMessageKind('error') }
   })
+  // 两侧删除：preview 冻结远端 revision 与本地投影，用户显式确认后才 execute。
+  // 远端删除失败时回执保留本地记录，因此这里从不先删本地再尝试远端。
+  const remoteDeleteMutation = useMutation({
+    mutationFn: async (itemKeys: string[]) => {
+      if (!profileId || !profile) throw new Error('请先选择 Zotero 配置。')
+      if (itemKeys.length === 0) throw new Error('请至少选择一个 Zotero 条目。')
+      const api = getWorkbenchApi()
+      const preview = await api.zotero.deleteRemote.preview({ profileId, itemKeys })
+      setRemoteDeletePreview(preview)
+      if (preview.writeBlockedReason !== null) {
+        throw new Error(preview.message)
+      }
+      if (!window.confirm(`${preview.message}\n\n${remoteDeleteLabels.confirm}`)) {
+        throw new Error('已取消：没有向 Zotero 发送任何删除请求。')
+      }
+      return api.zotero.deleteRemote.execute({
+        profileId,
+        expectedProfileRevision: preview.profileRevision,
+        targets: preview.targets,
+        confirmed: true
+      })
+    },
+    onSuccess: async (receipt) => {
+      setRemoteDeleteReceipt(receipt)
+      setRemoteDeletePreview(null)
+      setOperationMessage(remoteDeleteReceiptSummary(receipt))
+      setOperationMessageKind(receipt.status === 'completed' ? 'status' : 'error')
+      await queryClient.invalidateQueries({ queryKey: ['integrations'] })
+      setSelectedItemKeys(new Set())
+      itemsQuery.refetch()
+    },
+    onError: (error) => { setOperationMessage(getErrorMessage(error)); setOperationMessageKind('error') }
+  })
+  const requestRemoteDelete = () => {
+    if (selectedItemKeys.size === 0 || remoteDeleteMutation.isPending) return
+    remoteDeleteMutation.mutate([...selectedItemKeys])
+  }
 
   useEffect(() => {
     setCollectionCursor(null)
@@ -407,6 +483,24 @@ export function ZoteroPage({ projects }: { projects: Project[] }): React.JSX.Ele
 
   const papers = papersQuery.data ?? []
   const allPapersSelected = papers.length > 0 && papers.every((paper) => paperIds.has(paper.id))
+  // The items rail accumulates pages, so "全选" can only ever mean the rows
+  // that are actually loaded; every boundary is spelled out in the bar's scope.
+  const allLoadedItemsSelected = itemEntries.length > 0 && itemEntries.every((item) => selectedItemKeys.has(item.key))
+  const someLoadedItemsSelected = itemEntries.some((item) => selectedItemKeys.has(item.key))
+  const toggleAllLoadedItems = () => setSelectedItemKeys((current) => {
+    const next = new Set(current)
+    const allSelected = itemEntries.length > 0 && itemEntries.every((item) => current.has(item.key))
+    for (const item of itemEntries) {
+      if (allSelected) next.delete(item.key)
+      else next.add(item.key)
+    }
+    return next
+  })
+  const clearLoadedItems = () => setSelectedItemKeys((current) => {
+    const next = new Set(current)
+    for (const item of itemEntries) next.delete(item.key)
+    return next
+  })
   const inspectedItem = itemEntries.find((item) => item.key === inspectedItemKey) ?? null
   const inspectedLink = inspectedItem ? linksQuery.data?.find((link) => link.entityKind === 'paper' && link.externalId === inspectedItem.key) : undefined
 
@@ -546,14 +640,15 @@ export function ZoteroPage({ projects }: { projects: Project[] }): React.JSX.Ele
         <div className="mt-4"><EmptyState description="请先在设置中添加 Zotero 配置。未配置时不会显示演示数据。" title="尚未配置 Zotero" /></div>
       ) : (
         <div className="mt-4 grid gap-4">
-          <div className="grid gap-3 rounded-md border border-border bg-surface px-4 py-3"><label className="grid gap-1.5" htmlFor="zotero-profile"><span className="text-xs font-semibold text-foreground">Zotero 配置</span><select className="select-control" id="zotero-profile" onChange={(event) => setProfileId(event.target.value)} value={profileId}>{zoteroProfiles.map((item) => <option key={item.id} value={item.id}>{item.name}{item.enabled ? '' : '（已停用）'}</option>)}</select></label><div className="flex flex-wrap items-center gap-2 text-xs"><span className="text-muted-foreground">连接状态：</span>{capabilityQuery.isLoading ? <span className="text-muted-foreground">正在探测…</span> : capabilityQuery.data ? <span className={cn('research-status', capabilityQuery.data.status === 'connected' ? 'research-status-positive' : 'research-status-warning')}>{capabilityStatusLabels[capabilityQuery.data.status]}</span> : <span className="text-muted-foreground">尚未探测</span>}{canRead && !canWrite && localZotero ? <Button disabled={authorizeMutation.isPending} loading={authorizeMutation.isPending} onClick={() => authorizeMutation.mutate()} size="sm" variant="secondary">请求本机写入授权</Button> : null}</div><p className="text-xs leading-5 text-muted-foreground">连接能力、授权和探测结果统一在“设置 → 工具连接”管理；本页仅浏览实际可读的集合与条目。Better BibTeX 导出为只读操作；写入 Zotero 前需在 Zotero 中启用 Local API 并完成本机写入授权。</p></div>
+          <div className="grid gap-3 rounded-md border border-border bg-surface px-4 py-3"><label className="grid gap-1.5" htmlFor="zotero-profile"><span className="text-xs font-semibold text-foreground">Zotero 配置</span><select className="select-control" id="zotero-profile" onChange={(event) => setProfileId(event.target.value)} value={profileId}>{zoteroProfiles.map((item) => <option key={item.id} value={item.id}>{item.name}{item.enabled ? '' : '（已停用）'}</option>)}</select></label><div className="flex flex-wrap items-center gap-2 text-xs"><span className="text-muted-foreground">连接状态：</span>{capabilityQuery.isLoading ? <span className="text-muted-foreground">正在探测…</span> : capabilityQuery.data ? <span className={cn('research-status', capabilityQuery.data.status === 'connected' ? 'research-status-positive' : 'research-status-warning')}>{capabilityStatusLabels[capabilityQuery.data.status]}</span> : <span className="text-muted-foreground">尚未探测</span>}{canRead && !canWrite && localZotero ? <Button disabled={authorizeMutation.isPending} loading={authorizeMutation.isPending} onClick={() => authorizeMutation.mutate()} size="sm" variant="secondary">请求本机写入授权</Button> : null}</div><p className="text-xs leading-5 text-muted-foreground">连接能力、授权和探测结果统一在“设置 → 工具连接”管理；本页仅浏览实际可读的集合与条目。Better BibTeX 导出为只读操作；写入 Zotero 前需在 Zotero 中启用 Local API 并完成本机写入授权。</p>{capabilityQuery.data && !canWrite ? <p className="mt-2 text-xs leading-5 write-blocked-note" role="status">只读：{writeBlockedExplanation(capabilityQuery.data.writeBlockedReason, capabilityQuery.data.status)}</p> : null}</div>
 
           {!canRead ? (
             <ResearchPanel eyebrow="ZOTERO / UNAVAILABLE" title="暂时无法读取">
               <div className="p-4"><p className="text-sm text-muted-foreground">{capabilityUnavailableMessage(capabilityQuery.data?.status)}</p></div>
             </ResearchPanel>
           ) : (<>
-<div className={cn('zotero-workspace-grid grid min-h-[38rem] gap-4 xl:grid-cols-[16rem_minmax(0,1fr)_18rem]', !collectionsOpen && 'zotero-workspace-grid-collections-collapsed', !inspectorOpen && 'zotero-workspace-grid-inspector-collapsed')}>
+<div className={cn('zotero-workspace-grid pane-resize-host grid min-h-[38rem] gap-4 xl:grid-cols-[16rem_minmax(0,1fr)_18rem]', !collectionsOpen && 'zotero-workspace-grid-collections-collapsed', !inspectorOpen && 'zotero-workspace-grid-inspector-collapsed')} style={workspaceStyle}>
+              {workspaceSeparators}
               <ResearchPanel className={!collectionsOpen ? 'zotero-collapsed-panel' : undefined} action={<Button aria-expanded={collectionsOpen} aria-label={collectionsOpen ? '折叠 Collections 到左侧' : '展开 Collections'} onClick={() => setCollectionsOpen((current) => !current)} size="icon" title={collectionsOpen ? '折叠 Collections 到左侧' : '展开 Collections'} variant="ghost">{collectionsOpen ? <ChevronLeft aria-hidden="true" className="size-4" /> : <ChevronRight aria-hidden="true" className="size-4" />}</Button>} eyebrow="COLLECTIONS / PAGE" title="Collections">
                 {!collectionsOpen ? <p className="p-4 text-xs text-muted-foreground">集合已折叠。</p> : null}
                 {collectionsOpen ? <>
@@ -565,7 +660,7 @@ export function ZoteroPage({ projects }: { projects: Project[] }): React.JSX.Ele
                 <CollectionTree collections={collectionEntries} onSelect={(key) => { setCollectionKey(key); setPaperPreview(null); setPaperResult(null) }} selectedKey={collectionKey} />
                 <div className="border-t border-border p-3">
                   <div className="mb-2 grid gap-2">
-                    <label className="grid gap-1"><span className="text-[11px] text-muted-foreground">项目标签（导入/导出）</span><select aria-label="导出项目标签" className="select-control h-8 text-xs" id="zotero-export-project" onChange={(event) => setExportProjectId(event.target.value)} value={exportProjectId}><option value="">#未分类</option>{projects.map((project) => <option key={project.id} value={project.id}>#{project.name}</option>)}</select></label>
+                    <label className="grid gap-1"><span className="text-[11px] text-muted-foreground">项目标签（导入/导出）</span><select aria-label="导出项目标签" className="select-control h-8 text-xs" id="zotero-export-project" onChange={(event) => setExportProjectId(event.target.value)} value={exportProjectId}><option value="">#未分类（不绑定项目）</option>{projects.map((project) => <option key={project.id} value={project.id}>#{project.name}</option>)}</select></label>
                     <label className="grid gap-1"><span className="text-[11px] text-muted-foreground">附加标签（空格或逗号分隔）</span><Input aria-label="BibTeX 附加标签" className="h-8 text-xs" onChange={(event) => setExportTags(event.target.value)} placeholder="#方法学, #重点" value={exportTags} /></label>
                   </div>
                   <div className="flex flex-wrap gap-2">
@@ -580,11 +675,25 @@ export function ZoteroPage({ projects }: { projects: Project[] }): React.JSX.Ele
               </ResearchPanel>
 
               <ResearchPanel
-                action={<div className="flex flex-wrap items-center gap-2"><select aria-label="导出格式" className="select-control h-8 text-xs" onChange={(event) => changeFormat(event.target.value as 'ris' | 'bibtex')} value={format}><option value="ris">RIS</option><option value="bibtex">BibTeX</option></select><Button aria-label="绑定当前 Collection" disabled={collectionBindingMutation.isPending || !collectionKey} loading={collectionBindingMutation.isPending} onClick={() => collectionBindingMutation.mutate(collectionKey)} size="sm" variant="ghost">绑定 Collection</Button><Button aria-label="移除 Collection 绑定" disabled={collectionBindingMutation.isPending || !profile?.settings?.zoteroCollectionKey} onClick={() => { setCollectionKey(null); collectionBindingMutation.mutate(null) }} size="sm" variant="ghost">移除绑定</Button><span className="text-xs text-muted-foreground">已选 {selectedItemKeys.size}</span></div>}
+                action={<div className="flex flex-wrap items-center gap-2"><select aria-label="导出格式" className="select-control h-8 text-xs" onChange={(event) => changeFormat(event.target.value as 'ris' | 'bibtex')} value={format}><option value="ris">RIS</option><option value="bibtex">BibTeX</option></select><Button aria-label="绑定当前 Collection" disabled={collectionBindingMutation.isPending || !collectionKey} loading={collectionBindingMutation.isPending} onClick={() => collectionBindingMutation.mutate(collectionKey)} size="sm" variant="ghost">绑定 Collection</Button><Button aria-label="移除 Collection 绑定" disabled={collectionBindingMutation.isPending || !profile?.settings?.zoteroCollectionKey} onClick={() => { setCollectionKey(null); collectionBindingMutation.mutate(null) }} size="sm" variant="ghost">移除绑定</Button><Button aria-label={`${remoteDeleteLabels.entry}（${remoteDeleteLabels.entryHint}）`} disabled={selectedItemKeys.size === 0 || remoteDeleteMutation.isPending} loading={remoteDeleteMutation.isPending} onClick={requestRemoteDelete} size="sm" variant="secondary" title={remoteDeleteLabels.entryHint}><Trash2 aria-hidden="true" className="size-3.5" />{remoteDeleteLabels.entryHint}</Button><span className="text-xs text-muted-foreground">已选 {selectedItemKeys.size}</span></div>}
                 eyebrow="ZOTERO / ITEMS PAGE"
                 title={collectionKey ? `条目 · ${collectionEntries.find((item) => item.key === collectionKey)?.name ?? collectionKey}` : '全部条目'}
               >
                 <div className="border-b border-border p-3"><Input aria-label="搜索 Zotero 条目" onChange={(event) => setQuery(event.target.value)} placeholder="搜索标题或作者" value={query} /></div>
+                <div className="px-3 pt-2">
+                  <SelectionBar
+                    allSelected={allLoadedItemsSelected}
+                    disabled={itemEntries.length === 0}
+                    indeterminate={someLoadedItemsSelected}
+                    label="Zotero 条目选择"
+                    onClear={clearLoadedItems}
+                    onToggleAll={toggleAllLoadedItems}
+                    scope={`范围：全选仅覆盖已加载的 ${itemEntries.length} 条（单页最多 ${PAGE_SIZE} 条，“加载下一页”会保留已选）；切换 Collection、查询词或连接会清空已选，不会选中未加载页`}
+                    selectAllLabel="全选已加载条目"
+                    selectedCount={selectedItemKeys.size}
+                    totalCount={itemEntries.length}
+                  />
+                </div>
                 {itemsQuery.isLoading && itemEntries.length === 0 ? <PanelSkeleton lines={8} /> : null}
                 {itemsQuery.isFetching && itemEntries.length > 0 ? <div className="px-3 py-2"><InlineLoadingState label="正在更新条目…" /></div> : null}
                 {itemsQuery.error ? <div className="p-4"><ErrorState error={itemsQuery.error} onRetry={() => void itemsQuery.refetch()} /></div> : null}
@@ -596,6 +705,13 @@ export function ZoteroPage({ projects }: { projects: Project[] }): React.JSX.Ele
                   <button className="min-w-0 flex-1 cursor-pointer text-left outline-none focus-visible:ring-2 focus-visible:ring-ring" onClick={() => setInspectedItemKey(item.key)} type="button"><h3 className="overflow-wrap-anywhere text-sm font-bold text-foreground">{item.title}</h3><p className="mt-1 truncate text-xs text-muted-foreground">{item.creators.join('、') || '未记录作者'} · {item.year ?? '年份未知'}{item.publicationTitle ? ` · ${item.publicationTitle}` : ''}</p><div className="mt-2 flex flex-wrap gap-1">{item.tags.slice(0, 4).map((tag) => <span className="research-tag" key={tag}>{displayTag(tag)}</span>)}{item.attachmentCount > 0 ? <span className="research-tag">附件链接 {item.attachmentCount}</span> : null}</div></button>
                 </article>)}</div>
                 {itemsQuery.data?.nextCursor && itemsQuery.data.nextCursor !== itemCursor ? <div className="flex justify-center p-3"><Button onClick={() => setItemCursor(itemsQuery.data?.nextCursor ?? null)} size="sm" variant="ghost">加载下一页</Button></div> : null}
+                <div className="border-t border-border p-3">
+                  <div className="flex flex-wrap items-center gap-2">
+                    <Button aria-label={remoteDeleteLabels.entry} disabled={selectedItemKeys.size === 0 || remoteDeleteMutation.isPending} loading={remoteDeleteMutation.isPending} onClick={requestRemoteDelete} size="sm" variant="secondary"><Trash2 aria-hidden="true" className="size-3.5" />{remoteDeleteLabels.entry}</Button>
+                    <span className="text-[11px] leading-5 text-muted-foreground">{remoteDeleteLabels.entryHint}：先删除 Zotero 远端条目（永久删除），只有 Zotero 确认删除或返回 404 后才归档本地投影；远端删除失败时本地记录保留。{remoteDeletePreview && remoteDeletePreview.writeBlockedReason !== null ? ` 当前不可删除：${remoteDeletePreview.message}` : ''}</span>
+                  </div>
+                  {remoteDeleteReceipt ? <div className="mt-3 grid gap-2 rounded-md border border-border bg-surface-muted p-3 text-xs" data-zotero-delete-receipt={remoteDeleteReceipt.status}><p className="font-semibold text-foreground">{remoteDeleteReceiptSummary(remoteDeleteReceipt)}</p><div className="divide-y divide-border rounded-md border border-border bg-surface">{remoteDeleteReceiptRows(remoteDeleteReceipt).map((row) => <div className="grid gap-1 px-3 py-2" key={row.key}><div className="flex items-center gap-3"><span className="font-mono text-muted-foreground">{row.key}</span><span className="min-w-0 flex-1 font-medium text-foreground">{row.outcome}</span></div><span className="leading-5 text-muted-foreground">{row.detail}</span></div>)}</div></div> : null}
+                </div>
               </ResearchPanel>
 
               <ResearchPanel className={!inspectorOpen ? 'zotero-collapsed-panel' : undefined} action={<Button aria-expanded={inspectorOpen} aria-label={inspectorOpen ? '折叠条目详情到右侧' : '展开条目详情'} onClick={() => setInspectorOpen((current) => !current)} size="icon" title={inspectorOpen ? '折叠条目详情到右侧' : '展开条目详情'} variant="ghost">{inspectorOpen ? <ChevronRight aria-hidden="true" className="size-4" /> : <ChevronLeft aria-hidden="true" className="size-4" />}</Button>} eyebrow="INSPECTOR / READ-ONLY" title="条目详情">{inspectorOpen ? <ItemInspector item={inspectedItem} link={inspectedLink} /> : null}</ResearchPanel>
@@ -604,8 +720,8 @@ export function ZoteroPage({ projects }: { projects: Project[] }): React.JSX.Ele
               {importResult ? <ResearchPanel className="mt-4" eyebrow="ZOTERO / WORKBENCH RESULT" title="导入回执"><div className="grid gap-2 p-4 text-xs"><p className="text-foreground">成功 {importResult.succeeded} · 跳过 {importResult.skipped} · 失败 {importResult.failed}</p><div className="divide-y divide-border rounded-md border border-border">{importResult.items.map((item) => <div className="flex items-center gap-3 px-3 py-2" key={`${item.itemKey}:${item.paperId ?? 'none'}`}><span className="font-mono text-muted-foreground">{item.itemKey}</span><span className="min-w-0 flex-1">{item.paperId ?? '未创建 Paper'}</span><span className="research-tag">{item.outcome}</span></div>)}</div></div></ResearchPanel> : null}
             </>)}
 
-          {paperPreview ? <ResearchPanel className="mt-4" action={<div className="flex gap-2"><Button disabled={paperExecuteMutation.isPending} onClick={() => { setPaperPreview(null); setOperationMessage(null) }} size="sm">取消</Button><Button aria-label={paperPreview.transport === 'api' ? '确认写入 Zotero' : '确认并生成 Zotero 导入包'} disabled={!canExecutePaper || paperExecuteMutation.isPending} loading={paperExecuteMutation.isPending} onClick={() => paperExecuteMutation.mutate()} size="sm" variant="primary"><Check aria-hidden="true" className="size-3.5" />{paperPreview.transport === 'api' ? '确认写入 Zotero' : '确认并生成导入包'}</Button></div>} eyebrow="ZOTERO / PAPER CONFIRMATION" title={`导出预览 · ${paperPreview.total} 条`}><div className="p-4 text-xs"><p className="text-muted-foreground">目标 Collection：<span className="font-semibold text-foreground">{paperPreview.targetCollectionKey ?? '默认'}</span> · capability：{paperPreview.capability} · transport：{paperPreview.transport}</p><div className="mt-3 divide-y divide-border rounded-md border border-border">{paperPreview.items.map((item) => <div className="flex items-center gap-3 px-3 py-2" key={`${item.itemKey}:${item.paperId ?? 'none'}`}><span className="font-mono text-muted-foreground">{item.itemKey}</span><span className="min-w-0 flex-1">{papers.find((paper) => paper.id === item.paperId)?.title ?? item.paperId ?? '本地 Paper'}</span><span className="research-tag">{importDecisionLabel(item.decision)}</span></div>)}</div><p className="mt-3 leading-5 text-muted-foreground">这是一份一次性预览。API 可写时会通过 revision 保护的受控接口写入；只读时点击确认仅生成本地导入包，不会伪装成已导入。</p></div></ResearchPanel> : null}
-          {paperResult ? <ResearchPanel className="mt-4" eyebrow="ZOTERO / PAPER RESULT" title="Paper → Zotero 回执"><div className="grid gap-2 p-4 text-xs"><p className="text-foreground">成功 {paperResult.succeeded} · 跳过 {paperResult.skipped} · 失败 {paperResult.failed}</p>{paperResult.handoff ? <div className="flex flex-wrap items-center gap-2 rounded-md border border-amber-300/60 bg-amber-50/60 px-3 py-2 dark:bg-amber-950/20"><span className="min-w-0 flex-1 text-amber-800 dark:text-amber-200">Zotero 当前为只读，已生成 {paperResult.handoff.itemCount} 条 {paperResult.handoff.format.toUpperCase()} 导入包（目标 Collection：{paperResult.handoff.targetCollectionKey ?? '默认'}）。</span><Button aria-label="下载 Zotero 导入包" onClick={() => { void downloadZoteroHandoff(paperResult.handoff!).then((fileName) => { setOperationMessage(`已保存到 Downloads：${fileName}`); setOperationMessageKind('status') }).catch((error) => { setOperationMessage(getErrorMessage(error)); setOperationMessageKind('error') }) }} size="sm" variant="secondary"><Download aria-hidden="true" className="size-3.5" />下载导入包</Button></div> : null}<div className="divide-y divide-border rounded-md border border-border">{paperResult.items.map((item) => <div className="flex items-center gap-3 px-3 py-2" key={`${item.itemKey}:${item.paperId ?? 'none'}`}><span className="font-mono text-muted-foreground">{item.itemKey}</span><span className="min-w-0 flex-1">{item.paperId ?? '未创建 Paper'}</span><span className="research-tag">{item.outcome}</span></div>)}</div></div></ResearchPanel> : null}
+          {paperPreview ? <ResearchPanel className="mt-4" action={<div className="flex gap-2"><Button disabled={paperExecuteMutation.isPending} onClick={() => { setPaperPreview(null); setOperationMessage(null) }} size="sm">取消</Button><Button aria-label={confirmLabels[paperPreview.transport === 'api' ? 'write' : 'read-only']} disabled={!canExecutePaper || paperExecuteMutation.isPending} loading={paperExecuteMutation.isPending} onClick={() => paperExecuteMutation.mutate()} size="sm" variant="primary"><Check aria-hidden="true" className="size-3.5" />{confirmLabels[paperPreview.transport === 'api' ? 'write' : 'read-only']}</Button></div>} eyebrow="ZOTERO / PAPER CONFIRMATION" title={`导出预览 · ${paperPreview.total} 条`}><div className="p-4 text-xs"><p className="text-muted-foreground">目标 Collection：<span className="font-semibold text-foreground">{paperPreview.targetCollectionKey ?? '默认'}</span> · capability：{paperPreview.capability} · transport：{paperPreview.transport}</p><div className="mt-3 divide-y divide-border rounded-md border border-border">{paperPreview.items.map((item) => <div className="flex flex-wrap items-center gap-3 px-3 py-2" key={`${item.itemKey}:${item.paperId ?? 'none'}`}><span className="font-mono text-muted-foreground">{item.itemKey}</span><span className="min-w-0 flex-1">{papers.find((paper) => paper.id === item.paperId)?.title ?? item.paperId ?? '本地 Paper'}</span><span className="research-tag">{importDecisionLabel(item.decision)}</span>{item.note ? <span className="basis-full leading-5 text-amber-700 dark:text-amber-300">{item.note}</span> : null}</div>)}</div><p className="mt-3 leading-5 text-muted-foreground">{paperPreview.transport === 'api' ? '这是一份一次性写入预览：预览已冻结条目匹配、目标 Collection 和 profile revision；只有点击“确认并写入 Zotero”才会调用 Zotero，失败项会逐条返回回执。' : `这是一份一次性生成预览：${writeBlockedExplanation(capabilityQuery.data?.writeBlockedReason, capabilityQuery.data?.status)}`}{paperPreview.targetCollectionKey === null ? ' 未指定 Collection 时不会改动 Zotero 中现有条目的 Collection 成员关系。' : ''}</p></div></ResearchPanel> : null}
+          {paperResult ? <ResearchPanel className="mt-4" eyebrow="ZOTERO / PAPER RESULT" title="Paper → Zotero 回执"><div className="grid gap-2 p-4 text-xs"><p className="text-foreground">成功 {paperResult.succeeded} · 跳过 {paperResult.skipped} · 失败 {paperResult.failed}</p>{paperResult.handoff ? <div className="flex flex-wrap items-center gap-2 rounded-md border border-amber-300/60 bg-amber-50/60 px-3 py-2 dark:bg-amber-950/20"><span className="min-w-0 flex-1 text-amber-800 dark:text-amber-200">已生成 {paperResult.handoff.itemCount} 条 {paperResult.handoff.format.toUpperCase()} 导入包（未写入 Zotero，目标 Collection：{paperResult.handoff.targetCollectionKey ?? '默认'}）。回执中的“已生成”只有在下载并由 Zotero 导入后才生效。</span><Button aria-label="下载 Zotero 导入包" onClick={() => { void downloadZoteroHandoff(paperResult.handoff!).then((fileName) => { setOperationMessage(`已保存到 Downloads：${fileName}`); setOperationMessageKind('status') }).catch((error) => { setOperationMessage(getErrorMessage(error)); setOperationMessageKind('error') }) }} size="sm" variant="secondary"><Download aria-hidden="true" className="size-3.5" />下载导入包</Button></div> : null}<div className="divide-y divide-border rounded-md border border-border">{paperResult.items.map((item) => <div className="flex flex-wrap items-center gap-3 px-3 py-2" key={`${item.itemKey}:${item.paperId ?? 'none'}`}><span className="font-mono text-muted-foreground">{item.itemKey}</span><span className="min-w-0 flex-1">{item.paperId ?? '未创建 Paper'}</span><span className="research-tag">{item.outcome}</span><span className="research-tag">{collectionWriteLabel(item.collectionWrite, item.targetCollectionKey)}</span>{item.remoteRevision ? <span className="font-mono text-muted-foreground">v{item.remoteRevision}</span> : null}{item.error ? <span className="basis-full text-danger">{item.error.message}</span> : null}</div>)}</div></div></ResearchPanel> : null}
 
           {operationMessage ? <p className={cn('form-feedback', operationMessageKind === 'error' ? 'form-feedback-error' : 'form-feedback-success')} role={operationMessageKind === 'error' ? 'alert' : 'status'}>{operationMessage}</p> : null}
         </div>

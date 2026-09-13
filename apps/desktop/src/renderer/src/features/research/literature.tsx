@@ -1,5 +1,5 @@
-import { BookOpen, ChevronLeft, ChevronRight, Download, ExternalLink, Plus, RefreshCw, Search, Trash2, X } from 'lucide-react'
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { BookOpen, ChevronLeft, ChevronRight, CircleHelp, Download, ExternalLink, Plus, RefreshCw, Search, Trash2, X } from 'lucide-react'
+import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import type {
   LiteratureStagingRecord,
   LiteratureStagingToZoteroPreview,
@@ -10,19 +10,33 @@ import type {
   SearchSession,
   SearchSourceId,
   ZoteroCollection,
-  ZoteroHandoff
+  ZoteroHandoff,
 } from '@prw/contracts'
 import { ProjectIdSchema } from '@prw/contracts'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { Button, Input } from '../../components/ui'
+import { Button, Dialog, DialogContent, DialogTrigger, Input } from '../../components/ui'
+import { ExternalUrlLink } from '../../components/external-link'
+import { SelectionBar } from '../../components/selection'
+import { PaneResizeSeparator, usePaneResizeEnabled, usePaneWidth } from '../../components/resizable-pane'
+import { doiExternalUrl, externalUrlFieldLabel, resolveExternalUrl, type ExternalOpenOutcome } from '../../lib/external-url'
 import { EmptyState, ErrorState, LoadingState } from '../../components/states'
 import { getWorkbenchApi } from '../../lib/workbench'
-import { queryKeys, useIntegrationsQuery, useLiteratureStagingQuery, useSearchSessionsQuery } from '../queries'
+import { resolveRecentProjectId, useDefaultProjectId } from '../../lib/recent-project'
+import { type ZoteroWritePlan, authorizationGrantNotice, collectionDisplayLabel, collectionWriteLabel, confirmLabels, frozenWriteValues, permissionEntryBrief, permissionEntryDiagnosis, permissionEntryHeadline, permissionEntryLabels, permissionRequestFailureMessage, pendingProjectTagLabel, prepareLabels, projectTagLabel, requestPermissionLabels, resultActionLabel, type ZoteroPermissionEntry, writeBlockedExplanation, writeStatusLabel, zoteroPermissionEntry, zoteroWritePlan } from '../../lib/zotero-write'
+import { getErrorMessage } from '../../lib/utils'
+import { queryKeys, useIntegrationsQuery, useLiteratureStagingQuery, useSearchSessionsQuery, useZoteroCapabilityQuery } from '../queries'
 import { MutationFeedback, ResearchPanel } from './shared'
 
 const sourceLabels: Record<SearchSourceId, string> = {
   all: '全部免费来源', local: '本地索引', crossref: 'Crossref', openalex: 'OpenAlex', pubmed: 'PubMed', arxiv: 'arXiv', semantic_scholar: 'Semantic Scholar', google_scholar: 'Google Scholar（scholarly）'
 }
+
+/** Bounds of the 文献检索 results/Inspector split. The width is a percentage of
+ * the split container, and the same numbers are published as aria-valuemin/max
+ * so the keyboard contract and the clamp cannot drift apart. */
+const INSPECTOR_MIN_RATIO = 16
+const INSPECTOR_MAX_RATIO = 40
+const INSPECTOR_DEFAULT_RATIO = 17
 const sources: SearchSourceId[] = ['all', 'crossref', 'openalex', 'pubmed', 'arxiv', 'semantic_scholar', 'google_scholar']
 type LiteratureTab = 'search' | 'staging'
 type ResultSort = 'relevance' | 'year-asc' | 'year-desc' | 'impact-asc' | 'impact-desc' | 'metric-asc' | 'metric-desc' | 'title'
@@ -49,6 +63,97 @@ function stagingInput(result: SearchResult, projectId: string) {
 function stagingProjectUpdate(record: LiteratureStagingRecord, projectId: string) {
   return { id: record.id, expectedRevision: record.revision, sessionId: record.sessionId, projectId: projectId ? ProjectIdSchema.parse(projectId) : null, source: record.source, sourceId: record.sourceId, title: record.title, authors: record.authors, year: record.year, venue: record.venue, abstract: record.abstract, doi: record.doi, url: record.url, isOpenAccess: record.isOpenAccess, openMetric: record.openMetric ?? null, fingerprint: record.fingerprint, dedupeReason: record.dedupeReason, dedupeConfidence: record.dedupeConfidence, paperId: record.paperId }
 }
+
+/** `undefined` keeps the records' own project bindings, `null` is an explicit
+ * 未分类 classification and a project id freezes that project for the write. */
+type ZoteroWriteProject = string | null | undefined
+
+/** The RPC payload keeps the three-state classification (omit / 未分类 / project)
+ * while the wire contract carries a branded project id. */
+function writeProjectInput(projectId: ZoteroWriteProject): null | undefined | ReturnType<typeof ProjectIdSchema.parse> {
+  if (projectId === undefined) return undefined
+  if (projectId === null) return null
+  return ProjectIdSchema.parse(projectId)
+}
+
+/**
+ * The top-level project classification of one Zotero write.  Every value shown
+ * by the *frozen* variant comes from the preview/receipt, never from the live
+ * UI selection; the `pending` variant is the deliberate choice the *next*
+ * preview will freeze.
+ */
+function ZoteroProjectField({ projectId, tagText, tagValue, projects, onProjectChange, disabled, selectLabel = 'Zotero 写入顶层项目分类', tagHint, pending }: { projectId: ZoteroWriteProject; tagText: string; tagValue: string; projects: Project[]; onProjectChange: (projectId: ZoteroWriteProject) => void; disabled: boolean; selectLabel?: string; tagHint: string; pending?: boolean }): React.JSX.Element {
+  return <div className="mt-2 flex flex-wrap items-center gap-2 text-xs">
+    <label className="flex items-center gap-2"><span>顶层项目分类</span><select aria-label={selectLabel} className="select-control" disabled={disabled} onChange={(event) => { const value = event.target.value; onProjectChange(value === '__auto__' ? undefined : value === '__none__' ? null : value) }} value={projectId === undefined ? '__auto__' : projectId ?? '__none__'}><option value="__auto__">自动（按各条文献项目绑定）</option><option value="__none__">未分类</option>{projects.map((project) => <option key={project.id} value={project.id}>{project.name}</option>)}</select></label>
+    <span className="research-tag" data-zotero-project-tag={tagValue}>{pending ? '将写入标签' : '写入标签'} {tagText}</span>
+    <span className="w-full leading-5 text-muted-foreground">{tagHint}</span>
+  </div>
+}
+
+/** Everything the (mandatory) permission entry needs to render one state. */
+type ZoteroPermissionView = {
+  entry: ZoteroPermissionEntry
+  headline: string
+  brief: string
+  diagnosis: string
+  pending: boolean
+  failure: string | null
+  onRequest: () => void
+}
+
+/**
+ * The mandatory "request Zotero write permission" entry.
+ *
+ * It renders at every literature write entry point and in every profile state:
+ * a pending or failed probe, an empty result list and a missing preview never
+ * remove it.  Only an already-probed write connection (nothing to request) and
+ * a missing connection (nothing to target) replace the action with a stated
+ * diagnosis, and Zotero 9 — which can never authorize because it returns no
+ * `Zotero-Server-ID` — shows `无法授权（查看说明）` instead of faking a grant.
+ */
+function ZoteroWritePermissionEntry({ view, className }: { view: ZoteroPermissionView; className?: string }): React.JSX.Element {
+  const [explanationOpen, setExplanationOpen] = useState(false)
+  const showExplanation = view.entry === 'explain' && explanationOpen
+  return <div className={className ?? 'mt-2'} data-zotero-permission-entry={view.entry}>
+    <div className="flex flex-wrap items-center gap-2 text-xs">
+      <span className="font-semibold text-foreground">{view.headline}</span>
+      {view.entry === 'request' ? <Button aria-label={requestPermissionLabels.action} disabled={view.pending} loading={view.pending} onClick={view.onRequest} size="sm" variant="secondary">{view.pending ? requestPermissionLabels.pending : requestPermissionLabels.action}</Button> : null}
+      {view.entry === 'explain' ? <><Button aria-label={requestPermissionLabels.action} disabled title="当前 Zotero 版本不支持写入授权" size="sm" variant="secondary">{requestPermissionLabels.action}</Button><Button aria-expanded={explanationOpen} aria-label={permissionEntryLabels.explainAction} onClick={() => setExplanationOpen((current) => !current)} size="sm" variant="secondary">{explanationOpen ? permissionEntryLabels.explainCollapse : permissionEntryLabels.explainAction}</Button></> : null}
+      {view.entry === 'no-profile' ? <Button aria-label={requestPermissionLabels.action} disabled title="请先在设置中启用 Zotero 连接" size="sm" variant="secondary">{requestPermissionLabels.action}</Button> : null}
+      {view.entry === 'granted' ? <Button aria-label={permissionEntryLabels.grantedTitle} disabled title={permissionEntryLabels.granted} size="sm" variant="secondary">{permissionEntryLabels.grantedTitle}</Button> : null}
+    </div>
+    <p className="mt-1 leading-5 text-muted-foreground">{view.brief}</p>
+    {view.entry === 'request' ? <p className="mt-1 leading-5 text-muted-foreground">{requestPermissionLabels.help}</p> : null}
+    {showExplanation ? <p className="mt-1 leading-5 write-blocked-note" role="status">{view.diagnosis}</p> : null}
+    {view.failure !== null ? <p className="form-feedback form-feedback-error mt-1" role="alert">{view.failure}</p> : null}
+  </div>
+}
+
+/**
+ * The write hand-off block shared by the search-results and staging entries:
+ * the probed write status, the mandatory permission entry and the top-level
+ * project classification the *next* preview will freeze.
+ */
+function LiteratureWriteEntry({ permission, plan, writeBlockedNote, capabilityError, projects, writeProjectId, onProjectChange, disabled }: { permission: ZoteroPermissionView; plan: ZoteroWritePlan; writeBlockedNote: string; capabilityError: string | null; projects: Project[]; writeProjectId: ZoteroWriteProject; onProjectChange: (projectId: ZoteroWriteProject) => void; disabled: boolean }): React.JSX.Element {
+  return <div className="literature-write-entry" data-zotero-write-entry>
+    <p className={`literature-write-status ${plan === 'read-only' ? 'write-blocked-note' : 'text-muted-foreground'}`} data-zotero-write-plan={plan} role="status">{writeStatusLabel(plan)}{plan === 'read-only' ? `：${writeBlockedNote}` : ''}</p>
+    {capabilityError !== null ? <p className="form-feedback form-feedback-error mt-1" role="alert">Zotero 写入能力探测失败：{capabilityError}</p> : null}
+    <ZoteroWritePermissionEntry view={permission} />
+    <ZoteroProjectField disabled={disabled} onProjectChange={onProjectChange} pending projects={projects} projectId={writeProjectId} selectLabel="下次写入的顶层项目分类" tagHint={`下次预览将冻结该分类；更改分类会丢弃当前预览，需要重新生成。`} tagText={pendingProjectTagLabel(writeProjectId, typeof writeProjectId === 'string' ? projects.find((project) => project.id === writeProjectId)?.name ?? null : null)} tagValue={writeProjectId ?? ''} />
+  </div>
+}
+
+/** Label/value rows of the values a preview froze, shared by the Inspector and
+ * the staging confirmation so both state the same frozen plan. */
+function FrozenWriteValues({ values }: { values: readonly { label: string; value: string }[] }): React.JSX.Element {
+  return <dl className="research-frozen-values mt-2 grid gap-1 text-xs">{values.map((entry) => <div className="flex flex-wrap gap-2" key={entry.label}><dt className="font-semibold text-foreground">{entry.label}</dt><dd className="min-w-0 flex-1 text-muted-foreground">{entry.value}</dd></div>)}</dl>
+}
+
+/** Page-level channel for a click that never reached the system browser, so
+ * the reason stays discoverable next to the other literature feedback. */
+function externalOutcomeError(outcome: ExternalOpenOutcome): Error | null {
+  return outcome.ok ? null : new Error(outcome.message)
+}
 function metadataLine(result: Pick<SearchResult, 'authors' | 'year' | 'venue' | 'source'>): string { return `${result.authors.length > 0 ? result.authors.join(', ') : '作者未知'} · ${result.venue || sourceLabels[result.source]} · ${result.year ?? '年份未知'}` }
 function compareImpactFactor(left: number | null | undefined, right: number | null | undefined, descending: boolean): number {
   if (left === null || left === undefined) return right === null || right === undefined ? 0 : 1
@@ -66,46 +171,86 @@ function compareOpenMetric(left: number | null | undefined, right: number | null
   return descending ? right - left : left - right
 }
 
-function InspectorResizeHandle({ containerRef, onResize, ratio }: { containerRef: { current: HTMLDivElement | null }; onResize: (ratio: number) => void; ratio: number }): React.JSX.Element {
-  const [dragging, setDragging] = useState(false)
-  useEffect(() => {
-    if (!dragging) return
-    const handleMove = (event: PointerEvent) => {
-      const rect = containerRef.current?.getBoundingClientRect()
-      if (!rect || rect.width <= 0) return
-      onResize(Math.min(40, Math.max(16, ((rect.right - event.clientX) / rect.width) * 100)))
-    }
-    const stopDragging = () => setDragging(false)
-    window.addEventListener('pointermove', handleMove)
-    window.addEventListener('pointerup', stopDragging)
-    return () => { window.removeEventListener('pointermove', handleMove); window.removeEventListener('pointerup', stopDragging) }
-  }, [containerRef, dragging, onResize])
-  const adjust = (delta: number) => {
-    const rect = containerRef.current?.getBoundingClientRect()
-    if (!rect || rect.width <= 0) return
-    const current = Number.parseFloat(getComputedStyle(containerRef.current!).getPropertyValue('--literature-inspector-ratio')) || 17
-    onResize(Math.min(40, Math.max(16, current + delta)))
-  }
-  return <div aria-label="拖动调整结果详情宽度" aria-orientation="vertical" aria-valuemax={40} aria-valuemin={16} aria-valuenow={Math.round(ratio)} className={`literature-resize-handle ${dragging ? 'literature-resize-handle-active' : ''}`} onKeyDown={(event) => { if (event.key === 'ArrowLeft') { event.preventDefault(); adjust(1) } else if (event.key === 'ArrowRight') { event.preventDefault(); adjust(-1) } }} onPointerDown={(event) => { event.preventDefault(); setDragging(true) }} role="separator" tabIndex={0} />
+function LiteratureHelpDialog(): React.JSX.Element {
+  return <Dialog>
+    <DialogTrigger asChild><Button aria-label="文献检索帮助" size="icon" variant="ghost"><CircleHelp aria-hidden="true" className="size-4" /></Button></DialogTrigger>
+    <DialogContent description="检索、待分类与 Zotero 写入的完整流程。" title="文献检索帮助">
+      <div className="grid gap-3 text-xs leading-5 text-muted-foreground">
+        <p><strong className="text-foreground">检索</strong>：输入关键词、DOI、标题或作者后点击“检索”。来源可切换为单个数据库；结果支持年份、影响因子和引用指标排序与筛选。</p>
+        <p><strong className="text-foreground">结果操作</strong>：勾选后可批量暂存、加入待读或准备导入；单行右侧按钮对单篇文献执行同一操作。右键行可在光标位置打开同样两个操作。</p>
+        <p><strong className="text-foreground">待分类</strong>：暂存的文献持久保存，可分配到项目；未绑定项目的文献会带上 <code>#未分类</code> 标签。</p>
+        <p><strong className="text-foreground">Zotero 导入</strong>：流程固定为“探测能力 → 生成预览 → 明确确认 → 逐条回执”。预览会冻结目标 Collection、格式、标签和条目匹配；确认前不会发生任何外部写入。</p>
+        <p><strong className="text-foreground">顶层项目分类</strong>：每次写入都带一个顶层项目分类，写入的 Zotero 标签会精确包含 <code># 项目名</code>（未绑定项目为 <code># 未分类</code>）。分类在写入预览时冻结并显示，确认面板可更改，更改后必须重新生成预览；回执会重复该分类。</p>
+        <p><strong className="text-foreground">只读连接</strong>：当 Zotero 版本或授权不支持写入时，页面会明确标出只读并只提供“准备 RIS/BibTeX 导入包”，不会显示无效的写入按钮。缺少写入授权时可点击“请求 Zotero 写入权限”：请求经安全存储保存后仍会重新探测写入能力，未探测到之前不会写入。</p>
+        <p><strong className="text-foreground">键盘</strong>：Esc 关闭本帮助并把焦点还给帮助按钮；对话框内 Tab 只在帮助内容中循环。结果详情面板可用左右方向键调整宽度。</p>
+      </div>
+    </DialogContent>
+  </Dialog>
 }
 
-function SearchResultRow({ result, index, selected, inspected, staged, failed, zoteroProfile, onSelect, onStage, onQueue, onInspect, onContextMenu }: { result: SearchResult; index: number; selected: boolean; inspected: boolean; staged: boolean; failed: boolean; zoteroProfile: boolean; onSelect: (checked: boolean) => void; onStage: () => void; onQueue?: () => void; onInspect: () => void; onContextMenu: (event: React.MouseEvent<HTMLDivElement>) => void }): React.JSX.Element {
+function SearchResultRow({ result, index, selected, inspected, staged, failed, zoteroProfile, plan, onSelect, onStage, onQueue, onInspect, onContextMenu, onExternalOutcome }: { result: SearchResult; index: number; selected: boolean; inspected: boolean; staged: boolean; failed: boolean; zoteroProfile: boolean; plan: ZoteroWritePlan; onSelect: (checked: boolean) => void; onStage: () => void; onQueue?: () => void; onInspect: () => void; onContextMenu: (event: React.MouseEvent<HTMLDivElement>) => void; onExternalOutcome: (outcome: ExternalOpenOutcome) => void }): React.JSX.Element {
+  // The row action only prepares or re-opens a preview, so its wording follows
+  // the frozen capability: a read-only connection never offers to "save".
+  const actionState: 'ready' | 'staged' | 'failed' = failed ? 'failed' : staged ? 'staged' : 'ready'
+  const actionLabel = zoteroProfile
+    ? resultActionLabel(plan, actionState)
+    : actionState === 'staged' ? '再次预览' : actionState === 'failed' ? '重新导入' : '加入待分类'
+  // Acting before the capability probe resolves could freeze the wrong
+  // transport (a writable Zotero downgraded to an import package).
+  const actionDisabled = zoteroProfile && plan === 'checking'
   return <div className={`paper-row ${inspected ? 'paper-row-inspected' : ''} ${selected ? 'paper-row-active' : ''}`} onContextMenu={onContextMenu} role="article">
     <span aria-hidden="true" className="literature-result-number">{index}</span>
     <label className="grid size-8 shrink-0 cursor-pointer place-items-center" title="选择文献"><span className="sr-only">选择 {result.title}</span><input aria-label={`选择文献：${result.title}`} checked={selected} className="research-checkbox" onChange={(event) => onSelect(event.target.checked)} onClick={(event) => event.stopPropagation()} type="checkbox" /></label>
     <button aria-label={`${result.title} ${metadataLine(result)}`} className="min-w-0 flex-1 cursor-pointer text-left outline-none focus-visible:ring-2 focus-visible:ring-ring" onClick={onInspect} type="button"><h3 className="overflow-wrap-anywhere text-sm font-semibold text-foreground">{result.title}</h3><p className="literature-result-meta"><span>{result.authors.length > 0 ? result.authors.slice(0, 3).join(', ') : '作者未知'}</span><span aria-hidden="true">·</span><span>{result.venue || sourceLabels[result.source]}</span><span aria-hidden="true">·</span><span>{result.year ?? '年份未知'}</span>{result.openMetric !== null && result.openMetric !== undefined ? <span className="literature-open-metric-badge">引用 {result.openMetric}</span> : null}</p>{result.abstract ? <p className="literature-result-abstract">{result.abstract}</p> : null}</button>
-    <div className="literature-paper-actions">{result.impactFactor !== null && result.impactFactor !== undefined ? <span className="literature-impact-badge" title={`${result.impactFactorSource ?? '公开来源'}${result.impactFactorFetchedAt ? ` · ${new Date(result.impactFactorFetchedAt).toLocaleString()}` : ''}`}>{result.impactFactorSource?.includes('IF 风格') ? 'IF*' : 'IF'} {result.impactFactor.toFixed(1)}</span> : <span className="literature-impact-badge literature-impact-missing" title="公开免费来源未提供可验证的期刊影响因子或 IF 风格指标">IF 未提供</span>}{failed ? <span className="literature-paper-failure">Zotero 写入失败</span> : null}{result.url ? <a aria-label={`打开 ${result.title}`} className="literature-paper-icon-button" href={result.url} onClick={(event) => event.stopPropagation()} rel="noreferrer" target="_blank"><ExternalLink aria-hidden="true" className="size-3.5" /></a> : null}{onQueue ? <Button aria-label={`加入待读：${result.title}`} onClick={(event) => { event.stopPropagation(); onQueue() }} size="icon" variant="ghost"><BookOpen aria-hidden="true" className="size-3.5" /></Button> : null}<Button aria-label={failed ? `重新导入 Zotero：${result.title}` : staged ? `再次预览导入 Zotero：${result.title}` : `暂存并准备导入 Zotero：${result.title}`} onClick={(event) => { event.stopPropagation(); onStage() }} size="sm" variant={failed ? 'danger' : staged ? 'secondary' : 'secondary'}>{failed ? <><RefreshCw aria-hidden="true" className="size-3.5" />重新导入</> : staged ? <><RefreshCw aria-hidden="true" className="size-3.5" />再次预览</> : zoteroProfile ? '保存到 Zotero' : '加入待分类'}</Button></div>
+    <div className="literature-paper-actions">{result.impactFactor !== null && result.impactFactor !== undefined ? <span className="literature-impact-badge" title={`${result.impactFactorSource ?? '公开来源'}${result.impactFactorFetchedAt ? ` · ${new Date(result.impactFactorFetchedAt).toLocaleString()}` : ''}`}>{result.impactFactorSource?.includes('IF 风格') ? 'IF*' : 'IF'} {result.impactFactor.toFixed(1)}</span> : <span className="literature-impact-badge literature-impact-missing" title="公开免费来源未提供可验证的期刊影响因子或 IF 风格指标">IF 未提供</span>}{failed ? <span className="literature-paper-failure">{plan === 'write' ? 'Zotero 写入失败' : 'Zotero 导入失败'}</span> : null}{result.url ? <ExternalUrlLink ariaLabel={`打开 ${result.title}`} className="literature-paper-link" fieldLabel="来源链接" href={result.url} iconMode label={result.title} linkClassName="literature-paper-icon-button" onOutcome={onExternalOutcome} /> : null}{onQueue ? <Button aria-label={`加入待读：${result.title}`} onClick={(event) => { event.stopPropagation(); onQueue() }} size="icon" variant="ghost"><BookOpen aria-hidden="true" className="size-3.5" /></Button> : null}<Button aria-label={`${actionLabel}：${result.title}`} disabled={actionDisabled} onClick={(event) => { event.stopPropagation(); onStage() }} size="sm" variant={failed ? 'danger' : 'secondary'}>{actionState === 'failed' || actionState === 'staged' ? <RefreshCw aria-hidden="true" className="size-3.5" /> : null}{actionLabel}</Button></div>
   </div>
 }
 
-function Inspector({ result, open, onToggle, preview, onCancelPreview, onExecutePreview, executePending, targetCollection, containerRef, onResize, ratio, staged, failed }: { result: SearchResult | null; open: boolean; onToggle: () => void; preview: LiteratureStagingToZoteroPreview | null; onCancelPreview: () => void; onExecutePreview: () => void; executePending: boolean; targetCollection: string | null; containerRef: { current: HTMLDivElement | null }; onResize: (ratio: number) => void; ratio: number; staged: boolean; failed: boolean }): React.JSX.Element {
+function Inspector({ result, open, onToggle, preview, onCancelPreview, onExecutePreview, executePending, targetCollectionName, resizer, staged, failed, plan, writeBlockedNote, onExternalOutcome, projects, onProjectChange, permission }: { result: SearchResult | null; open: boolean; onToggle: () => void; preview: LiteratureStagingToZoteroPreview | null; onCancelPreview: () => void; onExecutePreview: () => void; executePending: boolean; targetCollectionName: string | null; resizer: ReactNode; staged: boolean; failed: boolean; plan: ZoteroWritePlan; writeBlockedNote: string; onExternalOutcome: (outcome: ExternalOpenOutcome) => void; projects: Project[]; onProjectChange: (projectId: ZoteroWriteProject) => void; permission: ZoteroPermissionView }): React.JSX.Element {
+  const confirmRef = useRef<HTMLButtonElement>(null)
+  const previewId = preview?.previewId ?? null
+  // The preview is the explicit hand-off point of the whole flow: move focus
+  // onto the confirmation action and announce the frozen plan so the next
+  // required step is never left to the user's memory.
+  useEffect(() => {
+    if (previewId !== null) confirmRef.current?.focus()
+  }, [previewId])
+  // The source link is resolved once per selected paper so the field name can
+  // state what the target really is (a PDF file URL keeps its own label) and
+  // an unsafe value is reported instead of rendered as a dead link.
+  const sourceTarget = useMemo(() => resolveExternalUrl(result?.url), [result?.url])
+  const doiTarget = useMemo(() => doiExternalUrl(result?.doi), [result?.doi])
+  const awaitingPlan: ZoteroWritePlan = preview === null ? plan : preview.transport === 'api' ? 'write' : 'read-only'
+  const reviewItems = preview?.items.filter((item) => item.decision === 'review') ?? []
+  const matchedItems = preview?.items.filter((item) => item.decision === 'update-candidate') ?? []
+  // The frozen plan is derived from the preview itself, so the confirmation
+  // always names the values the execute call will re-check (target Collection,
+  // classification, write scope and profile revision).
+  const previewFrozenValues = preview === null ? [] : frozenWriteValues({
+    transport: preview.transport,
+    capability: preview.capability,
+    total: preview.total,
+    targetCollectionKey: preview.targetCollectionKey,
+    targetCollectionName: targetCollectionName,
+    projectTag: preview.projectTag,
+    profileRevision: preview.profileRevision,
+    updateCandidates: matchedItems.length,
+    reviewItems: reviewItems.length
+  })
+  const announcement = preview === null
+    ? ''
+    : `已生成${awaitingPlan === 'write' ? ' Zotero 写入' : ' RIS/BibTeX'}预览，共 ${preview.total} 条${reviewItems.length > 0 ? `，其中 ${reviewItems.length} 条需复核并在确认时跳过` : ''}。等待确认${awaitingPlan === 'write' ? '写入 Zotero' : '生成导入包'}。`
   return <ResearchPanel className={`literature-inspector-panel ${open ? '' : 'literature-inspector-panel-collapsed'} xl:sticky xl:top-3`} action={<Button aria-label={open ? '折叠结果详情' : '展开结果详情'} onClick={onToggle} size="icon" variant="ghost">{open ? <ChevronRight aria-hidden="true" className="size-4" /> : <ChevronLeft aria-hidden="true" className="size-4" />}</Button>} eyebrow="INSPECTOR / PAPER" title="结果详情">
-    {open ? <InspectorResizeHandle containerRef={containerRef} onResize={onResize} ratio={ratio} /> : null}
+    {resizer}
+    <div className="literature-inspector-scroll">
     {!open ? <p className="p-4 text-xs text-muted-foreground">详情已折叠。点击右上角展开。</p> : null}
     {open && !result ? <EmptyState description="从检索结果中选择一篇文献。" title="尚未选择结果" /> : null}
-    {open && !result && !preview ? <div className="border-t border-border p-4 text-xs"><p className="font-semibold text-foreground">实时导入预览</p><p className="mt-2 leading-5 text-muted-foreground">选择检索结果或批量勾选后，这里会显示目标 Collection、标签和逐条写入回执；未确认前不会触发 Zotero 外部写入。</p></div> : null}
-    {open && result ? <div className="literature-inspector-body"><div className="literature-inspector-tabs" role="tablist"><button aria-selected="true" className="literature-inspector-tab literature-inspector-tab-active" role="tab" type="button">文献信息</button><button aria-selected="false" className="literature-inspector-tab" role="tab" type="button">笔记</button><button aria-selected="false" className="literature-inspector-tab" role="tab" type="button">相关文献</button></div><div className="literature-inspector-paper-head"><div aria-hidden="true" className="literature-inspector-thumb"><BookOpen className="size-5" /></div><div className="min-w-0"><h3 className="text-sm font-bold leading-5 text-foreground">{result.title}</h3><p className="mt-1 text-xs text-muted-foreground">{metadataLine(result)}</p><span className="literature-inspector-if">{result.impactFactor !== null && result.impactFactor !== undefined ? `${result.impactFactorSource?.includes('IF 风格') ? 'IF*' : 'IF'} ${result.impactFactor.toFixed(1)}` : 'IF 未提供'}</span></div></div><dl className="literature-inspector-fields"><div><dt>作者</dt><dd>{result.authors.join('、') || '作者未知'}</dd></div><div><dt>年份</dt><dd>{result.year ?? '未提供'}</dd></div><div><dt>期刊</dt><dd>{result.venue || '未提供'}</dd></div>{result.impactFactorSource ? <div><dt>影响因子来源</dt><dd>{result.impactFactorSource}</dd></div> : null}{result.impactFactorFetchedAt ? <div><dt>获取时间</dt><dd>{new Date(result.impactFactorFetchedAt).toLocaleString()}</dd></div> : null}<div><dt>公开引用指标</dt><dd>{result.openMetric ?? '未提供'}{result.openMetric !== null && result.openMetric !== undefined ? '（来源记录）' : ''}</dd></div></dl>{result.doi ? <div className="literature-inspector-doi"><span>DOI</span><a href={`https://doi.org/${result.doi.replace(/^https?:\/\/doi.org\//iu, '')}`} rel="noreferrer" target="_blank">{result.doi}</a><button aria-label="复制 DOI" onClick={() => { void navigator.clipboard?.writeText(result.doi ?? '') }} type="button">复制</button></div> : null}<div className={`literature-inspector-zotero-status ${failed ? 'literature-inspector-zotero-failed' : ''}`}><strong>Zotero 导入状态</strong><span>{failed ? '写入失败，可再次导入' : preview ? '待确认写入' : staged ? '已加入待分类' : '尚未写入'}</span>{failed ? <small>修复连接后可以再次导入此文献。</small> : null}</div><div><p className="literature-inspector-label">摘要</p><p className="literature-inspector-abstract">{result.abstract || '暂无摘要'}</p></div>{result.url ? <div><p className="literature-inspector-label">URL</p><a className="literature-inspector-url" href={result.url} rel="noreferrer" target="_blank">{result.url}</a></div> : null}</div> : null}
-    {open && preview ? <div className="border-t border-border p-4 text-xs"><div className="flex items-center justify-between gap-2"><p className="font-semibold text-foreground">实时导入预览</p><span className="research-tag">{preview.total} 条</span></div><p className="mt-2 leading-5 text-muted-foreground">目标 Collection：{targetCollection ?? '默认'} · capability：{preview.capability} · {preview.transport}</p><p className="mt-2 leading-5 text-muted-foreground">外部写入尚未发生。{preview.transport === 'api' ? preview.capability === 'write' ? '确认后才会调用 Zotero，失败项会逐条返回。' : '当前连接没有写入权限；确认后会逐条返回失败回执，修复设置后可重新导入。' : '确认后将生成 RIS/BibTeX 导入包，不会伪称已写入 Zotero。'}</p><div className="mt-3 flex gap-2"><Button onClick={onCancelPreview} size="sm">取消</Button><Button loading={executePending} onClick={onExecutePreview} size="sm" variant="primary">{preview.transport === 'api' ? '确认并写入' : '确认并生成导入包'}</Button></div></div> : null}
+    {open && result ? <div className="literature-inspector-body"><div className="literature-inspector-tabs"><span className="literature-inspector-tab literature-inspector-tab-active">文献信息</span><button className="literature-inspector-tab" disabled title="笔记编辑器尚未实现">笔记（尚未实现）</button><button className="literature-inspector-tab" disabled title="相关文献推荐尚未实现">相关文献（尚未实现）</button></div><div className="literature-inspector-paper-head"><div aria-hidden="true" className="literature-inspector-thumb"><BookOpen className="size-5" /></div><div className="min-w-0"><h3 className="text-sm font-bold leading-5 text-foreground">{result.title}</h3><p className="mt-1 text-xs text-muted-foreground">{metadataLine(result)}</p><span className="literature-inspector-if">{result.impactFactor !== null && result.impactFactor !== undefined ? `${result.impactFactorSource?.includes('IF 风格') ? 'IF*' : 'IF'} ${result.impactFactor.toFixed(1)}` : 'IF 未提供'}</span></div></div><dl className="literature-inspector-fields"><div><dt>作者</dt><dd>{result.authors.join('、') || '作者未知'}</dd></div><div><dt>年份</dt><dd>{result.year ?? '未提供'}</dd></div><div><dt>期刊</dt><dd>{result.venue || '未提供'}</dd></div>{result.impactFactorSource ? <div><dt>影响因子来源</dt><dd>{result.impactFactorSource}</dd></div> : null}{result.impactFactorFetchedAt ? <div><dt>获取时间</dt><dd>{new Date(result.impactFactorFetchedAt).toLocaleString()}</dd></div> : null}<div><dt>公开引用指标</dt><dd>{result.openMetric ?? '未提供'}{result.openMetric !== null && result.openMetric !== undefined ? '（来源记录）' : ''}</dd></div></dl>{result.doi ? <div className="literature-inspector-doi"><span>DOI</span><ExternalUrlLink copyClassName="literature-inspector-copy" fieldLabel="DOI" label={result.doi} linkClassName="literature-inspector-doi-link" onOutcome={onExternalOutcome} target={doiTarget} /></div> : null}<div className={`literature-inspector-zotero-status ${failed ? 'literature-inspector-zotero-failed' : ''}`}><strong>Zotero 导入状态</strong><span>{failed ? '写入失败，可再次导入' : preview ? '待确认写入' : staged ? '已加入待分类' : '尚未写入'}</span>{failed ? <small>修复连接后可以再次导入此文献。</small> : null}</div><div><p className="literature-inspector-label">摘要</p><p className="literature-inspector-abstract">{result.abstract || '暂无摘要'}</p></div>{result.url ? <div><p className="literature-inspector-label">{externalUrlFieldLabel(sourceTarget, '来源链接')}</p><ExternalUrlLink fieldLabel={externalUrlFieldLabel(sourceTarget, '来源链接')} label={result.url} linkClassName="literature-inspector-url" onOutcome={onExternalOutcome} target={sourceTarget} /></div> : null}</div> : null}
+    </div>
+    <div className="literature-inspector-footer">
+      <p aria-live="polite" className="sr-only" role="status">{announcement}</p>
+      {preview === null ? <div className="text-xs"><p className="font-semibold text-foreground">实时导入预览</p><p className="mt-2 leading-5 text-muted-foreground">选择检索结果或批量勾选后，这里会显示目标 Collection、顶层项目分类、标签和逐条写入回执；未确认前不会触发 Zotero 外部写入。</p><p className={plan === 'read-only' ? 'mt-2 leading-5 write-blocked-note' : 'mt-2 leading-5 text-muted-foreground'}>{plan === 'checking' ? '正在探测 Zotero 写入能力…' : writeBlockedNote}</p><ZoteroWritePermissionEntry view={permission} /></div> : <div className="text-xs"><div className="flex items-center justify-between gap-2"><p className="font-semibold text-foreground">实时导入预览</p><span className="research-tag">{preview.total} 条</span></div><p className="mt-2 leading-5 text-muted-foreground">预览已冻结以下写入计划；确认前不会调用 Zotero，也不会产生任何外部写入。</p><FrozenWriteValues values={previewFrozenValues} /><ZoteroProjectField disabled={executePending} onProjectChange={onProjectChange} projectId={preview.projectId} projects={projects} selectLabel="Zotero 写入顶层项目分类" tagHint="更改分类会丢弃当前预览，需要重新生成；确认时使用预览冻结的分类。" tagText={projectTagLabel(preview.projectTag)} tagValue={preview.projectTag ?? ''} />{awaitingPlan === 'read-only' ? <p className="mt-2 leading-5 write-blocked-note" data-zotero-write-plan="read-only" role="status">{writeStatusLabel('read-only')}：{writeBlockedNote}</p> : null}{reviewItems.length > 0 ? <p className="mt-2 leading-5 write-blocked-note">{reviewItems.length} 条无法确认是否与 Zotero 中已有条目重复，确认后会跳过并保留重试入口。</p> : null}{matchedItems.length > 0 ? <p className="mt-2 leading-5 text-muted-foreground">{matchedItems.length} 条将更新 Zotero 中已匹配的条目：按条目 revision 校验，Zotero 侧在预览后发生的修改会返回版本冲突。</p> : null}<ZoteroWritePermissionEntry view={permission} /><div className="mt-3 flex gap-2"><Button onClick={onCancelPreview} size="sm">取消</Button><Button loading={executePending} onClick={onExecutePreview} ref={confirmRef} size="sm" variant="primary">{awaitingPlan === 'write' ? '确认并写入 Zotero' : '确认并生成 RIS/BibTeX 导入包'}</Button></div></div>}
+    </div>
   </ResearchPanel>
 }
 
@@ -129,17 +274,44 @@ export function LiteraturePage({ projects }: { projects: Project[] }): React.JSX
   const [zoteroTags, setZoteroTags] = useState('')
   const [stagingProjectFilter, setStagingProjectFilter] = useState<string | null | undefined>(undefined)
   const [zoteroFormat, setZoteroFormat] = useState<ZoteroExportFormat>('bibtex')
+  // Top-level project classification of the next Zotero write.  `undefined`
+  // keeps each record's own project binding, `null` is an explicit 未分类 and a
+  // project id freezes that project for the confirmed write.
+  const [writeProjectId, setWriteProjectId] = useState<ZoteroWriteProject>(undefined)
+  const [permissionFailure, setPermissionFailure] = useState<string | null>(null)
   const sessionsQuery = useSearchSessionsQuery(); const stagingQuery = useLiteratureStagingQuery('', stagingProjectFilter); const profilesQuery = useIntegrationsQuery()
   // A disabled profile must not be treated as an import target.  Keeping the
   // lookup enabled-only makes the UI and the Core capability gate agree: when
   // Zotero is disabled, the result actions stay in staging mode and retry is
   // offered again as soon as the profile is enabled.
   const zoteroProfile = useMemo(() => (profilesQuery.data ?? []).find((profile) => profile.provider === 'zotero' && profile.enabled), [profilesQuery.data])
-  const [tab, setTab] = useState<LiteratureTab>('search'); const [query, setQuery] = useState(''); const [source, setSource] = useState<SearchSourceId>('all'); const [projectId, setProjectId] = useState(''); const [results, setResults] = useState<SearchResult[]>([]); const [resultCache, setResultCache] = useState<Record<string, SearchResult>>({}); const [selectedIds, setSelectedIds] = useState<Set<string>>(() => new Set()); const [selectedResult, setSelectedResult] = useState<SearchResult | null>(null); const [inspectorOpen, setInspectorOpen] = useState(true); const [inspectorRatio, setInspectorRatio] = useState(17); const [filter, setFilter] = useState(''); const [yearFilter, setYearFilter] = useState('all'); const [sort, setSort] = useState<ResultSort>('relevance'); const [pageSize, setPageSize] = useState(50); const [currentPage, setCurrentPage] = useState(1); const [totalResults, setTotalResults] = useState(0); const [hasMorePages, setHasMorePages] = useState(false); const [activeSessionId, setActiveSessionId] = useState<string | null>(null); const [feedback, setFeedback] = useState<string | null>(null); const [feedbackError, setFeedbackError] = useState<unknown>(null); const [contextMenu, setContextMenu] = useState<{ x: number; y: number; ids: string[] } | null>(null); const [zoteroPreview, setZoteroPreview] = useState<LiteratureStagingToZoteroPreview | null>(null); const [zoteroHandoff, setZoteroHandoff] = useState<ZoteroHandoff | null>(null); const [activePreviewRecords, setActivePreviewRecords] = useState<LiteratureStagingRecord[]>([]); const [retryableStaging, setRetryableStaging] = useState<LiteratureStagingRecord[]>([]); const [zoteroReceipts, setZoteroReceipts] = useState<LiteratureStagingToZoteroResult['items']>([]); const [receiptTitles, setReceiptTitles] = useState<Record<string, string>>({}); const [collectionKey, setCollectionKey] = useState<string | null>(null); const pageCursors = useRef<Record<number, string | null>>({}); const literatureLayoutRef = useRef<HTMLDivElement>(null)
+  // The frozen capability decides the wording of every Zotero action on this
+  // page.  A read-only connection (for example Zotero 9, which returns no
+  // Zotero-Server-ID) is labelled as an RIS/BibTeX package and never offered a
+  // write, instead of showing a button that can only fail.
+  const capabilityQuery = useZoteroCapabilityQuery(zoteroProfile?.id ?? null)
+  const plan = zoteroWritePlan(capabilityQuery.isLoading, capabilityQuery.data?.capability.write)
+  const writeBlockedNote = zoteroProfile === null
+    ? '尚未配置可用的 Zotero 连接：请在“设置 → 工具连接”中启用 Zotero。当前只能生成 RIS/BibTeX 导入包。'
+    : writeBlockedExplanation(capabilityQuery.data?.writeBlockedReason, capabilityQuery.data?.status)
+  const [tab, setTab] = useState<LiteratureTab>('search'); const [query, setQuery] = useState(''); const [source, setSource] = useState<SearchSourceId>('all'); const [results, setResults] = useState<SearchResult[]>([]); const [resultCache, setResultCache] = useState<Record<string, SearchResult>>({}); const [selectedIds, setSelectedIds] = useState<Set<string>>(() => new Set()); const [selectedResult, setSelectedResult] = useState<SearchResult | null>(null); const [inspectorOpen, setInspectorOpen] = useState(true); const [filter, setFilter] = useState(''); const [yearFilter, setYearFilter] = useState('all'); const [sort, setSort] = useState<ResultSort>('relevance'); const [pageSize, setPageSize] = useState(50); const [currentPage, setCurrentPage] = useState(1); const [totalResults, setTotalResults] = useState(0); const [hasMorePages, setHasMorePages] = useState(false); const [activeSessionId, setActiveSessionId] = useState<string | null>(null); const [feedback, setFeedback] = useState<string | null>(null); const [feedbackError, setFeedbackError] = useState<unknown>(null); const [contextMenu, setContextMenu] = useState<{ x: number; y: number; ids: string[] } | null>(null); const [zoteroPreview, setZoteroPreview] = useState<LiteratureStagingToZoteroPreview | null>(null); const [zoteroHandoff, setZoteroHandoff] = useState<ZoteroHandoff | null>(null); const [activePreviewRecords, setActivePreviewRecords] = useState<LiteratureStagingRecord[]>([]); const [retryableStaging, setRetryableStaging] = useState<LiteratureStagingRecord[]>([]); const [zoteroReceipts, setZoteroReceipts] = useState<LiteratureStagingToZoteroResult['items']>([]); const [receiptTitles, setReceiptTitles] = useState<Record<string, string>>({}); const [collectionKey, setCollectionKey] = useState<string | null>(null); const pageCursors = useRef<Record<number, string | null>>({}); const literatureLayoutRef = useRef<HTMLDivElement>(null)
+  // Inspector width as a percentage of the split container, persisted with the
+  // repository's optional-storage convention and clamped to [16, 40].
+  const inspectorPane = usePaneWidth({ storageKey: 'literature-inspector-ratio', defaultWidth: INSPECTOR_DEFAULT_RATIO, min: INSPECTOR_MIN_RATIO, max: INSPECTOR_MAX_RATIO })
+  // The results/Inspector split only exists from 1051px up (see the literature
+  // layout media queries); a stacked column must not offer a column splitter.
+  const inspectorResizeEnabled = usePaneResizeEnabled('(min-width: 1051px)')
   const latest = useMemo(() => latestSession(sessionsQuery.data), [sessionsQuery.data])
+  // Import/staging flows start on the most recently used project, while an
+  // explicit 未分类 choice stays available and is remembered as such.
+  const { chooseProjectId, projectId } = useDefaultProjectId(projects)
   const restoredResultsQuery = useQuery<SearchResultPage>({ queryKey: ['literature-results', latest?.id ?? 'none', pageSize], queryFn: () => api.literature.resultsPage({ sessionId: latest!.id, page: { limit: pageSize } }), enabled: Boolean(latest?.id) })
   const collectionsQuery = useQuery({ queryKey: queryKeys.zoteroCollections(zoteroProfile?.id ?? 'none'), queryFn: () => api.zotero.collectionsPage({ profileId: zoteroProfile!.id }), enabled: Boolean(zoteroProfile?.id) })
   const collections = collectionsQuery.data?.items ?? []
+  /** Real Collection name of the frozen target; the stable key stays as
+   * auxiliary information in every place the target is shown. */
+  const collectionName = (key: string | null): string | null =>
+    key === null ? null : collections.find((collection: ZoteroCollection) => collection.key === key)?.name ?? null
   const stagedItems = stagingQuery.data?.items ?? []
   const ensureStaging = async (result: SearchResult): Promise<LiteratureStagingRecord> => {
     const source = stagingSource(result)
@@ -203,7 +375,7 @@ export function LiteraturePage({ projects }: { projects: Project[] }): React.JSX
     },
     onError: (error) => { setFeedback(null); setFeedbackError(error) }
   })
-  const previewMutation = useMutation({ mutationFn: async (records: LiteratureStagingRecord[]) => { if (!zoteroProfile) throw new Error('请先在设置中配置并启用 Zotero'); return api.literature.stagingToZotero.preview({ profileId: zoteroProfile.id, stagingIds: records.map((record) => record.id), targetCollectionKey: collectionKey, format: zoteroFormat, tags: parseTagInput(zoteroTags), transport: 'api' }) }, onMutate: (records) => { setActivePreviewRecords(records); setZoteroReceipts([]); setReceiptTitles({}); setZoteroHandoff(null) }, onSuccess: (preview) => { setZoteroPreview(preview); setFeedback(`Zotero API 预览已生成 ${preview.total} 条；确认后才会写入`); setFeedbackError(null) }, onError: (error) => { setFeedback(null); setFeedbackError(error) } })
+  const previewMutation = useMutation({ mutationFn: async (records: LiteratureStagingRecord[]) => { if (!zoteroProfile) throw new Error('请先在设置中配置并启用 Zotero'); return api.literature.stagingToZotero.preview({ profileId: zoteroProfile.id, stagingIds: records.map((record) => record.id), targetCollectionKey: collectionKey, format: zoteroFormat, projectId: writeProjectInput(writeProjectId), tags: parseTagInput(zoteroTags), transport: capabilityQuery.data?.capability.write === true ? 'api' : 'save-file' }) }, onMutate: (records) => { setActivePreviewRecords(records); setZoteroReceipts([]); setReceiptTitles({}); setZoteroHandoff(null) }, onSuccess: (preview) => { setZoteroPreview(preview); setFeedback(`${preview.transport === 'api' ? `Zotero 写入预览已生成 ${preview.total} 条；明确确认后才会写入` : `已生成 ${preview.total} 条 RIS/BibTeX 导入预览；明确确认后生成导入包，不会写入 Zotero`}（冻结的顶层项目分类：${projectTagLabel(preview.projectTag)}）`); setFeedbackError(null) }, onError: (error) => { setFeedback(null); setFeedbackError(error) } })
   const executeMutation = useMutation({
     mutationFn: (operation: { previewId: string; records: LiteratureStagingRecord[] }) => api.literature.stagingToZotero.execute({ previewId: operation.previewId, confirmed: true, confirmationToken: randomConfirmationToken('literature-zotero') }),
     onSuccess: async (result, operation) => {
@@ -231,6 +403,110 @@ export function LiteraturePage({ projects }: { projects: Project[] }): React.JSX
     if (!zoteroPreview || executeMutation.isPending) return
     executeMutation.mutate({ previewId: zoteroPreview.previewId, records: activePreviewRecords })
   }
+  /**
+   * A changed top-level project classification is a different external write:
+   * drop the frozen preview instead of silently re-freezing a new tag, so the
+   * confirmed write is always the one that was shown.
+   */
+  function chooseWriteProject(projectId: ZoteroWriteProject): void {
+    setWriteProjectId(projectId)
+    setZoteroPreview(null)
+    setZoteroReceipts([])
+    setZoteroHandoff(null)
+    setFeedback(projectId === undefined ? '已改为按各条文献的项目绑定写入；请重新生成预览。' : `已选择顶层项目分类：${projectTagLabel(projectId === null ? '未分类' : projects.find((project) => project.id === projectId)?.name ?? '未分类')}；请重新生成预览。`)
+  }
+  // The entry point only asks Main to store the Zotero write credential
+  // through safeStorage; the capability probe decides what is reported, so a
+  // granted request is never presented as a successful Zotero write.
+  const permissionMutation = useMutation({
+    mutationFn: async () => {
+      if (!zoteroProfile) throw new Error('请先在“设置 → 工具连接”中启用 Zotero 连接。')
+      return api.zotero.authorize({ profileId: zoteroProfile.id })
+    },
+    onSuccess: async (result) => {
+      setFeedbackError(null)
+      setPermissionFailure(null)
+      try {
+        const refreshed = await capabilityQuery.refetch()
+        // Report what Zotero actually granted.  A one-time key ("Allow" instead
+        // of "Always Allow") is destroyed by the first write that validates it,
+        // so it must never be presented as a completed setup.
+        setFeedback(authorizationGrantNotice(result.remember, '本机 safeStorage'))
+        // The request is only reported as granted when the re-probe actually
+        // found the write capability; otherwise the real reason is stated.
+        if (refreshed.data?.capability.write !== true) setPermissionFailure(`${permissionEntryLabels.requestTitle}：授权请求已提交，但重新探测后仍未发现写入能力。${refreshed.error ? getErrorMessage(refreshed.error) : permissionEntryBrief('request', refreshed.data?.writeBlockedReason, refreshed.data?.status)}`)
+      } catch (error) {
+        setFeedback(null)
+        setPermissionFailure(permissionRequestFailureMessage(error))
+      }
+      void queryClient.invalidateQueries({ queryKey: queryKeys.zoteroCapability(zoteroProfile?.id ?? 'none') })
+    },
+    onError: (error) => { const message = permissionRequestFailureMessage(error); setFeedback(null); setPermissionFailure(message); setFeedbackError(new Error(message)) }
+  })
+  /**
+   * One permission entry for every literature write entry point of this page
+   * (results panel, staging panel, Inspector, confirmation panel).  It is
+   * derived from the probe only, so an empty result list, a pending probe or a
+   * missing preview can never remove the request action.
+   */
+  const permissionReason = capabilityQuery.data?.writeBlockedReason ?? null
+  const permissionStatus = capabilityQuery.data?.status
+  const permissionEntry = zoteroPermissionEntry({ hasProfile: zoteroProfile !== null, canWrite: capabilityQuery.data?.capability.write, reason: permissionReason })
+  const permissionView: ZoteroPermissionView = {
+    entry: permissionEntry,
+    headline: permissionEntryHeadline(permissionEntry),
+    brief: permissionEntryBrief(permissionEntry, permissionReason, permissionStatus),
+    diagnosis: permissionEntryDiagnosis(permissionEntry, permissionReason, permissionStatus),
+    pending: permissionMutation.isPending,
+    failure: permissionFailure,
+    onRequest: () => permissionMutation.mutate()
+  }
+  const capabilityProbeError = capabilityQuery.isError ? getErrorMessage(capabilityQuery.error) : null
+  /** Top-level Literature action: always re-read the local capability first;
+   * authorize only when the fresh probe says the connection is readable but not
+   * writable. Main owns the key and the authorize round-trip. */
+  const requestOrProbeZotero = async (): Promise<void> => {
+    if (!zoteroProfile) {
+      setPermissionFailure('请先在“设置 → 工具连接”中启用 Zotero 连接。')
+      return
+    }
+    setPermissionFailure(null)
+    try {
+      const refreshed = await capabilityQuery.refetch()
+      if (refreshed.error) throw refreshed.error
+      if (refreshed.data?.capability.write === true) {
+        setFeedback('已重新探测：Zotero 写入能力已就绪。')
+        return
+      }
+      if (refreshed.data?.writeBlockedReason === 'server-id-missing') {
+        setPermissionFailure(permissionEntryDiagnosis('explain', refreshed.data.writeBlockedReason, refreshed.data.status))
+        return
+      }
+      if (refreshed.data?.writeBlockedReason === 'rate-limited') {
+        // Zotero limits /api/local/authorize to a handful of prompts per minute;
+        // asking again would only burn the window the user has to click in.
+        setPermissionFailure(permissionEntryDiagnosis('request', 'rate-limited', refreshed.data.status))
+        return
+      }
+      await permissionMutation.mutateAsync()
+    } catch (error) {
+      setFeedback(null)
+      setPermissionFailure(permissionRequestFailureMessage(error))
+    }
+  }
+  // The confirmation panel restates the frozen plan of the pending preview so
+  // the values the execute call re-checks are visible before the confirmation.
+  const stagingFrozenValues = zoteroPreview === null ? [] : frozenWriteValues({
+    transport: zoteroPreview.transport,
+    capability: zoteroPreview.capability,
+    total: zoteroPreview.total,
+    targetCollectionKey: zoteroPreview.targetCollectionKey,
+    targetCollectionName: collectionName(zoteroPreview.targetCollectionKey),
+    projectTag: zoteroPreview.projectTag,
+    profileRevision: zoteroPreview.profileRevision,
+    updateCandidates: zoteroPreview.items.filter((item) => item.decision === 'update-candidate').length,
+    reviewItems: zoteroPreview.items.filter((item) => item.decision === 'review').length
+  })
   const deleteMutation = useMutation({ mutationFn: (records: LiteratureStagingRecord[]) => api.literature.staging.bulkDelete({ selection: { mode: 'explicit', selectedIds: records.map((record) => record.id), excludedIds: [], queryFingerprint: null }, expectedRevisions: records.map((record) => ({ id: record.id, expectedRevision: record.revision })) }), onSuccess: async (value) => { setFeedback(`待分类清理完成：成功 ${value.succeeded}，跳过 ${value.skipped}，失败 ${value.failed}`); setFeedbackError(value.failed > 0 ? new Error('部分记录未删除') : null); setSelectedIds(new Set()); await queryClient.invalidateQueries({ queryKey: ['literature-staging'] }) }, onError: (error) => { setFeedback(null); setFeedbackError(error) } })
 
   const assignProjectMutation = useMutation({ mutationFn: ({ record, projectId }: { record: LiteratureStagingRecord; projectId: string }) => api.literature.staging.save(stagingProjectUpdate(record, projectId)), onSuccess: async (record) => { setFeedback(`已将「${record.title}」分配到${record.projectId ? '项目' : '未分类'}`); setFeedbackError(null); await queryClient.invalidateQueries({ queryKey: ['literature-staging'] }) }, onError: (error) => { setFeedback(null); setFeedbackError(error) } })
@@ -264,6 +540,29 @@ export function LiteraturePage({ projects }: { projects: Project[] }): React.JSX
   }, [filter, results, sort, yearFilter])
   const visibleResults = sortedResults
   const selectedResults = useMemo(() => Object.values(resultCache).filter((result) => selectedIds.has(result.id)), [resultCache, selectedIds]); const selectedStaging = stagedItems.filter((record) => selectedIds.has(record.id))
+  const recentStagingProjectId = resolveRecentProjectId(projects)
+  const recentStagingProject = projects.find((project) => project.id === recentStagingProjectId) ?? null
+  // Search results and staging rows share one id set, so every 清除选择 action
+  // removes only the ids that belong to the surface the user is looking at.
+  const clearSelectedIds = (scope: readonly { id: string }[]) => setSelectedIds((current) => {
+    const next = new Set(current)
+    for (const item of scope) next.delete(item.id)
+    return next
+  })
+  const toggleVisibleSelection = (scope: readonly { id: string }[]) => setSelectedIds((current) => {
+    const next = new Set(current)
+    const allSelected = scope.length > 0 && scope.every((item) => current.has(item.id))
+    for (const item of scope) {
+      if (allSelected) next.delete(item.id)
+      else next.add(item.id)
+    }
+    return next
+  })
+  const allVisibleResultsSelected = visibleResults.length > 0 && visibleResults.every((result) => selectedIds.has(result.id))
+  const someVisibleResultsSelected = visibleResults.some((result) => selectedIds.has(result.id))
+  const allStagingSelected = stagedItems.length > 0 && stagedItems.every((record) => selectedIds.has(record.id))
+  const someStagingSelected = stagedItems.some((record) => selectedIds.has(record.id))
+  const stagingFilterLabel = stagingProjectFilter === undefined ? '全部项目' : stagingProjectFilter === null ? '未分配项目' : projects.find((project) => project.id === stagingProjectFilter)?.name ?? '已失效项目'
   const previewSelected = async (items: SearchResult[]) => {
     if (items.length === 0) return
     try {
@@ -276,6 +575,9 @@ export function LiteraturePage({ projects }: { projects: Project[] }): React.JSX
     }
   }
   const plusAction = (result: SearchResult) => {
+    // Probe first: acting while the capability is unknown would freeze the
+    // wrong transport and could downgrade a writable Zotero to a package.
+    if (zoteroProfile && plan === 'checking') return
     if (zoteroProfile) void previewSelected([result])
     else stageMutation.mutate(result)
   }
@@ -310,8 +612,21 @@ export function LiteraturePage({ projects }: { projects: Project[] }): React.JSX
       setFeedbackError(error)
     }
   }
-  const resizeInspector = (ratio: number) => setInspectorRatio(Math.min(40, Math.max(16, ratio)))
-  const literatureLayoutStyle = { '--literature-inspector-ratio': inspectorOpen ? `${inspectorRatio}%` : '3rem' } as React.CSSProperties
+  // Every external link shares one outcome channel: a click that never reached
+  // the system browser must be visible in the page feedback, not swallowed.
+  const reportExternalOutcome = (outcome: ExternalOpenOutcome) => {
+    const error = externalOutcomeError(outcome)
+    if (error === null) { setFeedbackError(null); return }
+    setFeedback(null)
+    setFeedbackError(error)
+  }
+  const literatureLayoutStyle = { '--literature-inspector-ratio': inspectorOpen ? `${inspectorPane.width}%` : '3rem' } as React.CSSProperties
+  // The splitter is owned by the Inspector panel, so it only exists while that
+  // pane is expanded; on a stacked (single column) layout it stays in the DOM
+  // as a disabled splitter instead of promising a split that cannot happen.
+  const inspectorResizer = inspectorOpen
+    ? <PaneResizeSeparator containerRef={literatureLayoutRef} defaultValue={INSPECTOR_DEFAULT_RATIO} disabled={!inspectorResizeEnabled} invert label="调整结果详情宽度（左右方向键调整，Home 最小，End 最大，双击恢复默认）" max={INSPECTOR_MAX_RATIO} min={INSPECTOR_MIN_RATIO} onReset={inspectorPane.resetWidth} onResize={inspectorPane.setWidth} style={{ left: 0 }} unit="percent" value={inspectorPane.width} />
+    : null
 
   return <div className="page-scroll literature-page">
     <header className="literature-target-toolbar">
@@ -329,8 +644,9 @@ export function LiteraturePage({ projects }: { projects: Project[] }): React.JSX
         <Button aria-label="打开高级检索选项" className="literature-advanced-button" onClick={() => document.getElementById('literature-filter-row')?.scrollIntoView({ behavior: 'smooth', block: 'nearest' })} variant="secondary"><span aria-hidden="true">☷</span>高级检索</Button>
       </div>
       <div className="literature-target-toolbar-actions">
+        <Button aria-label={permissionEntry === 'granted' ? '重新探测 Zotero 写入能力' : '请求 Zotero 写入权限'} data-zotero-capability-action disabled={!zoteroProfile || permissionEntry === 'explain' || capabilityQuery.isFetching || permissionMutation.isPending} loading={capabilityQuery.isFetching || permissionMutation.isPending} onClick={() => { void requestOrProbeZotero() }} size="sm" title={permissionEntry === 'granted' ? '重新读取本机 Zotero 写入能力' : permissionEntry === 'request' ? '先重新探测 Zotero，再请求本机写入授权' : permissionEntryBrief(permissionEntry, permissionReason, permissionStatus)} variant="secondary"><RefreshCw aria-hidden="true" className="size-3.5" />{permissionEntry === 'granted' ? '重新探测 Zotero 写入能力' : '请求 Zotero 写入权限'}</Button>
         <details className="literature-history"><summary aria-label="查看检索历史" className="literature-toolbar-text-button">检索历史</summary><div className="literature-history-content"><strong>最近检索</strong>{(sessionsQuery.data ?? []).slice(0, 8).map((session) => <button key={session.id} onClick={() => { void restoreSession(session) }} type="button"><span>{session.query}</span><small>{session.resultCount} 条 · {new Date(session.createdAt).toLocaleString()}</small></button>)}{(sessionsQuery.data ?? []).length === 0 ? <span className="literature-history-empty">暂无检索历史</span> : null}</div></details>
-        <button aria-label="查看文献检索帮助" className="literature-toolbar-icon-button" onClick={() => setFeedback('输入关键词、DOI、标题或作者后点击“检索”；结果可排序、筛选并分配到项目。')} type="button">?</button>
+        <LiteratureHelpDialog />
       </div>
     </header>
     <section className="literature-target-heading">
@@ -352,36 +668,63 @@ export function LiteraturePage({ projects }: { projects: Project[] }): React.JSX
         <label className="literature-filter-field"><span>年份</span><select aria-label="按年份筛选" className="select-control" onChange={(event) => setYearFilter(event.target.value)} value={yearFilter}><option value="all">不限年份</option>{availableYears.map((year) => <option key={year} value={year}>{year}</option>)}<option value="unknown">年份未知</option></select></label>
         <label className="literature-filter-field literature-filter-field-wide literature-optional-filter"><span>筛选当前结果</span><Input aria-label="筛选当前结果" onChange={(event) => setFilter(event.target.value)} placeholder="标题、作者或期刊" value={filter} /></label>
         <label className="literature-filter-field"><span>排序</span><select aria-label="结果排序" className="select-control" onChange={(event) => changeSort(event.target.value as ResultSort)} value={sort}><option value="relevance">相关性</option><option value="year-desc">年份最新</option><option value="year-asc">年份最早</option><option value="impact-desc">影响因子最高</option><option value="impact-asc">影响因子最低</option><option value="metric-desc">引用指标最高</option><option value="metric-asc">引用指标最低</option><option value="title">标题</option></select></label>
-        <label className="literature-filter-field literature-optional-filter"><span>导入项目</span><select aria-label="导入项目" className="select-control" onChange={(event) => setProjectId(event.target.value)} value={projectId}><option value="">不绑定项目</option>{projects.map((project) => <option key={project.id} value={project.id}>{project.name}</option>)}</select></label>
-        <details className="literature-more-filters"><summary>更多筛选</summary><div className="literature-more-filters-content"><label>筛选当前结果<Input aria-label="筛选当前结果" className="input-control h-8 text-xs" onChange={(event) => setFilter(event.target.value)} placeholder="标题、作者或期刊" value={filter} /></label><label>导入项目<select aria-label="导入项目" className="select-control h-8 text-xs" onChange={(event) => setProjectId(event.target.value)} value={projectId}><option value="">不绑定项目</option>{projects.map((project) => <option key={project.id} value={project.id}>{project.name}</option>)}</select></label><label>Zotero 附加标签<input aria-label="Zotero 附加标签" className="input-control h-8 text-xs" onChange={(event) => setZoteroTags(event.target.value)} placeholder="#方法学, #重点" value={zoteroTags} /></label><span>项目标签会自动使用所选项目名称；未绑定项目使用 #未分类。</span></div></details>
+        <label className="literature-filter-field literature-optional-filter"><span>导入项目</span><select aria-label="导入项目" className="select-control" onChange={(event) => chooseProjectId(event.target.value)} value={projectId}><option value="">未分类（不绑定项目）</option>{projects.map((project) => <option key={project.id} value={project.id}>{project.name}</option>)}</select></label>
+        <details className="literature-more-filters"><summary>更多筛选</summary><div className="literature-more-filters-content"><label>筛选当前结果<Input aria-label="筛选当前结果" className="input-control h-8 text-xs" onChange={(event) => setFilter(event.target.value)} placeholder="标题、作者或期刊" value={filter} /></label><label>导入项目<select aria-label="导入项目" className="select-control h-8 text-xs" onChange={(event) => chooseProjectId(event.target.value)} value={projectId}><option value="">未分类（不绑定项目）</option>{projects.map((project) => <option key={project.id} value={project.id}>{project.name}</option>)}</select></label><label>Zotero 附加标签<input aria-label="Zotero 附加标签" className="input-control h-8 text-xs" onChange={(event) => setZoteroTags(event.target.value)} placeholder="#方法学, #重点" value={zoteroTags} /></label><span>项目标签会自动使用所选项目名称；未绑定项目使用 #未分类。</span></div></details>
       </section>
       <div className={inspectorOpen ? 'literature-search-layout mt-4 grid items-start gap-4' : 'literature-search-layout literature-inspector-collapsed mt-4 grid items-start gap-4'} ref={literatureLayoutRef} style={literatureLayoutStyle}>
         <ResearchPanel className="literature-search-panel" eyebrow="SEARCH / FREE SOURCES" title="联网检索">
           <p className="literature-search-panel-note">使用上方搜索栏并行检索 Crossref、OpenAlex、PubMed、arXiv、Semantic Scholar 和 scholarly；结果可排序、筛选并分配到项目。</p>
         </ResearchPanel>
         <ResearchPanel className="literature-results-panel" action={<div className="literature-results-actions flex flex-nowrap items-center gap-2">
-          <label className="flex shrink-0 items-center gap-1 text-xs text-muted-foreground"><input aria-label="全选当前页" checked={visibleResults.length > 0 && visibleResults.every((result) => selectedIds.has(result.id))} className="research-checkbox" onChange={(event) => setSelectedIds((current) => { const next = new Set(current); for (const result of visibleResults) event.target.checked ? next.add(result.id) : next.delete(result.id); return next })} type="checkbox" />全选</label>
-          <select aria-label="Zotero Collection" className="select-control literature-collection-select" disabled={!zoteroProfile || collectionsQuery.isLoading} onChange={(event) => setCollectionKey(event.target.value || null)} value={collectionKey ?? ''}><option value="">Zotero 默认 Collection</option>{collections.map((collection: ZoteroCollection) => <option key={collection.key} value={collection.key}>{collection.name}</option>)}</select>
+          <select aria-label="Zotero Collection" className="select-control literature-collection-select" disabled={!zoteroProfile || collectionsQuery.isLoading} onChange={(event) => { setCollectionKey(event.target.value || null); setZoteroPreview(null); setZoteroHandoff(null) }} value={collectionKey ?? ''}><option value="">Zotero 默认 Collection</option>{collections.map((collection: ZoteroCollection) => <option key={collection.key} value={collection.key}>{collection.name}</option>)}</select>
           <select aria-label="Zotero 导出格式" className="select-control literature-format-select" onChange={(event) => { setZoteroFormat(event.target.value as ZoteroExportFormat); setZoteroPreview(null); setZoteroHandoff(null) }} value={zoteroFormat}><option value="bibtex">Better BibTeX</option><option value="ris">RIS</option></select>
           <Button disabled={selectedResults.length === 0 || batchStageMutation.isPending} loading={batchStageMutation.isPending} onClick={() => batchStageMutation.mutate(selectedResults)} size="sm"><Plus aria-hidden="true" className="size-3.5" />批量暂存</Button>
           <Button disabled={selectedResults.length === 0 || queueMutation.isPending} loading={queueMutation.isPending} onClick={() => queueMutation.mutate(selectedResults)} size="sm"><BookOpen aria-hidden="true" className="size-3.5" />加入待读</Button>
-          <Button disabled={selectedResults.length === 0 || previewMutation.isPending} loading={previewMutation.isPending} onClick={() => void previewSelected(selectedResults)} size="sm" variant="primary">预览导入 Zotero</Button>
+          <Button aria-label={prepareLabels[plan]} disabled={selectedResults.length === 0 || previewMutation.isPending || plan === 'checking'} loading={previewMutation.isPending} onClick={() => void previewSelected(selectedResults)} size="sm" variant="primary">{prepareLabels[plan]}</Button>
         </div>} eyebrow={`RESULTS / ${pageSize} PER PAGE`} title={`检索结果${visibleResults.length ? ` · ${visibleResults.length}` : ''}`}>
+          <LiteratureWriteEntry capabilityError={capabilityProbeError} disabled={previewMutation.isPending} onProjectChange={chooseWriteProject} permission={permissionView} plan={plan} projects={projects} writeBlockedNote={writeBlockedNote} writeProjectId={writeProjectId} />
+          <SelectionBar
+            allSelected={allVisibleResultsSelected}
+            disabled={visibleResults.length === 0}
+            indeterminate={someVisibleResultsSelected}
+            label="检索结果选择"
+            onClear={() => clearSelectedIds(Object.values(resultCache))}
+            onToggleAll={() => toggleVisibleSelection(visibleResults)}
+            scope={`范围：全选仅覆盖当前页筛选后的 ${visibleResults.length} 条（本页 ${results.length} 条，已加载 ${Object.keys(resultCache).length} 条）；翻页会保留已选，重新检索会清空，且不会选中未加载的页`}
+            selectAllLabel="全选当前页"
+            selectedCount={selectedResults.length}
+            totalCount={Object.keys(resultCache).length}
+          />
           {searchMutation.isPending || pageMutation.isPending || restoredResultsQuery.isLoading ? <LoadingState label="正在读取联网检索结果…" /> : null}
           {searchMutation.error && results.length === 0 ? <ErrorState error={searchMutation.error} onRetry={() => searchMutation.mutate()} /> : null}
           {!searchMutation.isPending && !restoredResultsQuery.isLoading && visibleResults.length === 0 ? <EmptyState description="输入关键词后检索 Crossref、OpenAlex、PubMed、arXiv、Semantic Scholar 和 scholarly。" title="暂无检索结果" /> : null}
-          <div className="literature-results-list divide-y divide-border">{visibleResults.map((result, index) => <SearchResultRow index={index + 1} inspected={selectedResult?.id === result.id} key={`${result.source}:${result.sourceId}`} onContextMenu={(event) => { event.preventDefault(); setContextMenu({ x: event.clientX, y: event.clientY, ids: [result.id] }) }} onInspect={() => { setSelectedResult(result); setInspectorOpen(true) }} onQueue={() => queueMutation.mutate([result])} onSelect={(checked) => setSelectedIds((current) => { const next = new Set(current); checked ? next.add(result.id) : next.delete(result.id); return next })} onStage={() => plusAction(result)} failed={failedByFingerprint.has(result.fingerprint)} result={result} zoteroProfile={Boolean(zoteroProfile)} selected={selectedIds.has(result.id)} staged={stagedByFingerprint.has(result.fingerprint)} />)}</div>
+          <div className="literature-results-list divide-y divide-border">{visibleResults.map((result, index) => <SearchResultRow index={index + 1} inspected={selectedResult?.id === result.id} key={`${result.source}:${result.sourceId}`} onContextMenu={(event) => { event.preventDefault(); setContextMenu({ x: event.clientX, y: event.clientY, ids: [result.id] }) }} onInspect={() => { setSelectedResult(result); setInspectorOpen(true) }} onQueue={() => queueMutation.mutate([result])} onSelect={(checked) => setSelectedIds((current) => { const next = new Set(current); checked ? next.add(result.id) : next.delete(result.id); return next })} onStage={() => plusAction(result)} onExternalOutcome={reportExternalOutcome} failed={failedByFingerprint.has(result.fingerprint)} plan={plan} result={result} zoteroProfile={Boolean(zoteroProfile)} selected={selectedIds.has(result.id)} staged={stagedByFingerprint.has(result.fingerprint)} />)}</div>
           <SearchPagination currentPage={currentPage} onPageChange={goToPage} pageSize={pageSize} pending={searchMutation.isPending || pageMutation.isPending} totalPages={totalPages} totalResults={totalResults} hasMore={hasMorePages} />
         </ResearchPanel>
-        <Inspector containerRef={literatureLayoutRef} executePending={executeMutation.isPending} failed={selectedResult ? failedByFingerprint.has(selectedResult.fingerprint) : false} onCancelPreview={() => setZoteroPreview(null)} onExecutePreview={executePreview} onResize={resizeInspector} onToggle={() => setInspectorOpen((current) => !current)} open={inspectorOpen} ratio={inspectorRatio} preview={zoteroPreview} result={selectedResult} staged={selectedResult ? stagedByFingerprint.has(selectedResult.fingerprint) : false} targetCollection={collectionKey} />
+        <Inspector executePending={executeMutation.isPending} failed={selectedResult ? failedByFingerprint.has(selectedResult.fingerprint) : false} onCancelPreview={() => setZoteroPreview(null)} onExecutePreview={executePreview} onProjectChange={chooseWriteProject} onExternalOutcome={reportExternalOutcome} onToggle={() => setInspectorOpen((current) => !current)} open={inspectorOpen} permission={permissionView} plan={plan} projects={projects} resizer={inspectorResizer} preview={zoteroPreview} result={selectedResult} staged={selectedResult ? stagedByFingerprint.has(selectedResult.fingerprint) : false} targetCollectionName={collectionName(zoteroPreview?.targetCollectionKey ?? collectionKey)} writeBlockedNote={writeBlockedNote} />
       </div>
     </> : <div className="mt-4 grid gap-4">
       <ResearchPanel action={<div className="flex flex-wrap items-center gap-2">
         <select aria-label="按项目筛选待分类文献" className="select-control max-w-48" onChange={(event) => setStagingProjectFilter(event.target.value === "__unassigned__" ? null : event.target.value || undefined)} value={stagingProjectFilter === null ? "__unassigned__" : stagingProjectFilter ?? ""}><option value="">全部项目</option><option value="__unassigned__">未分配项目</option>{projects.map((project) => <option key={project.id} value={project.id}>{project.name}</option>)}</select>
         <select aria-label="将选中文献分配到项目" className="select-control max-w-48" disabled={selectedStaging.length === 0 || assignProjectsMutation.isPending} onChange={(event) => { const target = event.target.value === '__unassigned__' ? '' : event.target.value; assignProjectsMutation.mutate({ records: selectedStaging, projectId: target }) }} defaultValue="__placeholder__"><option value="__placeholder__" disabled>批量分配到…</option><option value="__unassigned__">未分类</option>{projects.map((project) => <option key={project.id} value={project.id}>{project.name}</option>)}</select>
         <Button disabled={selectedStaging.length === 0 || deleteMutation.isPending} loading={deleteMutation.isPending} onClick={() => deleteMutation.mutate(selectedStaging)} size="sm" variant="danger"><Trash2 aria-hidden="true" className="size-3.5" />删除选中</Button>
-        <Button disabled={selectedStaging.length === 0 || previewMutation.isPending} loading={previewMutation.isPending} onClick={() => previewMutation.mutate(selectedStaging)} size="sm" variant="primary">预览导入 Zotero</Button>
+        <Button aria-label={prepareLabels[plan]} disabled={selectedStaging.length === 0 || previewMutation.isPending || plan === 'checking'} loading={previewMutation.isPending} onClick={() => previewMutation.mutate(selectedStaging)} size="sm" variant="primary">{prepareLabels[plan]}</Button>
       </div>} eyebrow="STAGING / PERSISTENT" title="待分类文献">
+        <SelectionBar
+          allSelected={allStagingSelected}
+          disabled={stagedItems.length === 0}
+          indeterminate={someStagingSelected}
+          label="待分类文献选择"
+          onClear={() => clearSelectedIds(stagedItems)}
+          onToggleAll={() => toggleVisibleSelection(stagedItems)}
+          scope={`范围：项目筛选「${stagingFilterLabel}」下已加载的 ${stagedItems.length} 条（单页最多 100 条，不代表全部待分类记录）；选择只作用于列表中的记录`}
+          selectAllLabel="全选当前结果"
+          selectedCount={selectedStaging.length}
+          totalCount={stagedItems.length}
+        >
+          {recentStagingProject ? <Button aria-label={`将选中文献分派到最近项目：${recentStagingProject.name}`} disabled={selectedStaging.length === 0 || assignProjectsMutation.isPending} onClick={() => assignProjectsMutation.mutate({ records: selectedStaging, projectId: recentStagingProject.id })} size="sm" variant="secondary">分派到最近项目：{recentStagingProject.name}</Button> : null}
+        </SelectionBar>
+        <div className="border-t border-border px-4 pb-3" data-zotero-staging-permission-entry><ZoteroWritePermissionEntry view={permissionView} /></div>
         {stagingQuery.isLoading ? <LoadingState label="正在读取待分类文献…" /> : null}
         {stagingQuery.error ? <ErrorState error={stagingQuery.error} onRetry={() => void stagingQuery.refetch()} /> : null}
         {!stagingQuery.isLoading && !stagingQuery.error && stagedItems.length === 0 ? <EmptyState description="在检索结果中点击“加入待分类”后，文献会持久保存在这里，并可分配或移动到任意项目。" title="待分类为空" /> : null}
@@ -390,15 +733,15 @@ export function LiteraturePage({ projects }: { projects: Project[] }): React.JSX
           <label className="grid size-8 shrink-0 cursor-pointer place-items-center"><span className="sr-only">选择待分类文献</span><input aria-label={`选择待分类文献：${record.title}`} checked={selectedIds.has(record.id)} className="research-checkbox" onChange={(event) => setSelectedIds((current) => { const next = new Set(current); event.target.checked ? next.add(record.id) : next.delete(record.id); return next })} type="checkbox" /></label>
           <div className="min-w-0 flex-1"><h3 className="overflow-wrap-anywhere text-sm font-semibold text-foreground">{record.title}</h3><p className="mt-1 truncate text-xs text-muted-foreground">{record.authors.join(', ') || '作者未知'} · {record.venue || sourceLabels[record.source]} · {record.year ?? '年份未知'}</p><span className="literature-project-badge">{record.projectId ? projects.find((project) => project.id === record.projectId)?.name ?? '已分配项目' : '未分类'}</span></div>
           <select aria-label={`为 ${record.title} 分配项目`} className="select-control max-w-48" disabled={assignProjectMutation.isPending} onChange={(event) => assignProjectMutation.mutate({ record, projectId: event.target.value })} value={record.projectId ?? ""}><option value="">未分类</option>{projects.map((project) => <option key={project.id} value={project.id}>{project.name}</option>)}</select>
-          {zoteroProfile ? <Button aria-label={`重新预览导入 Zotero：${record.title}`} disabled={previewMutation.isPending} onClick={() => previewMutation.mutate([record])} size="icon" variant="ghost"><RefreshCw aria-hidden="true" className="size-3.5" /></Button> : null}
+          {zoteroProfile ? <Button aria-label={`${prepareLabels[plan]}：${record.title}`} disabled={previewMutation.isPending} onClick={() => previewMutation.mutate([record])} size="icon" variant="ghost"><RefreshCw aria-hidden="true" className="size-3.5" /></Button> : null}
           <Button aria-label={`删除 ${record.title}`} onClick={() => deleteMutation.mutate([record])} size="icon" variant="ghost"><X aria-hidden="true" className="size-4" /></Button>
         </div>)}</div>
       </ResearchPanel>
     </div>}
-    {tab === 'staging' && zoteroPreview ? <ResearchPanel className="mt-4" action={<div className="flex gap-2"><Button onClick={() => setZoteroPreview(null)} size="sm">取消</Button><Button disabled={executeMutation.isPending} loading={executeMutation.isPending} onClick={executePreview} size="sm" variant="primary">明确确认并写入</Button></div>} eyebrow="ZOTERO / CONFIRMATION" title={`导入预览 · ${zoteroPreview.total} 条`}><div className="p-4 text-xs text-muted-foreground"><p>目标：{zoteroProfile?.name ?? '未配置 Zotero'} · Collection：{collectionKey ?? '默认'} · capability：{zoteroPreview.capability} · transport：{zoteroPreview.transport}</p><p className="mt-2">这是一次性 API 写入预览。只有点击明确确认后才会调用 Zotero；失败项会逐条返回并保留“重新导入”入口。{zoteroPreview.capability !== 'write' ? ' 当前连接没有写入权限，确认后将逐条显示失败；完成授权后可再次导入。' : ''}</p></div></ResearchPanel> : null}
-    {zoteroHandoff ? <ResearchPanel className="mt-4" eyebrow="ZOTERO / IMPORT PACKAGE" title="待下载的导入包"><div className="flex flex-wrap items-center gap-2 p-4 text-xs"><span className="min-w-0 flex-1 text-amber-800 dark:text-amber-200">Zotero 当前为只读，已生成 {zoteroHandoff.itemCount} 条 {zoteroHandoff.format.toUpperCase()} 元数据；目标 Collection：{zoteroHandoff.targetCollectionKey ?? '默认'}。下载后在 Zotero 中选择“导入”，不会伪称已写入。</span><Button aria-label="下载文献 Zotero 导入包" onClick={() => { void downloadZoteroHandoff(zoteroHandoff).then((fileName) => setFeedback(`已保存到 Downloads：${fileName}`)).catch((error) => { setFeedback(null); setFeedbackError(error) }) }} size="sm" variant="secondary"><Download aria-hidden="true" className="size-3.5" />下载导入包</Button></div></ResearchPanel> : null}
-    {zoteroReceipts.length > 0 ? <ResearchPanel className="mt-4" eyebrow="ZOTERO / RECEIPTS" title="逐条写入回执"><div className="divide-y divide-border">{zoteroReceipts.map((receipt) => { const status = receipt.outcome === 'written' ? '已写入' : receipt.outcome === 'generated' ? '已生成文件（未写入）' : receipt.outcome === 'failed' ? '写入失败' : receipt.outcome === 'unsupported' ? '不支持' : '已跳过'; const retryRecord = retryableStaging.find((record) => record.id === receipt.stagingId); return <div className="flex items-center gap-3 px-4 py-3 text-xs" key={receipt.stagingId}><span className="min-w-0 flex-1 font-medium text-foreground">{receiptTitles[receipt.stagingId] ?? receipt.stagingId}</span><span className={receipt.outcome === 'failed' || receipt.outcome === 'unsupported' ? 'text-danger' : 'text-muted-foreground'}>{status}</span>{receipt.error ? <span className="max-w-[30rem] truncate text-muted-foreground">{receipt.error.message}</span> : null}{retryRecord ? <Button aria-label={`再次导入 ${retryRecord.title}`} disabled={previewMutation.isPending} onClick={() => previewMutation.mutate([retryRecord])} size="sm" variant="danger"><RefreshCw aria-hidden="true" className="size-3.5" />再次导入</Button> : null}</div> })}</div></ResearchPanel> : null}
+    {tab === 'staging' && zoteroPreview ? <ResearchPanel className="mt-4" action={<div className="flex gap-2"><Button onClick={() => setZoteroPreview(null)} size="sm">取消</Button><Button aria-label={confirmLabels[zoteroPreview.transport === 'api' ? 'write' : 'read-only']} disabled={executeMutation.isPending} loading={executeMutation.isPending} onClick={executePreview} size="sm" variant="primary">{confirmLabels[zoteroPreview.transport === 'api' ? 'write' : 'read-only']}</Button></div>} eyebrow="ZOTERO / CONFIRMATION" title={`导入预览 · ${zoteroPreview.total} 条`}><div className="p-4 text-xs text-muted-foreground"><p>目标：{zoteroProfile?.name ?? '未配置 Zotero'} · Collection：{collectionDisplayLabel(collectionName(zoteroPreview.targetCollectionKey), zoteroPreview.targetCollectionKey)} · capability：{zoteroPreview.capability} · transport：{zoteroPreview.transport}</p><FrozenWriteValues values={stagingFrozenValues} /><ZoteroProjectField disabled={executeMutation.isPending} onProjectChange={chooseWriteProject} projectId={zoteroPreview.projectId} projects={projects} selectLabel="Zotero 写入顶层项目分类" tagHint={`更改分类会丢弃当前预览，需要重新生成；确认时使用预览冻结的分类。`} tagText={projectTagLabel(zoteroPreview.projectTag)} tagValue={zoteroPreview.projectTag ?? ''} /><ZoteroWritePermissionEntry view={permissionView} /><p className="mt-2">{zoteroPreview.transport === 'api' ? '这是一次性写入预览：预览已冻结条目匹配、Collection 和 profile revision。只有点击明确确认后才会调用 Zotero；失败项会逐条返回并保留“重新导入”入口。' : '这是一次性生成预览：Zotero 只读时确认后只会生成 RIS/BibTeX 导入包，不会调用写入接口。'}{zoteroPreview.capability !== 'write' && zoteroPreview.transport === 'api' ? ' 当前连接没有写入权限，确认后将逐条显示失败；完成授权后可再次导入。' : ''}</p></div></ResearchPanel> : null}
+    {zoteroHandoff ? <ResearchPanel className="mt-4" eyebrow="ZOTERO / IMPORT PACKAGE" title="待下载的导入包"><div className="flex flex-wrap items-center gap-2 p-4 text-xs"><span className="min-w-0 flex-1 text-amber-800 dark:text-amber-200">已生成 {zoteroHandoff.itemCount} 条 {zoteroHandoff.format.toUpperCase()} 元数据（未写入 Zotero）；目标 Collection：{zoteroHandoff.targetCollectionKey ?? '默认'}。下载后在 Zotero 中选择“导入”完成导入，回执中的“已生成导入包”不代表已写入。</span><Button aria-label="下载文献 Zotero 导入包" onClick={() => { void downloadZoteroHandoff(zoteroHandoff).then((fileName) => setFeedback(`已保存到 Downloads：${fileName}`)).catch((error) => { setFeedback(null); setFeedbackError(error) }) }} size="sm" variant="secondary"><Download aria-hidden="true" className="size-3.5" />下载导入包</Button></div></ResearchPanel> : null}
+    {zoteroReceipts.length > 0 ? <ResearchPanel className="mt-4" eyebrow="ZOTERO / RECEIPTS" title="逐条写入回执"><div className="divide-y divide-border">{zoteroReceipts.map((receipt) => { const status = receipt.outcome === 'written' ? '已写入' : receipt.outcome === 'generated' ? '已生成导入包（未写入 Zotero）' : receipt.outcome === 'failed' ? '写入失败' : receipt.outcome === 'unsupported' ? '不支持' : '已跳过'; const retryRecord = retryableStaging.find((record) => record.id === receipt.stagingId); return <div className="px-4 py-3 text-xs" data-zotero-receipt={receipt.outcome} key={receipt.stagingId}><div className="flex items-center gap-3"><span className="min-w-0 flex-1 font-medium text-foreground">{receiptTitles[receipt.stagingId] ?? receipt.stagingId}</span><span className={receipt.outcome === 'failed' || receipt.outcome === 'unsupported' ? 'text-danger' : 'text-muted-foreground'}>{status}</span>{retryRecord ? <Button aria-label={`再次导入 ${retryRecord.title}`} disabled={previewMutation.isPending} onClick={() => previewMutation.mutate([retryRecord])} size="sm" variant="danger"><RefreshCw aria-hidden="true" className="size-3.5" />再次导入</Button> : null}</div><div className="mt-1 flex flex-wrap items-center gap-2 text-muted-foreground"><span className="research-tag">{collectionWriteLabel(receipt.collectionWrite, receipt.targetCollectionKey, collectionName(receipt.targetCollectionKey))}</span>{receipt.projectTag ? <span className="research-tag">{projectTagLabel(receipt.projectTag)}</span> : null}{receipt.remoteRevision ? <span className="font-mono">v{receipt.remoteRevision}</span> : null}{receipt.error ? <span className={`min-w-0 flex-1 leading-5 ${receipt.outcome === 'failed' || receipt.outcome === 'unsupported' ? 'text-danger' : ''}`}>{receipt.error.message}</span> : null}</div></div> })}</div></ResearchPanel> : null}
     {retryableStaging.length > 0 ? <ResearchPanel className="mt-4" eyebrow="ZOTERO / RETRY" title={`失败项 · ${retryableStaging.length} 条`}><div className="flex flex-wrap items-center gap-2 p-4 text-xs"><span className="min-w-0 flex-1 text-muted-foreground">以下文献未成功写入，可在修复 Zotero 连接后重新生成预览并再次写入。</span><Button disabled={previewMutation.isPending} loading={previewMutation.isPending} onClick={() => previewMutation.mutate(retryableStaging)} size="sm" variant="primary">重试失败项</Button></div><div className="divide-y divide-border">{retryableStaging.map((record) => <div className="flex items-center gap-3 px-4 py-3 text-xs" key={record.id}><span className="min-w-0 flex-1 font-medium text-foreground">{record.title}</span><span className="text-danger">写入失败</span><Button disabled={previewMutation.isPending} onClick={() => previewMutation.mutate([record])} size="sm" variant="danger"><RefreshCw aria-hidden="true" className="size-3.5" />重新导入</Button></div>)}</div></ResearchPanel> : null}
-    {contextMenu ? <div className="fixed z-50 min-w-48 rounded-md border border-border bg-surface p-1 shadow-lg" onClick={(event) => event.stopPropagation()} style={{ left: contextMenu.x, top: contextMenu.y }}><button className="flex min-h-8 w-full items-center gap-2 rounded px-2.5 text-left text-xs hover:bg-muted" onClick={() => { const items = results.filter((result) => contextMenu.ids.includes(result.id)); batchStageMutation.mutate(items); setContextMenu(null) }} type="button"><Plus aria-hidden="true" className="size-3.5" />加入待分类</button><button className="flex min-h-8 w-full items-center gap-2 rounded px-2.5 text-left text-xs hover:bg-muted" onClick={() => { const items = results.filter((result) => contextMenu.ids.includes(result.id)); void previewSelected(items); setContextMenu(null) }} type="button"><ExternalLink aria-hidden="true" className="size-3.5" />预览导入 Zotero</button></div> : null}
+    {contextMenu ? <div className="fixed z-50 min-w-48 rounded-md border border-border bg-surface p-1 shadow-lg" onClick={(event) => event.stopPropagation()} style={{ left: contextMenu.x, top: contextMenu.y }}><button className="flex min-h-8 w-full items-center gap-2 rounded px-2.5 text-left text-xs hover:bg-muted" onClick={() => { const items = results.filter((result) => contextMenu.ids.includes(result.id)); batchStageMutation.mutate(items); setContextMenu(null) }} type="button"><Plus aria-hidden="true" className="size-3.5" />加入待分类</button><button className="flex min-h-8 w-full items-center gap-2 rounded px-2.5 text-left text-xs hover:bg-muted" onClick={() => { const items = results.filter((result) => contextMenu.ids.includes(result.id)); void previewSelected(items); setContextMenu(null) }} type="button"><ExternalLink aria-hidden="true" className="size-3.5" />{prepareLabels[plan]}</button></div> : null}
   </div>
 }

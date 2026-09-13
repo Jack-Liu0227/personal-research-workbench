@@ -1,6 +1,6 @@
 import { randomUUID } from 'node:crypto'
-import type { AgentLedgerPush, AgentRpcMethod, AgentRpcRequest, AppError, RpcRequest, RpcResponse } from '@prw/contracts'
-import { AgentLedgerPushSchema, AgentRpcRequestSchema, RpcRequestSchema, RpcResponseSchema } from '@prw/contracts'
+import type { AgentCredentialEnvelope, AgentLedgerPush, AgentRpcMethod, AgentRpcRequest, AppError, RpcRequest, RpcResponse } from '@prw/contracts'
+import { AgentCredentialEnvelopeSchema, AgentLedgerPushSchema, AgentRpcRequestSchema, RpcRequestSchema, RpcResponseSchema } from '@prw/contracts'
 import { utilityProcess, type UtilityProcess } from 'electron'
 import { appError } from './errors.js'
 
@@ -16,6 +16,13 @@ interface CoreRpcClientOptions {
   readonly servicePipePath?: string
   readonly serviceHandshakeToken?: string
   readonly serviceInfoPath?: string
+  /** Repository checkout that owns `.agents/skills`, forwarded to Core so skill
+   * discovery never falls back to Core's own working directory (the user-data
+   * directory). Omitted for an installed app. */
+  readonly projectRoot?: string | undefined
+  /** True for an installed app: Core must discover skills from the packaged
+   * `resources/skills` mirror only. */
+  readonly packagedApp?: boolean | undefined
   readonly requestTimeoutMs?: number
   readonly startupTimeoutMs?: number
 }
@@ -37,6 +44,22 @@ export interface CredentialRpcEnvelope {
   readonly type: typeof CREDENTIAL_RPC_ENVELOPE_TYPE
   readonly request: RpcRequest
   readonly credential: CredentialRpcCredential
+}
+
+/**
+ * Main-only envelope for Agent RPCs that need a runtime credential.
+ *
+ * Electron Main owns the `safeStorage` vault, so it resolves the credential for
+ * each runtime and attaches it here for exactly one Core dispatch. The
+ * renderer never sees this envelope, the credential never enters a payload, and
+ * Core drops the secret as soon as the child process has started.
+ */
+export const AGENT_CREDENTIAL_ENVELOPE_TYPE = 'prw.agent-rpc-with-credential' as const
+
+export interface AgentCredentialEnvelopeCredentials {
+  readonly runtime: 'codex' | 'pi'
+  readonly provider: string
+  readonly secret: string
 }
 
 function failedResponse(id: string, error: AppError): RpcResponse {
@@ -75,7 +98,9 @@ export class CoreRpcClient {
         PRW_APP_VERSION: options.appVersion,
         ...(options.servicePipePath ? { PRW_SERVICE_PIPE: options.servicePipePath } : {}),
         ...(options.serviceHandshakeToken ? { PRW_SERVICE_TOKEN: options.serviceHandshakeToken } : {}),
-        ...(options.serviceInfoPath ? { PRW_SERVICE_INFO: options.serviceInfoPath } : {})
+        ...(options.serviceInfoPath ? { PRW_SERVICE_INFO: options.serviceInfoPath } : {}),
+        ...(options.projectRoot ? { PRW_PROJECT_ROOT: options.projectRoot } : {}),
+        ...(options.packagedApp ? { PRW_PACKAGED_APP: '1' } : {})
       }
     })
 
@@ -155,6 +180,30 @@ export class CoreRpcClient {
   }
 
   /**
+   * Send an Agent request with Main-resolved safeStorage credentials.
+   *
+   * Only Main can call this. An empty credential list is meaningful: Core then
+   * fails closed with a blocked run instead of reaching for a personal CLI
+   * login, so the caller must never fabricate a credential to "make it work".
+   */
+  requestAgentWithCredential(
+    method: AgentRpcMethod,
+    payload: unknown,
+    credentials: readonly AgentCredentialEnvelopeCredentials[]
+  ): Promise<RpcResponse> {
+    const id = randomUUID()
+    if (!this.ready || this.disposed) return Promise.resolve(this.unavailableResponse(id))
+    const parsed = AgentRpcRequestSchema.safeParse({ id, method, payload })
+    if (!parsed.success) return Promise.resolve(this.invalidRequestResponse(id, parsed.error.issues))
+    const envelope = AgentCredentialEnvelopeSchema.parse({
+      type: AGENT_CREDENTIAL_ENVELOPE_TYPE,
+      request: parsed.data,
+      credentials: credentials.map((entry) => ({ runtime: entry.runtime, provider: entry.provider, secret: entry.secret }))
+    })
+    return this.send(parsed.data, envelope)
+  }
+
+  /**
    * Send a connector request with a Main-resolved safeStorage credential.
    * The credential is never merged into the public payload.  This method is
    * deliberately restricted to integration/Zotero operations and emits the
@@ -218,7 +267,10 @@ export class CoreRpcClient {
     this.pending.clear()
   }
 
-  private send(request: RpcRequest, message: RpcRequest | CredentialRpcEnvelope = request): Promise<RpcResponse> {
+  private send(
+    request: RpcRequest | AgentRpcRequest,
+    message: RpcRequest | AgentRpcRequest | CredentialRpcEnvelope | AgentCredentialEnvelope = request
+  ): Promise<RpcResponse> {
     return new Promise<RpcResponse>((resolve) => {
       const timer = setTimeout(() => {
         this.pending.delete(request.id)

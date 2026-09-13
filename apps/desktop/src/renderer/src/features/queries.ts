@@ -2,6 +2,8 @@ import { useQuery, type UseQueryResult } from '@tanstack/react-query'
 import type {
   AgentRun,
   ArtifactKind,
+  AutomationRule,
+  AutomationRunHistoryEntry,
   BoardColumn,
   DashboardSummary,
   IntegrationProfile,
@@ -61,6 +63,12 @@ export const queryKeys = {
     projectId === undefined ? 'all' : projectId === null ? 'unassigned' : projectId
   ] as const,
   agentInbox: (unreadOnly = false) => ['agent-inbox', unreadOnly] as const,
+  /** Scheduled-run ledger (automation page + dashboard push projection). The
+   * key matches the literal the automation page has always used, so both pages
+   * share one cache entry instead of fetching the same runs twice. The limit is
+   * part of the shared shape: change it here only. */
+  automationRunHistory: ['automation-run-history'] as const,
+  automationRules: ['automation-rules'] as const,
   workspaceStatus: ['workspace-status'] as const,
   /** Keys for legacy AI hooks. These queries never call a removed V2 route. */
   unavailable: (feature: 'prompt-templates' | 'ai-providers' | 'agent-runs' | 'schedules') => ['unavailable', feature] as const
@@ -138,6 +146,30 @@ export function useAgentInboxQuery(unreadOnly = false): UseQueryResult<AgentInbo
     queryKey: queryKeys.agentInbox(unreadOnly),
     queryFn: () => getWorkbenchAgentApi().inbox.list(unreadOnly),
     refetchInterval: unreadOnly ? 5_000 : false
+  })
+}
+
+/** Ledger window shared by the automation page and the dashboard projection. */
+export const automationRunHistoryLimit = 8
+
+/** Real scheduled-run ledger: run status, owning rule, blocked reason, artifact
+ * and the Obsidian delivery outcome of each scheduled push. */
+export function useAutomationRunHistoryQuery(): UseQueryResult<AutomationRunHistoryEntry[]> {
+  return useQuery({
+    queryKey: queryKeys.automationRunHistory,
+    queryFn: () => getWorkbenchAgentApi().automation.history({ limit: automationRunHistoryLimit }),
+    staleTime: 15_000,
+    placeholderData: (previous) => previous
+  })
+}
+
+/** Rule names for the ledger rows; a ledger row only carries the rule id. */
+export function useAutomationRulesQuery(): UseQueryResult<AutomationRule[]> {
+  return useQuery({
+    queryKey: queryKeys.automationRules,
+    queryFn: () => getWorkbenchAgentApi().automation.rules(),
+    staleTime: 30_000,
+    placeholderData: (previous) => previous
   })
 }
 

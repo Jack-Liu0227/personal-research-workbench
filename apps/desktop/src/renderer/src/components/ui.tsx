@@ -1,10 +1,12 @@
 import * as DialogPrimitive from '@radix-ui/react-dialog'
 import * as DropdownMenuPrimitive from '@radix-ui/react-dropdown-menu'
-import { LoaderCircle, X } from 'lucide-react'
+import { ChevronRight, LoaderCircle, X } from 'lucide-react'
 import {
   cloneElement,
   forwardRef,
   isValidElement,
+  useId,
+  useState,
   type ButtonHTMLAttributes,
   type ComponentPropsWithoutRef,
   type ElementRef,
@@ -101,6 +103,43 @@ export function Field({ label, htmlFor, error, hint, children }: {
       {control}
       {error ? <p className="text-xs text-danger" id={descriptionId} role="alert">{error}</p> : null}
       {!error && hint ? <p className="text-xs text-muted-foreground" id={descriptionId}>{hint}</p> : null}
+    </div>
+  )
+}
+
+/**
+ * Keyboard-accessible disclosure for secondary detail. The toggle is a real
+ * button with an explicit `aria-expanded`/`aria-controls` pair, and the panel
+ * stays mounted (only `hidden`) so collapsing never drops data from the DOM.
+ * Use it for long prose, grouped metadata and advanced fields; keep the primary
+ * action or value visible outside the panel.
+ */
+export function Disclosure({ title, hint, defaultOpen = false, className, panelClassName, children }: {
+  title: string
+  hint?: string
+  defaultOpen?: boolean
+  className?: string
+  panelClassName?: string
+  children: ReactNode
+}): React.JSX.Element {
+  const [open, setOpen] = useState(defaultOpen)
+  const panelId = useId()
+  return (
+    <div className={cn('disclosure', className)}>
+      <button
+        aria-controls={panelId}
+        aria-expanded={open}
+        className="disclosure-summary"
+        onClick={() => setOpen((value) => !value)}
+        type="button"
+      >
+        <ChevronRight aria-hidden="true" className={cn('disclosure-chevron', open && 'disclosure-chevron-open')} />
+        <span className="disclosure-title">{title}</span>
+        {hint ? <span className="disclosure-hint">{hint}</span> : null}
+      </button>
+      <div className={cn('disclosure-panel', panelClassName)} hidden={!open} id={panelId}>
+        {children}
+      </div>
     </div>
   )
 }

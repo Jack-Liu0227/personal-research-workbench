@@ -3,7 +3,6 @@ import {
   ArrowRight,
   BookOpenText,
   CalendarClock,
-  FileStack,
   CheckCircle2,
   CircleDot,
   Clock3,
@@ -17,7 +16,18 @@ import { EmptyState, ErrorState, LoadingState, PageHeader } from '../components/
 import { Button } from '../components/ui'
 import { cn, formatDate } from '../lib/utils'
 import { CreateProjectDialog, CreateTaskDialog } from './forms'
-import { useAgentInboxQuery, useArtifactsQuery, useDashboardQuery, usePapersQuery, useTasksQuery } from './queries'
+import {
+  INBOX_KIND_LABELS,
+  PAPER_READ_STATUS_LABELS,
+  buildPushLedger,
+  firstMeaningfulLine,
+  inboxCardEmptyText,
+  inboxReadLabel,
+  joinInboxWithPushLedger,
+  summarizePushSource,
+  type DashboardSourceSummary
+} from './dashboard-push'
+import { useAgentInboxQuery, useAutomationRulesQuery, useAutomationRunHistoryQuery, useDashboardQuery, usePapersQuery, useTasksQuery } from './queries'
 
 const statusLabel: Record<TaskStatus, string> = {
   inbox: '收件箱',
@@ -93,8 +103,22 @@ export function OverviewPage({
   const todayTasks = useTasksQuery({ view: 'today' })
   const upcomingTasks = useTasksQuery({ view: 'upcoming' })
   const queuedPapers = usePapersQuery({ status: 'queued' })
-  const recentArtifacts = useArtifactsQuery({})
   const agentInbox = useAgentInboxQuery(true)
+  // Scheduled-run ledger (real status + rule + Obsidian delivery path). It is the
+  // only source for the "来源/状态/相对路径" line of the inbox card below; a record
+  // with no ledger row is labelled as such instead of being given a fake one.
+  const runHistory = useAutomationRunHistoryQuery()
+  const automationRules = useAutomationRulesQuery()
+  const pushLedger = buildPushLedger(runHistory.data ?? [], (scheduleId) => {
+    const rule = automationRules.data?.find((candidate) => candidate.id === scheduleId)
+    return rule ? rule.name : `定时任务 ${scheduleId.slice(0, 8)}`
+  })
+  // The inbox card is the join of the real inbox table with the real push
+  // ledger: rows without a ledger entry stay visible but never receive a push
+  // status, a rule name or an Obsidian path.
+  const inboxJoin = joinInboxWithPushLedger(pushLedger, agentInbox.data ?? [])
+  const inboxRows = [...inboxJoin.matched, ...inboxJoin.unmatched]
+  const inboxCountLabel = agentInbox.data ? `${agentInbox.data.length} 条未读` : '读取中'
 
   return (
     <div className="page-scroll">
@@ -119,7 +143,7 @@ export function OverviewPage({
             <MetricButton icon={<TriangleAlert aria-hidden="true" className="size-4" />} label="已逾期" onClick={() => onNavigate('tasks')} tone="risk" value={dashboard.data.overdueCount} />
             <MetricButton icon={<CheckCircle2 aria-hidden="true" className="size-4" />} label="本周完成" onClick={() => onNavigate('tasks')} tone="success" value={dashboard.data.completedThisWeekCount} />
           </section>
-          <p className="mt-2 text-xs leading-5 text-muted-foreground">收件箱是尚未绑定项目的快速 Todo；“待读文献”来自 Paper 的 queued 状态；科研产物来自本地 Agent/Artifact 记录，不是演示数据。</p>
+          <p className="mt-2 text-xs leading-5 text-muted-foreground">收件箱是尚未绑定项目的快速 Todo；“待读文献”的状态来自 Paper 的读阅状态；“Agent 收件箱”只展示本地收件箱记录与最近 {runHistory.data?.length ?? 0} 条定时推送记录的真实关联结果（来源规则、运行状态、执行时间点、Obsidian 投递相对路径与失败原因）。没有记录、没有关联记录或读取失败时都显示真实原因；全部为真实数据，不是演示数据。</p>
 
           <section className="mt-7" aria-labelledby="project-progress-title">
             <div className="mb-3 flex items-end justify-between gap-4">
@@ -176,19 +200,28 @@ export function OverviewPage({
           </section>
           <section className="mt-7 grid gap-4 xl:grid-cols-2" aria-label="今日研究资源">
             <DashboardResourceCard title="今日任务" eyebrow="TODAY / TASKS">
-              {todayTasks.isLoading ? <p className="research-empty-inline">正在读取今日任务…</p> : todayTasks.error ? <p className="form-feedback form-feedback-error m-3" role="alert">今日任务读取失败，请打开任务页重试。</p> : todayTasks.data?.length ? todayTasks.data.slice(0, 5).map((task) => <button className="dashboard-list-row w-full text-left" key={task.id} onClick={() => onNavigate('tasks')} title={`打开任务：${task.title}`} type="button"><span className="status-led" /><span className="min-w-0 flex-1 truncate">{task.title}</span><span className="text-[11px] text-muted-foreground">{priorityLabel[task.priority]}</span></button>) : <p className="research-empty-inline">今天没有到期任务。</p>}
+              {todayTasks.isLoading ? <p className="research-empty-inline">正在读取今日任务…</p> : todayTasks.error ? <div className="m-3"><ErrorState compact error={todayTasks.error} onRetry={() => void todayTasks.refetch()} retryLabel="重试读取今日任务" /><p className="mt-2 text-xs text-muted-foreground">今日任务读取失败；可在此原地重试，或打开任务页查看完整列表。</p></div> : todayTasks.data?.length ? todayTasks.data.slice(0, 5).map((task) => <button className="dashboard-list-row w-full text-left" key={task.id} onClick={() => onNavigate('tasks')} title={`打开任务：${task.title}`} type="button"><span className="status-led" /><span className="min-w-0 flex-1 truncate">{task.title}</span><span className="text-[11px] text-muted-foreground">{priorityLabel[task.priority]}</span></button>) : <p className="research-empty-inline">今天没有到期任务。</p>}
             </DashboardResourceCard>
             <DashboardResourceCard title="未来七天截止" eyebrow="UPCOMING / DEADLINES">
-              {upcomingTasks.isLoading ? <p className="research-empty-inline">正在读取近期任务…</p> : upcomingTasks.error ? <p className="form-feedback form-feedback-error m-3" role="alert">近期任务读取失败，请打开任务页重试。</p> : upcomingTasks.data?.length ? upcomingTasks.data.slice(0, 5).map((task) => <button className="dashboard-list-row w-full text-left" key={task.id} onClick={() => onNavigate('tasks')} title={`打开任务：${task.title}`} type="button"><span className="status-led" /><span className="min-w-0 flex-1 truncate">{task.title}</span><span className="text-[11px] text-muted-foreground">{formatDate(task.dueAt)}</span></button>) : <p className="research-empty-inline">未来七天没有截止任务。</p>}
+              {upcomingTasks.isLoading ? <p className="research-empty-inline">正在读取近期任务…</p> : upcomingTasks.error ? <div className="m-3"><ErrorState compact error={upcomingTasks.error} onRetry={() => void upcomingTasks.refetch()} retryLabel="重试读取近期任务" /><p className="mt-2 text-xs text-muted-foreground">近期任务读取失败；可在此原地重试，或打开任务页查看完整列表。</p></div> : upcomingTasks.data?.length ? upcomingTasks.data.slice(0, 5).map((task) => <button className="dashboard-list-row w-full text-left" key={task.id} onClick={() => onNavigate('tasks')} title={`打开任务：${task.title}`} type="button"><span className="status-led" /><span className="min-w-0 flex-1 truncate">{task.title}</span><span className="text-[11px] text-muted-foreground">{formatDate(task.dueAt)}</span></button>) : <p className="research-empty-inline">未来七天没有截止任务。</p>}
             </DashboardResourceCard>
             <DashboardResourceCard title="待读文献" eyebrow="LITERATURE / QUEUED">
-              {queuedPapers.isLoading ? <p className="research-empty-inline">正在读取待读文献…</p> : queuedPapers.error ? <p className="form-feedback form-feedback-error m-3" role="alert">待读文献读取失败，请打开文献检索页重试。</p> : queuedPapers.data?.length ? queuedPapers.data.slice(0, 5).map((paper) => <button className="dashboard-list-row w-full text-left" key={paper.id} onClick={() => onNavigate('literature')} title={`打开文献：${paper.title}`} type="button"><BookOpenText aria-hidden="true" className="size-3.5 text-primary" /><span className="min-w-0 flex-1 truncate">{paper.title}</span><span className="research-tag">待精读</span></button>) : <p className="research-empty-inline">暂无待读文献。可在文献检索结果中点击“加入待读”，系统会创建本地 Paper 并在这里显示。</p>}
+              {queuedPapers.isLoading ? <p className="research-empty-inline">正在读取待读文献…</p> : queuedPapers.error ? <div className="m-3"><ErrorState compact error={queuedPapers.error} onRetry={() => void queuedPapers.refetch()} retryLabel="重试读取待读文献" /><p className="mt-2 text-xs text-muted-foreground">待读文献读取失败；可在此原地重试，或打开文献检索页继续。</p></div> : queuedPapers.data?.length ? queuedPapers.data.slice(0, 5).map((paper) => <button className="dashboard-list-row w-full text-left" key={paper.id} onClick={() => onNavigate('literature')} title={`打开文献：${paper.title}`} type="button"><BookOpenText aria-hidden="true" className="size-3.5 text-primary" /><span className="min-w-0 flex-1 truncate">{paper.title}</span><span className="research-tag">{PAPER_READ_STATUS_LABELS[paper.status]}</span></button>) : <p className="research-empty-inline">暂无待读文献。可在文献检索结果中点击“加入待读”，系统会创建本地 Paper 并在这里显示。</p>}
             </DashboardResourceCard>
-            <DashboardResourceCard title="最近科研产物" eyebrow="ARTIFACTS / RECENT">
-              {recentArtifacts.isLoading ? <p className="research-empty-inline">正在读取科研产物…</p> : recentArtifacts.error ? <p className="form-feedback form-feedback-error m-3" role="alert">科研产物读取失败，请稍后重试。</p> : recentArtifacts.data?.length ? recentArtifacts.data.slice(0, 5).map((artifact) => <button className="dashboard-list-row w-full text-left" key={artifact.id} onClick={() => artifact.projectId ? onOpenBoard(artifact.projectId) : onNavigate('project')} title="打开科研产物所属项目" type="button"><FileStack aria-hidden="true" className="size-3.5 text-primary" /><span className="min-w-0 flex-1 truncate">{artifact.title}</span><span className="text-[11px] text-muted-foreground">{formatDate(artifact.updatedAt)}</span></button>) : <p className="research-empty-inline">尚无科研产物。完成一次 Agent 运行或手动创建产物后会出现在这里。</p>}
-            </DashboardResourceCard>
-            <DashboardResourceCard title="Agent 收件箱" eyebrow="AGENT / INBOX">
-              {agentInbox.isLoading ? <p className="research-empty-inline">正在读取 Agent 收件箱…</p> : agentInbox.error ? <p className="form-feedback form-feedback-error m-3" role="alert">Agent 收件箱读取失败，请打开 Agent 页重试。</p> : agentInbox.data?.length ? agentInbox.data.slice(0, 5).map((item) => <button className="dashboard-list-row w-full text-left" key={item.id} onClick={() => onNavigate('agent')} title="打开 Agent 收件箱" type="button"><Inbox aria-hidden="true" className="size-3.5 text-primary" /><span className="min-w-0 flex-1 truncate">{item.title}</span><span className="research-tag">{item.kind === 'failure' ? '失败' : '未读'}</span></button>) : <p className="research-empty-inline">暂无未读 Agent 结果。完成一次 Agent 运行后，摘要、产物或失败通知会出现在这里。</p>}
+            <DashboardResourceCard meta={inboxCountLabel} title="Agent 收件箱" eyebrow="AGENT / INBOX">
+              {agentInbox.isLoading ? <p className="research-empty-inline">正在读取 Agent 收件箱…</p> : agentInbox.error ? <div className="m-3"><ErrorState compact error={agentInbox.error} onRetry={() => void agentInbox.refetch()} retryLabel="重试读取 Agent 收件箱" /><p className="mt-2 text-xs text-muted-foreground">Agent 收件箱读取失败；可在此原地重试，或打开 Agent 页查看。</p></div> : inboxRows.length ? <>
+                {inboxRows.slice(0, 5).map(({ item, source }) => <DashboardRecordRow
+                  icon={<Inbox aria-hidden="true" className="size-3.5 text-primary" />}
+                  key={item.id}
+                  meta={`${INBOX_KIND_LABELS[item.kind]} · ${inboxReadLabel(item.read)} · ${formatDate(item.createdAt)}`}
+                  onClick={() => onNavigate('agent')}
+                  openTitle={`打开 Agent 收件箱：${item.title}`}
+                  source={summarizePushSource(source, formatDate)}
+                  summary={firstMeaningfulLine(item.body)}
+                  title={item.title}
+                />)}
+                {inboxJoin.unmatchedNote ? <p className="research-empty-inline" data-inbox-unmatched-note="true">{inboxJoin.unmatchedNote}</p> : null}
+              </> : <p className="research-empty-inline">{inboxCardEmptyText(pushLedger.entries.length)}</p>}
             </DashboardResourceCard>
           </section>
         </>
@@ -197,8 +230,43 @@ export function OverviewPage({
   )
 }
 
-function DashboardResourceCard({ eyebrow, title, children }: { eyebrow: string; title: string; children: ReactNode }): React.JSX.Element {
-  return <section className="research-panel"><header className="research-panel-header"><p className="instrument-label">{eyebrow}</p><h2 className="mt-0.5 text-sm font-bold text-foreground">{title}</h2></header><div className="divide-y divide-border">{children}</div></section>
+function DashboardResourceCard({ eyebrow, title, meta, children }: { eyebrow: string; title: string; meta?: string; children: ReactNode }): React.JSX.Element {
+  return <section className="research-panel"><header className="research-panel-header"><div className="flex items-start justify-between gap-3"><div><p className="instrument-label">{eyebrow}</p><h2 className="mt-0.5 text-sm font-bold text-foreground">{title}</h2></div>{meta ? <span className="research-tag">{meta}</span> : null}</div></header><div className="divide-y divide-border">{children}</div></section>
+}
+
+/**
+ * One artifact / inbox row: real title, contract-derived meta, the record's own
+ * bounded summary and the push-ledger source line. `data-source-kind` marks
+ * whether the row was matched to a scheduled run, so a test can prove that no
+ * row ever renders an invented status or path.
+ */
+function DashboardRecordRow({ icon, title, meta, summary, source, openTitle, onClick }: {
+  icon: ReactNode
+  title: string
+  meta: string
+  summary: string
+  source: DashboardSourceSummary
+  openTitle: string
+  onClick: () => void
+}): React.JSX.Element {
+  return (
+    <button
+      className="dashboard-record-row w-full text-left"
+      data-source-kind={source.matched ? 'push' : 'none'}
+      onClick={onClick}
+      title={openTitle}
+      type="button"
+    >
+      <span className="dashboard-record-icon">{icon}</span>
+      <span className="min-w-0 flex-1">
+        <span className="dashboard-record-title">{title}</span>
+        <span className="dashboard-record-meta">{meta}</span>
+        {summary ? <span className="dashboard-record-summary">{summary}</span> : null}
+        <span className={cn('dashboard-record-source', !source.matched && 'dashboard-record-source-unmatched')}>{source.headline}</span>
+        {source.details.map((detail) => <span className="dashboard-record-detail" key={detail}>{detail}</span>)}
+      </span>
+    </button>
+  )
 }
 
 /* Legacy list renderer retained only for backwards-compatible imports; App routes to TaskWorkspacePage. */

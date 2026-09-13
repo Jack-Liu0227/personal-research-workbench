@@ -1,11 +1,13 @@
-import { ArrowUp, Bot, Check, ChevronDown, Clock3, FolderOpen, MessageSquare, PanelLeftClose, PanelLeftOpen, Plus, Sparkles, Square, Trash2 } from 'lucide-react'
+import { ArrowUp, Bot, Check, ChevronDown, Clock3, ExternalLink, FolderOpen, MessageSquare, PanelLeftClose, PanelLeftOpen, Plus, Sparkles, Square, Trash2 } from 'lucide-react'
 import { useEffect, useMemo, useRef, useState } from 'react'
-import type { AgentConversation, AgentConversationArchiveItem, AgentPermissionMode, AgentRunRecord, AgentRunRecordEntry, AgentRuntimeKind, Project } from '@prw/contracts'
-import { ProjectIdSchema } from '@prw/contracts'
+import type { AgentConversation, AgentConnector, AgentCredentialProvider, AgentCredentialSaveInput, AgentEventRecord, AgentPermissionMode, AgentRunRecord, AgentRunRecordEntry, AgentRuntimeKind, ArchiveBulkLock, ArchiveBulkResult, Project } from '@prw/contracts'
+import { agentCredentialProviders, ProjectIdSchema } from '@prw/contracts'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { Button, Input, Textarea } from '../../components/ui'
+import { ArchiveReceiptList, SelectionBar, receiptResultFrom } from '../../components/selection'
 import { InlineLoadingState, PanelSkeleton } from '../../components/states'
 import { cn } from '../../lib/utils'
+import { useDefaultProjectId } from '../../lib/recent-project'
 import { getWorkbenchAgentApi } from '../../lib/workbench'
 import { ResearchTabs } from '../research/shared'
 import { ConversationView } from './conversation-view'
@@ -25,6 +27,38 @@ const promptExamples = [
 ]
 const trajectoryPageSize = 300
 
+/** Delivery outcome of a scheduled run, read from the coarse run events. */
+type DeliveryStatus =
+  | { readonly state: 'written'; readonly relativePath: string | null; readonly artifactId: string | null }
+  | { readonly state: 'skipped'; readonly reason: string | null; readonly message: string; readonly artifactId: string | null }
+
+/**
+ * The daily push reports its Obsidian projection as a coarse run event
+ * (`OBSIDIAN_DAILY_NOTE_WRITTEN` / `OBSIDIAN_DAILY_NOTE_SKIPPED`). Reading the
+ * newest one keeps the "did today's article actually land, and where" answer on
+ * the run page instead of only inside the ledger detail text.
+ */
+function readDeliveryStatus(events: readonly AgentEventRecord[]): DeliveryStatus | null {
+  for (const event of [...events].reverse()) {
+    if (event.kind !== 'progress') continue
+    const payload = event.payload && typeof event.payload === 'object' ? event.payload as Record<string, unknown> : null
+    const code = typeof payload?.['code'] === 'string' ? payload['code'] : null
+    const artifactId = typeof payload?.['artifactId'] === 'string' ? payload['artifactId'] : null
+    if (code === 'OBSIDIAN_DAILY_NOTE_WRITTEN') {
+      return { state: 'written', relativePath: typeof payload?.['relativePath'] === 'string' ? payload['relativePath'] : null, artifactId }
+    }
+    if (code === 'OBSIDIAN_DAILY_NOTE_SKIPPED') {
+      return {
+        state: 'skipped',
+        reason: typeof payload?.['reason'] === 'string' ? payload['reason'] : null,
+        message: typeof payload?.['message'] === 'string' ? payload['message'] : 'Obsidian 每日推送未写入。',
+        artifactId
+      }
+    }
+  }
+  return null
+}
+
 type AgentView = 'conversation' | 'trajectory'
 type HistoryFilter = 'all' | 'codex' | 'pi' | 'project'
 
@@ -36,7 +70,7 @@ function readStoredView(): AgentView {
   try { return localStorage.getItem('workbench-agent-view') === 'trajectory' ? 'trajectory' : 'conversation' } catch { return 'conversation' }
 }
 
-export function AgentPage({ projects }: { projects: Project[] }): React.JSX.Element {
+export function AgentPage({ projects, onNavigate }: { projects: Project[]; onNavigate?: (view: 'dashboard' | 'tasks' | 'agent' | 'automation', openInNewTab?: boolean) => void }): React.JSX.Element {
   const queryClient = useQueryClient()
   const [view, setView] = useState<AgentView>(readStoredView)
   const [runtime, setRuntime] = useState<AgentRuntimeKind>('codex')
@@ -44,12 +78,20 @@ export function AgentPage({ projects }: { projects: Project[] }): React.JSX.Elem
   const [thinking, setThinking] = useState('')
   const [assistantKey, setAssistantKey] = useState('researcher')
   const [permissionMode, setPermissionMode] = useState<AgentPermissionMode>('read-only')
-  const [projectId, setProjectId] = useState('')
+  // A new conversation starts in the most recently used project, while
+  // 未分类 stays an explicit, remembered choice.
+  const { chooseProjectId, projectId, setProjectId } = useDefaultProjectId(projects)
   const [conversationId, setConversationId] = useState<string | null>(null)
   const [instructions, setInstructions] = useState('')
   const [feedback, setFeedback] = useState('')
   const [historyFilter, setHistoryFilter] = useState<HistoryFilter>('all')
   const [selectedHistoryIds, setSelectedHistoryIds] = useState<Set<string>>(new Set())
+  // Per-record receipt of the last delete command, plus the labels it renders.
+  // A deleted conversation leaves the list on the next refetch, so its name has
+  // to be snapshotted when the command is submitted or the receipt would only
+  // show an opaque id for the row it just removed.
+  const [historyReceipt, setHistoryReceipt] = useState<ArchiveBulkResult | null>(null)
+  const historyReceiptLabels = useRef<Map<string, string>>(new Map())
   const [historyCollapsed, setHistoryCollapsed] = useState(() => readStoredBoolean('workbench-agent-history-collapsed'))
   const [activeRun, setActiveRun] = useState<AgentRunRecord | null>(null)
   // Streaming overlay. The ledger queries stay the durable projection; pushed
@@ -58,6 +100,12 @@ export function AgentPage({ projects }: { projects: Project[] }): React.JSX.Elem
   const [realtime, setRealtime] = useState<RealtimeState>('unsupported')
   const [earlierRecords, setEarlierRecords] = useState<AgentRunRecordEntry[]>([])
   const [loadingEarlier, setLoadingEarlier] = useState(false)
+  // App-owned runtime credential. Only the non-secret status ever reaches the
+  // renderer; the key is written straight through to Main's safeStorage vault.
+  const [credentialRuntime, setCredentialRuntime] = useState<AgentRuntimeKind>('codex')
+  const [credentialProvider, setCredentialProvider] = useState<AgentCredentialProvider>('openai')
+  const [credentialSecret, setCredentialSecret] = useState('')
+  const [credentialFeedback, setCredentialFeedback] = useState('')
   const recordsEndRef = useRef<HTMLDivElement | null>(null)
 
   useEffect(() => {
@@ -88,6 +136,17 @@ export function AgentPage({ projects }: { projects: Project[] }): React.JSX.Elem
     if (!projectId) return filtered
     return filtered.filter((item) => item.projectId === projectId || item.id === conversationId)
   }, [conversationId, conversations.data, historyFilter, projectId])
+  // Switching the history filter (or the project scope) changes what 全选 can
+  // reach, so the selection follows the visible set instead of keeping hidden
+  // ids that the count and 删除选中 would no longer act on.
+  useEffect(() => {
+    setSelectedHistoryIds((current) => {
+      if (current.size === 0) return current
+      const visible = new Set(visibleConversations.map((conversation) => conversation.id))
+      const next = new Set([...current].filter((id) => visible.has(id)))
+      return next.size === current.size ? current : next
+    })
+  }, [visibleConversations])
   const groupedConversations = useMemo(() => groupConversations(visibleConversations), [visibleConversations])
   const runs = useQuery({
     queryKey: ['agent-runs', conversationId],
@@ -132,6 +191,38 @@ export function AgentPage({ projects }: { projects: Project[] }): React.JSX.Elem
     refetchInterval: false,
     refetchOnMount: false,
     placeholderData: (previous) => previous
+  })
+  // Delivery status of the latest run. The run page has to answer "was today's
+  // push written to the Vault, and under which relative path" without opening
+  // the trajectory or the database, so the coarse events are projected here.
+  const runEvents = useQuery({
+    queryKey: ['agent-run-events', latestRunId],
+    queryFn: () => getWorkbenchAgentApi().runs.eventsPage({ runId: latestRunId!, afterSeq: 0, limit: 500 }),
+    enabled: Boolean(latestRunId),
+    refetchInterval: latestRunId && isRunActive ? 2_000 : false,
+    placeholderData: (previous) => previous
+  })
+  const delivery = useMemo(() => readDeliveryStatus(runEvents.data ?? []), [runEvents.data])
+  const credentials = useQuery({
+    queryKey: ['agent-credentials'],
+    queryFn: () => getWorkbenchAgentApi().credentials.status(),
+    staleTime: 30_000,
+    placeholderData: (previous) => previous
+  })
+  const activeCredential = credentials.data?.find((entry) => entry.runtime === credentialRuntime) ?? null
+  const credentialChoices = agentCredentialProviders(credentialRuntime)
+  const saveCredentialMutation = useMutation({
+    mutationFn: (input: AgentCredentialSaveInput) => getWorkbenchAgentApi().credentials.save(input),
+    onSuccess: (statuses, input) => {
+      queryClient.setQueryData(['agent-credentials'], statuses)
+      setCredentialSecret('')
+      setCredentialFeedback(
+        input.apiKey
+          ? `已保存 ${runtimeLabels[input.runtime]} 的运行凭据；仅 Main 可解密，注入 ${statuses.find((entry) => entry.runtime === input.runtime)?.envVar ?? 'CLI 环境变量'}。`
+          : `已清除 ${runtimeLabels[input.runtime]} 的运行凭据。`
+      )
+    },
+    onError: (error) => setCredentialFeedback(error instanceof Error ? error.message : '凭据保存失败。')
   })
   const activeConnector = connectors.data?.find((connector) => connector.runtime === runtime)
   const localPermission = formatLocalPermission(runtime, activeConnector?.localPermission)
@@ -232,7 +323,7 @@ export function AgentPage({ projects }: { projects: Project[] }): React.JSX.Elem
         activeConversation = await getWorkbenchAgentApi().conversations.create({ projectId: projectId ? ProjectIdSchema.parse(projectId) : null, title: text.slice(0, 60), runtime, model: selectedModel, assistantKey: assistantKey.trim() || 'researcher', toolProfile: permissionMode === 'read-only' ? 'read-only' : 'approved-write', permissionMode, approvalPolicy: permissionMode === 'full-access' ? 'never' : 'on-request' })
       }
       setConversationId(activeConversation.id)
-      const run = await getWorkbenchAgentApi().runs.start({ jobId: null, conversationId: activeConversation.id, runtime, model: selectedModel, thinking: thinking.trim() || null, workflowKey: 'research_plan', projectId: activeConversation.projectId, paperIds: [], instructions: text, toolProfile: permissionMode === 'read-only' ? 'read-only' : 'approved-write', permissionMode, approvalPolicy: permissionMode === 'full-access' ? 'never' : 'on-request', idempotencyKey: null })
+      const run = await getWorkbenchAgentApi().runs.start({ jobId: null, conversationId: activeConversation.id, runtime, model: selectedModel, thinking: thinking.trim() || null, workflowKey: 'research_plan', skillKey: null, projectId: activeConversation.projectId, paperIds: [], instructions: text, toolProfile: permissionMode === 'read-only' ? 'read-only' : 'approved-write', permissionMode, approvalPolicy: permissionMode === 'full-access' ? 'never' : 'on-request', idempotencyKey: null, resumeFromRunId: null })
       setActiveRun(run)
       return run
     },
@@ -246,47 +337,46 @@ export function AgentPage({ projects }: { projects: Project[] }): React.JSX.Elem
     },
     onError: (error) => setFeedback(error instanceof Error ? error.message : 'Agent 启动失败。')
   })
-  const archiveMutation = useMutation({
-    mutationFn: (conversation: AgentConversation) => getWorkbenchAgentApi().conversations.archive(conversation.id, conversation.revision),
-    onMutate: async (conversation) => {
-      await queryClient.cancelQueries({ queryKey: ['agent-conversations'] })
-      const previous = queryClient.getQueryData<AgentConversation[]>(['agent-conversations'])
-      queryClient.setQueryData<AgentConversation[]>(['agent-conversations'], (current) =>
-        (current ?? []).filter((item) => item.id !== conversation.id))
-      return { previous }
+  // --- Conversation history record removal --------------------------------
+  // “删除” is a revision-checked soft archive of the conversation *record*: the
+  // conversation leaves the history rail while its messages and every
+  // associated `agent_runs` / `agent_events` row stay readable in the local
+  // database, and no credential or external data is touched. Both the row action
+  // and the bulk action report their own per-record outcome, so a stale
+  // selection is never shown as deleted.
+  /** Apply one delete command's per-record truth to the list: only the records
+   * the command actually archived leave the cache. A conflict / failed / skipped
+   * row stays visible until the refetch shows its real state. */
+  const applyConversationRemoval = async (result: ArchiveBulkResult, label: string): Promise<void> => {
+    const removedIds = new Set(result.items.filter((item) => item.outcome === 'succeeded').map((item) => item.id))
+    if (conversationId && removedIds.has(conversationId)) createConversation()
+    setSelectedHistoryIds((current) => {
+      const next = new Set(current)
+      removedIds.forEach((id) => next.delete(id))
+      return next
+    })
+    queryClient.setQueryData<AgentConversation[]>(['agent-conversations'], (current) =>
+      (current ?? []).filter((item) => !removedIds.has(item.id)))
+    setFeedback(result.conflict > 0 || result.failed > 0
+      ? `${label}：已删除 ${result.succeeded} 个，跳过 ${result.skipped} 个，修订冲突 ${result.conflict} 个，失败 ${result.failed} 个；冲突或失败的对话未改动，请刷新后重试。`
+      : `${label}：已删除 ${result.succeeded} 个${result.skipped > 0 ? `，跳过 ${result.skipped} 个（已不在历史中）` : ''}；记录已从历史列表移除，本机数据库中的 runs、事件与消息仍然保留。`)
+    await queryClient.invalidateQueries({ queryKey: ['agent-conversations'] })
+  }
+  const removeConversationMutation = useMutation({
+    mutationFn: (conversation: AgentConversation) => removeConversationRecords([{ id: conversation.id, expectedRevision: conversation.revision }]),
+    onSuccess: async (result, conversation) => {
+      setHistoryReceipt(result)
+      await applyConversationRemoval(result, `删除对话“${safeDisplayTitle(conversation.title)}”`)
     },
-    onSettled: () => { void queryClient.invalidateQueries({ queryKey: ['agent-conversations'] }) },
-    onSuccess: (_value, conversation) => {
-      if (conversation.id === conversationId) createConversation()
-      setSelectedHistoryIds((current) => { const next = new Set(current); next.delete(conversation.id); return next })
-      setFeedback('对话已删除。')
-      void queryClient.invalidateQueries({ queryKey: ['agent-conversations'] })
-    },
-    onError: (error) => setFeedback(error instanceof Error ? error.message : '删除对话失败。')
+    onError: (error) => { setHistoryReceipt(null); setFeedback(error instanceof Error ? error.message : '删除对话失败。') }
   })
-  const archiveManyMutation = useMutation({
-    mutationFn: archiveConversationItems,
-    onMutate: async (items) => {
-      await queryClient.cancelQueries({ queryKey: ['agent-conversations'] })
-      const previous = queryClient.getQueryData<AgentConversation[]>(['agent-conversations'])
-      const ids = new Set(items.map((item) => item.conversationId))
-      queryClient.setQueryData<AgentConversation[]>(['agent-conversations'], (current) =>
-        (current ?? []).filter((item) => !ids.has(item.id)))
-      return { previous }
+  const removeConversationsMutation = useMutation({
+    mutationFn: (locks: ArchiveBulkLock[]) => removeConversationRecords(locks),
+    onSuccess: async (result) => {
+      setHistoryReceipt(result)
+      await applyConversationRemoval(result, `删除选中的 ${result.items.length} 个对话`)
     },
-    onSettled: () => { void queryClient.invalidateQueries({ queryKey: ['agent-conversations'] }) },
-    onSuccess: (_value, items) => {
-      const archivedIds = new Set(items.map((item) => item.conversationId))
-      if (conversationId && archivedIds.has(conversationId)) createConversation()
-      setSelectedHistoryIds((current) => {
-        const next = new Set(current)
-        archivedIds.forEach((id) => next.delete(id))
-        return next
-      })
-      setFeedback(`已删除 ${items.length} 个对话。`)
-      void queryClient.invalidateQueries({ queryKey: ['agent-conversations'] })
-    },
-    onError: (error) => setFeedback(error instanceof Error ? error.message : '批量删除对话失败，未应用任何更改。')
+    onError: (error) => { setHistoryReceipt(null); setFeedback(error instanceof Error ? error.message : '批量删除对话失败，未应用任何更改。') }
   })
 
   const selectRuntime = (next: AgentRuntimeKind) => {
@@ -355,17 +445,34 @@ export function AgentPage({ projects }: { projects: Project[] }): React.JSX.Elem
       return new Set(visibleIds)
     })
   }
-  const archiveSelectedConversations = () => {
-    if (archiveManyMutation.isPending) return
-    const items = visibleConversations
-      .filter((conversation) => selectedHistoryIds.has(conversation.id))
-      .map((conversation) => ({ conversationId: conversation.id, expectedRevision: conversation.revision }))
-    if (items.length === 0) return
-    if (window.confirm(`确认删除选中的 ${items.length} 个对话吗？此操作会从当前历史中移除。`)) archiveManyMutation.mutate(items)
+  /** One receipt row as the user names it, surviving the refetch that removes
+   * the row from the list. */
+  const describeHistoryReceipt = (id: string): string => {
+    const conversation = visibleConversations.find((candidate) => candidate.id === id)
+    return conversation ? safeDisplayTitle(conversation.title) : historyReceiptLabels.current.get(id) ?? '该对话（已不在当前列表）'
   }
-  const archiveConversation = (conversation: AgentConversation) => {
-    if (archiveMutation.isPending || archiveManyMutation.isPending) return
-    if (window.confirm(`确认删除对话“${safeDisplayTitle(conversation.title)}”吗？此操作不可撤销。`)) archiveMutation.mutate(conversation)
+  const deleteSelectedConversations = () => {
+    if (removeConversationsMutation.isPending || removeConversationMutation.isPending) return
+    const selected = visibleConversations.filter((conversation) => selectedHistoryIds.has(conversation.id))
+    if (selected.length === 0) return
+    const names = selected.map((conversation) => safeDisplayTitle(conversation.title)).join('、')
+    const confirmed = window.confirm([
+      `将删除选中的 ${selected.length} 个对话（当前筛选下共 ${visibleConversations.length} 个）：${names}。`,
+      '删除范围仅限对话历史列表；本机数据库保留对话记录、runs、事件与消息（软归档，不做级联删除），凭据与外部数据不会被改动。',
+      '其中已被其他操作更新过、或仍有运行中 Agent 运行的对话会以“修订冲突/失败”逐条回报且不会被删除。确认继续？'
+    ].join('\n'))
+    if (!confirmed) return
+    historyReceiptLabels.current = new Map(selected.map((conversation) => [conversation.id, safeDisplayTitle(conversation.title)]))
+    setHistoryReceipt(null)
+    removeConversationsMutation.mutate(selected.map((conversation) => ({ id: conversation.id, expectedRevision: conversation.revision })))
+  }
+  const deleteConversation = (conversation: AgentConversation) => {
+    if (removeConversationMutation.isPending || removeConversationsMutation.isPending) return
+    const confirmed = window.confirm(`确认删除对话“${safeDisplayTitle(conversation.title)}”？删除只是从历史列表移除（软归档）：本机数据库保留该对话及其 runs、事件与消息，凭据与外部数据不受影响。`)
+    if (!confirmed) return
+    historyReceiptLabels.current = new Map([[conversation.id, safeDisplayTitle(conversation.title)]])
+    setHistoryReceipt(null)
+    removeConversationMutation.mutate(conversation)
   }
 
   return <div className={cn('agent-thread-shell', historyCollapsed && 'agent-thread-shell-history-collapsed')}>
@@ -380,9 +487,25 @@ export function AgentPage({ projects }: { projects: Project[] }): React.JSX.Elem
         {([['all', '全部'], ['codex', 'Codex'], ['pi', 'Pi'], ['project', '项目']] as const).map(([value, label]) => <button aria-selected={historyFilter === value} className={cn('agent-history-filter', historyFilter === value && 'agent-history-filter-active')} key={value} onClick={() => setHistoryFilter(value)} role="tab" type="button">{label}</button>)}
       </div>
       <div className="agent-history-list">
-        {visibleConversations.length > 0 ? <div className="agent-history-selection-bar"><label className="agent-history-select-all"><input aria-label="全选当前对话" checked={visibleConversations.every((conversation) => selectedHistoryIds.has(conversation.id))} onChange={selectAllVisibleHistory} type="checkbox" />{selectedHistoryIds.size > 0 ? <span>已选 {selectedHistoryIds.size}</span> : <span>全选</span>}</label>{selectedHistoryIds.size > 0 ? <button aria-label={`删除选中的 ${selectedHistoryIds.size} 个对话`} className="agent-history-bulk-delete" disabled={archiveManyMutation.isPending} onClick={archiveSelectedConversations} type="button"><Trash2 aria-hidden="true" className="size-3.5" /><span>{archiveManyMutation.isPending ? '删除中…' : '删除选中'}</span></button> : null}</div> : null}
+        {visibleConversations.length > 0 ? <div className="agent-history-selection-bar">
+          <SelectionBar
+            allSelected={visibleConversations.length > 0 && visibleConversations.every((conversation) => selectedHistoryIds.has(conversation.id))}
+            className="selection-bar-compact"
+            indeterminate={visibleConversations.some((conversation) => selectedHistoryIds.has(conversation.id))}
+            label="对话历史选择"
+            onClear={() => setSelectedHistoryIds(new Set())}
+            onToggleAll={selectAllVisibleHistory}
+            scope={`范围：${{ all: '全部', codex: 'Codex', pi: 'Pi', project: '项目' }[historyFilter]}筛选下的 ${visibleConversations.length} 个对话；切换筛选会清除已隐藏的已选对话`}
+            selectAllLabel="全选当前对话"
+            selectedCount={selectedHistoryIds.size}
+            totalCount={visibleConversations.length}
+          >
+            <button aria-label={`删除选中的 ${selectedHistoryIds.size} 个对话`} className="agent-history-bulk-delete" disabled={selectedHistoryIds.size === 0 || removeConversationsMutation.isPending} onClick={deleteSelectedConversations} type="button"><Trash2 aria-hidden="true" className="size-3.5" /><span>{removeConversationsMutation.isPending ? '删除中…' : '删除选中'}</span></button>
+          </SelectionBar>
+        </div> : null}
+        {historyReceipt ? <ArchiveReceiptList className="agent-history-receipt m-3" describe={describeHistoryReceipt} result={historyReceipt} succeededVerb="已删除" /> : null}
         {conversations.isLoading ? <PanelSkeleton lines={6} /> : null}
-        {!conversations.isLoading && visibleConversations.length === 0 ? <p className="agent-history-empty">还没有对话。<br />从右侧输入框开始一次新的 Agent 任务。</p> : null}
+        {!conversations.isLoading && visibleConversations.length === 0 ? <p className="agent-history-empty">{(conversations.data ?? []).length > 0 ? <>当前筛选或项目范围内没有对话。<br />切换筛选或项目后可看到其他历史。</> : <>还没有对话。<br />从右侧输入框开始一次新的 Agent 任务。</>}</p> : null}
         {Object.entries(groupedConversations).map(([group, items]) => <div className="agent-history-group" key={group}>
           <p className="agent-history-group-label">{group}</p>
           {items.map((conversation) => <div className={cn('agent-history-item-wrap', conversation.id === conversationId && 'agent-history-item-wrap-active')} key={conversation.id}>
@@ -392,7 +515,7 @@ export function AgentPage({ projects }: { projects: Project[] }): React.JSX.Elem
               <span className="agent-history-item-copy"><strong>{safeDisplayTitle(conversation.title)}</strong><span>{runtimeLabels[conversation.runtime]} · {formatConversationDate(conversation.updatedAt)}</span></span>
               <span className={cn('agent-history-status', `agent-history-status-${conversation.status}`)} title={conversationStatusLabel(conversation.status)} />
             </button>
-            <button aria-label={`删除对话：${safeDisplayTitle(conversation.title)}`} className="agent-history-delete" onClick={() => archiveConversation(conversation)} title="删除对话" type="button"><Trash2 aria-hidden="true" className="size-3" /></button>
+            <button aria-label={`删除对话：${safeDisplayTitle(conversation.title)}`} className="agent-history-delete" onClick={() => deleteConversation(conversation)} title="删除对话（软归档，本机记录保留）" type="button"><Trash2 aria-hidden="true" className="size-3" /></button>
           </div>)}
         </div>)}
       </div>
@@ -444,13 +567,37 @@ export function AgentPage({ projects }: { projects: Project[] }): React.JSX.Elem
       </div>
 
       <div className="agent-composer-dock">
+        {delivery ? <DeliveryStrip delivery={delivery} onNavigate={onNavigate} /> : null}
+        <details className="agent-runtime-profile">
+          <summary className="agent-runtime-profile-summary"><span>运行环境与凭据</span><span className="agent-runtime-profile-hint">{activeConnector ? `${activeConnector.available ? '可用' : '不可用'} · ${authSourceLabel(activeConnector)}` : '正在探测…'}</span></summary>
+          <dl className="agent-runtime-profile-grid">
+            <div><dt>运行时</dt><dd>{runtimeLabels[runtime]}</dd></div>
+            <div><dt>版本</dt><dd>{activeConnector?.version ?? '未检测到'}</dd></div>
+            <div><dt>可执行文件</dt><dd className="agent-runtime-profile-path" title={activeConnector?.executablePath ?? undefined}>{activeConnector?.executablePath ?? '未检测到'}</dd></div>
+            <div><dt>Profile</dt><dd>{activeConnector?.profileSource === 'app-isolated' ? `应用隔离${activeConnector.profileLabel ? `（${activeConnector.profileLabel}）` : ''}` : '未确认；不会复用个人 ~/.codex 或 ~/.pi 登录'}</dd></div>
+            <div><dt>审批通道</dt><dd>{activeConnector?.approvalChannel === 'interactive' ? '可交互' : '非交互（批处理，不会伪造确认）'}</dd></div>
+            <div><dt>权限来源</dt><dd>{localPermission}</dd></div>
+          </dl>
+          {activeConnector && !activeConnector.available ? <p className="agent-runtime-profile-warning" role="status">{activeConnector.message || '运行时不可用；请检查安装或在设置中修正路径。'}</p> : null}
+          <div className="agent-credential-form">
+            <p className="agent-credential-lead">运行凭据存放在 Main 的 safeStorage，只在单次 CLI 进程中注入环境变量；页面只显示状态，不回显密钥。</p>
+            <div className="agent-credential-row">
+              <label className="agent-credential-field">运行时<select aria-label="凭据运行时" onChange={(event) => { const next = event.target.value as AgentRuntimeKind; setCredentialRuntime(next); setCredentialProvider(agentCredentialProviders(next)[0]?.provider ?? 'openai') }} value={credentialRuntime}><option value="codex">Codex</option><option value="pi">Pi</option></select></label>
+              <label className="agent-credential-field">Provider<select aria-label="凭据 provider" onChange={(event) => setCredentialProvider(event.target.value as AgentCredentialProvider)} value={credentialProvider}>{credentialChoices.map((choice) => <option key={choice.provider} value={choice.provider}>{choice.label}（{choice.envVar}）</option>)}</select></label>
+              <label className="agent-credential-field">密钥<Input aria-label="凭据密钥" autoComplete="off" onChange={(event) => setCredentialSecret(event.target.value)} placeholder={activeCredential?.credentialPresent ? '已保存；输入新值可替换' : '粘贴 provider API key'} type="password" value={credentialSecret} /></label>
+              <Button disabled={saveCredentialMutation.isPending || credentialSecret.trim().length === 0} onClick={() => saveCredentialMutation.mutate({ runtime: credentialRuntime, provider: credentialProvider, apiKey: credentialSecret })} size="sm" type="button">保存凭据</Button>
+              <Button disabled={saveCredentialMutation.isPending || activeCredential?.credentialPresent !== true} onClick={() => saveCredentialMutation.mutate({ runtime: credentialRuntime, provider: credentialProvider, apiKey: null })} size="sm" type="button" variant="ghost">清除凭据</Button>
+            </div>
+            <p className="agent-credential-status" role="status">{credentials.error ? '凭据状态读取失败；运行将按“无应用凭据”处理。' : activeCredential?.credentialPresent ? `当前：已配置 ${activeCredential.provider}${activeCredential.envVar ? `（注入 ${activeCredential.envVar}）` : ''}` : '当前：未配置应用凭据；不会复用个人 CLI 登录态，也不会伪造凭据。'}{credentialFeedback ? ` ${credentialFeedback}` : ''}</p>
+          </div>
+        </details>
         <StatsRow isRunning={isRunActive} realtime={realtime} stats={stats} />
         <StepStrip isRunning={isRunActive} records={latestRunRecords} />
         {!conversationId && <div className="agent-prompts agent-prompts-above-composer"><p>试试这些指令</p>{promptExamples.map((prompt) => <button key={prompt} onClick={() => setInstructions(prompt)} type="button">{prompt}</button>)}</div>}
         <div className={cn('agent-composer', startMutation.isPending && 'agent-composer-busy')}>
           <Textarea aria-label="发送给 Agent 的消息" className="agent-composer-input" onChange={(event) => setInstructions(event.target.value)} onKeyDown={(event) => { if (event.key === 'Enter' && (event.ctrlKey || event.metaKey)) { event.preventDefault(); send() } }} placeholder="发送消息到工作台 Agent… 输入 / 唤起命令，@ 引用文件，@@ 引用会话，↑/↓ 切换历史消息" value={instructions} />
           <div className="agent-composer-toolbar">
-            <div className="agent-composer-tools"><button aria-label="添加上下文" className="agent-icon-button" title="添加上下文" type="button"><Plus aria-hidden="true" className="size-4" /></button><label className="agent-toolbar-select"><FolderOpen aria-hidden="true" className="size-3.5" /><span className="sr-only">项目</span><select aria-label="在项目中工作" onChange={(event) => setProjectId(event.target.value)} value={projectId}><option value="">在项目中工作</option>{projects.map((project) => <option key={project.id} value={project.id}>{project.name}</option>)}</select></label></div>
+            <div className="agent-composer-tools"><button aria-label="添加上下文" className="agent-icon-button" title="添加上下文" type="button"><Plus aria-hidden="true" className="size-4" /></button><label className="agent-toolbar-select"><FolderOpen aria-hidden="true" className="size-3.5" /><span className="sr-only">项目</span><select aria-label="在项目中工作" onChange={(event) => chooseProjectId(event.target.value)} value={projectId}><option value="">未分类（不绑定项目）</option>{projects.map((project) => <option key={project.id} value={project.id}>{project.name}</option>)}</select></label></div>
             <div className="agent-composer-config"><label className="agent-toolbar-input"><Bot aria-hidden="true" className="size-3.5" /><span className="sr-only">助手</span><Input aria-label="助手" className="agent-inline-input" onChange={(event) => setAssistantKey(event.target.value)} placeholder="researcher" value={assistantKey} /></label>{isRunActive ? <Button aria-label="停止 Agent 运行" className="agent-send-button" disabled={cancelMutation.isPending} loading={cancelMutation.isPending} onClick={stop} size="icon" variant="danger"><Square aria-hidden="true" className="size-4" /></Button> : <Button aria-label="发送" className="agent-send-button" disabled={!instructions.trim()} loading={startMutation.isPending} onClick={send} size="icon" variant="primary"><ArrowUp aria-hidden="true" className="size-4" /></Button>}</div>
           </div>
         </div>
@@ -461,18 +608,60 @@ export function AgentPage({ projects }: { projects: Project[] }): React.JSX.Elem
 }
 
 /**
- * Keep bulk archive usable while an already-open packaged renderer is paired
- * with an older preload. New preloads use the transactional bulk endpoint;
- * older ones only expose the revision-checked single-item operation.
+ * Daily-push delivery strip. It is deliberately a status line, not a second
+ * artifact view: the relative path is the actionable fact, and the two links
+ * open the existing Artifact / inbox surfaces instead of duplicating them here.
  */
-async function archiveConversationItems(items: AgentConversationArchiveItem[]): Promise<void> {
+function DeliveryStrip({ delivery, onNavigate }: { delivery: DeliveryStatus; onNavigate?: ((view: 'dashboard' | 'tasks' | 'agent' | 'automation', openInNewTab?: boolean) => void) | undefined }): React.JSX.Element {
+  const written = delivery.state === 'written'
+  return <div aria-label="每日文献推送投递状态" className={cn('agent-delivery-strip', written ? 'agent-delivery-strip-written' : 'agent-delivery-strip-skipped')} role="status">
+    <span className="agent-delivery-state">{written ? 'OBSIDIAN_DAILY_NOTE_WRITTEN' : 'OBSIDIAN_DAILY_NOTE_SKIPPED'}</span>
+    <span className="agent-delivery-detail">
+      {written
+        ? <><span>已写入 Obsidian</span><code title={delivery.relativePath ?? ''}>{delivery.relativePath ?? '（未返回相对路径）'}</code></>
+        : <><span>未写入 Obsidian{delivery.reason ? `（${delivery.reason}）` : ''}</span><span>{delivery.message}</span></>}
+    </span>
+    {delivery.artifactId && onNavigate
+      ? <span className="agent-delivery-actions">
+        <button onClick={() => onNavigate('dashboard', true)} title={delivery.artifactId} type="button"><ExternalLink aria-hidden="true" className="size-3" />查看科研产物</button>
+        <button onClick={() => onNavigate('dashboard', true)} type="button"><ExternalLink aria-hidden="true" className="size-3" />查看 Agent 收件箱</button>
+      </span>
+      : null}
+  </div>
+}
+
+/**
+ * Delete one row or a whole selection through whichever command the paired
+ * preload exposes, and always return per-record receipts.
+ *
+ * New preloads use the transactional bulk endpoint; an older packaged renderer
+ * paired with a newer preload only exposes the revision-checked single-item
+ * command, and an even older preload only exposes `archive` — the same soft
+ * archive this command performs, so its resolved promise is still a real success
+ * even though no per-record outcome came back.
+ */
+async function removeConversationRecords(items: ArchiveBulkLock[]): Promise<ArchiveBulkResult> {
   const conversations = getWorkbenchAgentApi().conversations
-  const archiveBulk = conversations.archiveBulk as ((items: AgentConversationArchiveItem[]) => Promise<void>) | undefined
-  if (typeof archiveBulk === 'function') {
-    await archiveBulk(items)
-    return
+  const removeBulk = conversations.removeBulk as ((input: ArchiveBulkLock[]) => Promise<ArchiveBulkResult>) | undefined
+  if (typeof removeBulk === 'function') return await removeBulk(items)
+  const receipts: ArchiveBulkResult['items'] = []
+  const removeOne = conversations.remove as ((conversationId: string, expectedRevision: number) => Promise<ArchiveBulkResult['items'][number]>) | undefined
+  for (const item of items) {
+    try {
+      if (typeof removeOne === 'function') receipts.push(await removeOne(item.id, item.expectedRevision))
+      else {
+        await conversations.archive(item.id, item.expectedRevision)
+        receipts.push({ id: item.id, outcome: 'succeeded', error: null })
+      }
+    } catch (error) {
+      receipts.push({
+        id: item.id,
+        outcome: 'failed',
+        error: { code: 'CONVERSATION_REMOVE_FAILED', message: error instanceof Error ? error.message : '删除对话失败。', retryable: true }
+      })
+    }
   }
-  for (const item of items) await conversations.archive(item.conversationId, item.expectedRevision)
+  return receiptResultFrom(receipts)
 }
 
 function groupConversations(conversations: AgentConversation[]): Record<string, AgentConversation[]> {
@@ -524,5 +713,15 @@ function permissionLabel(value: AgentPermissionMode): string {
   if (value === 'read-only') return '只读'
   if (value === 'auto') return '自动批准'
   return '完全访问'
+}
+
+/** Truthful one-line summary of where the runtime's authentication comes from. */
+function authSourceLabel(connector: AgentConnector | undefined): string {
+  switch (connector?.authSource) {
+    case 'app-safeStorage': return '应用 safeStorage 凭据'
+    case 'cli-login': return 'CLI 自身登录（应用隔离 profile）'
+    case 'none': return '无可用凭据'
+    default: return '未探测'
+  }
 }
 

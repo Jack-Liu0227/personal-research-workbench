@@ -50,6 +50,9 @@
 .board-lane { flex: 0 0 20rem; max-width: 22rem; min-width: 17rem; min-height: 0; height: 100%; overflow: hidden; }
 .vault-note-checkbox { opacity: 0; pointer-events: none; transition: opacity .15s ease; }
 .group:hover .vault-note-checkbox, .vault-note-checkbox:focus-visible { opacity: 1; pointer-events: auto; }
+/* Batch mode must expose the file checkboxes without requiring hover, otherwise
+   the tree renders hidden controls that cannot receive a click. */
+.vault-note-checkbox-active { opacity: 1; pointer-events: auto; }
 .markdown-editor { min-height: calc(100vh - 20rem); height: calc(100vh - 20rem); resize: none; }
 [aria-label="Markdown 实时预览"] { min-height: calc(100vh - 20rem); width: 100%; }
 
@@ -788,12 +791,32 @@ select {
 .agent-history-new:focus-visible { box-shadow: 0 0 0 2px var(--ring); }
 .agent-history-list { min-height: 0; flex: 1; overflow-y: auto; padding: 8px; }
 .agent-history-selection-bar { display: flex; min-height: 32px; align-items: center; justify-content: space-between; gap: 7px; border-bottom: 1px solid var(--border); padding: 0 3px 7px; margin-bottom: 5px; }
+/* The history rail is narrow: keep the shared selection bar but let its scope
+   text wrap under the toggle instead of overflowing the sidebar. */
+.selection-bar-compact { gap: 5px; border-bottom: 0; padding: 0; font-size: 10px; }
+.selection-bar-compact .selection-bar-toggle, .selection-bar-compact .selection-bar-count { font-size: 10px; }
+.selection-bar-compact .selection-bar-toggle input { width: 15px; height: 15px; }
+.selection-bar-compact .selection-bar-scope { flex: 1 1 100%; font-size: 10px; }
+.selection-bar-compact .selection-bar-actions { flex: 1 1 100%; justify-content: flex-end; }
+.selection-bar-compact .selection-bar-clear { padding: 3px 6px; }
 .agent-history-select-all { display: inline-flex; min-height: 28px; align-items: center; gap: 6px; cursor: pointer; color: var(--muted-foreground); font-size: 10px; }
 .agent-history-select-all input, .agent-history-checkbox input { width: 15px; height: 15px; cursor: pointer; accent-color: var(--primary); }
 .agent-history-bulk-delete { display: inline-flex; min-height: 28px; cursor: pointer; align-items: center; gap: 5px; border: 1px solid color-mix(in srgb, var(--danger) 28%, var(--border)); border-radius: 6px; background: var(--danger-subtle); padding: 0 7px; color: var(--danger); font-size: 10px; font-weight: 700; }
 .agent-history-bulk-delete:hover, .agent-history-bulk-delete:focus-visible { border-color: var(--danger); background: color-mix(in srgb, var(--danger-subtle) 80%, var(--surface)); }
 .agent-history-bulk-delete:focus-visible { box-shadow: 0 0 0 2px var(--ring); outline: none; }
 .agent-history-bulk-delete:disabled { cursor: wait; opacity: .55; }
+/* Shared multi-select toolbar (components/selection.tsx). Every list states the
+   boundary its "全选" covers and never rounds a mixed selection up to checked. */
+.selection-bar { display: flex; min-height: 32px; flex-wrap: wrap; align-items: center; gap: 8px; border-bottom: 1px solid var(--border); padding: 6px 0; color: var(--muted-foreground); font-size: 11px; }
+.selection-bar-toggle { display: inline-flex; min-height: 28px; flex: none; align-items: center; gap: 6px; cursor: pointer; color: var(--foreground); font-size: 11px; font-weight: 600; }
+.selection-bar-toggle input { width: 15px; height: 15px; cursor: pointer; accent-color: var(--primary); }
+.selection-bar-toggle input:disabled { cursor: not-allowed; opacity: .5; }
+.selection-bar-scope { min-width: 0; flex: 1 1 12rem; line-height: 1.4; }
+.selection-bar-count { flex: none; color: var(--foreground); font-family: "IBM Plex Mono", Consolas, monospace; font-size: 10px; }
+.selection-bar-actions { display: inline-flex; flex: none; flex-wrap: wrap; align-items: center; gap: 6px; }
+.selection-bar-clear { cursor: pointer; border: 1px solid var(--border); border-radius: 6px; background: var(--surface); padding: 4px 8px; color: var(--muted-foreground); font-size: 10px; font-weight: 600; outline: none; }
+.selection-bar-clear:hover, .selection-bar-clear:focus-visible { border-color: var(--primary); color: var(--foreground); }
+.selection-bar-clear:focus-visible { box-shadow: 0 0 0 2px var(--ring); }
 .agent-history-filters { display: flex; gap: 3px; overflow-x: auto; border-bottom: 1px solid var(--border); padding: 7px 8px; scrollbar-width: none; }
 .agent-history-filters::-webkit-scrollbar { display: none; }
 .agent-history-filter { flex: none; cursor: pointer; border: 1px solid transparent; border-radius: 6px; background: transparent; padding: 5px 8px; color: var(--muted-foreground); font-size: 10px; font-weight: 700; outline: none; }
@@ -997,6 +1020,38 @@ select {
 .agent-kind-turn_end { color: var(--muted-foreground); }
 
 .agent-composer-dock { flex: none; border-top: 1px solid var(--border); background: color-mix(in srgb, var(--surface) 90%, var(--background)); padding: 0 clamp(16px, 8vw, 112px) 14px; }
+
+/* Daily literature push delivery status: the WROTE/SKIPPED state of the
+   Obsidian projection, with the relative path and the Artifact/Inbox links. */
+.agent-delivery-strip { display: flex; align-items: center; flex-wrap: wrap; gap: 6px 10px; margin: 0 0 10px; padding: 7px 10px; border: 1px solid var(--border); border-radius: 8px; background: color-mix(in srgb, var(--muted) 55%, var(--surface)); font-size: 11px; line-height: 1.45; }
+.agent-delivery-strip-written { border-color: color-mix(in srgb, var(--primary) 34%, var(--border)); }
+.agent-delivery-strip-skipped { border-color: color-mix(in srgb, var(--accent) 40%, var(--border)); }
+.agent-delivery-state { flex: none; font-family: "IBM Plex Mono", Consolas, monospace; font-size: 10px; letter-spacing: 0.04em; color: var(--muted-foreground); }
+.agent-delivery-detail { display: flex; min-width: 0; flex: 1; flex-wrap: wrap; gap: 4px 8px; color: var(--muted-foreground); }
+.agent-delivery-detail code { min-width: 0; overflow-wrap: anywhere; font-family: "IBM Plex Mono", Consolas, monospace; color: var(--foreground); }
+.agent-delivery-actions { display: flex; flex: none; gap: 4px; }
+.agent-delivery-actions button { display: inline-flex; align-items: center; gap: 4px; padding: 2px 7px; border: 1px solid var(--border); border-radius: 6px; background: var(--surface); color: var(--foreground); font-size: 11px; cursor: pointer; }
+.agent-delivery-actions button:hover { border-color: color-mix(in srgb, var(--primary) 45%, var(--border)); color: var(--primary); }
+.agent-runtime-profile { margin: 0 0 10px; border: 1px solid var(--border); border-radius: 8px; background: color-mix(in srgb, var(--muted) 45%, var(--surface)); font-size: 11px; }
+.agent-runtime-profile-summary { display: flex; cursor: pointer; align-items: center; justify-content: space-between; gap: 8px; padding: 7px 10px; color: var(--foreground); font-weight: 600; outline: none; }
+.agent-runtime-profile-summary:focus-visible { box-shadow: 0 0 0 2px var(--ring); border-radius: 8px; }
+.agent-runtime-profile-hint { color: var(--muted-foreground); font-family: "IBM Plex Mono", Consolas, monospace; font-size: 10px; font-weight: 400; }
+.agent-runtime-profile-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 4px 14px; margin: 0; border-top: 1px solid var(--border); padding: 8px 10px; }
+.agent-runtime-profile-grid > div { display: grid; grid-template-columns: 74px minmax(0, 1fr); gap: 6px; min-width: 0; }
+.agent-runtime-profile-grid dt { color: var(--muted-foreground); }
+.agent-runtime-profile-grid dd { min-width: 0; margin: 0; overflow-wrap: anywhere; color: var(--foreground); }
+.agent-runtime-profile-path { font-family: "IBM Plex Mono", Consolas, monospace; font-size: 10px; }
+.agent-runtime-profile-warning { margin: 0 10px 8px; border-radius: 6px; background: var(--danger-subtle); padding: 5px 8px; color: var(--danger); }
+.agent-credential-form { display: grid; gap: 8px; border-top: 1px solid var(--border); padding: 8px 10px 10px; }
+.agent-credential-lead { margin: 0; color: var(--muted-foreground); line-height: 1.5; }
+.agent-credential-row { display: flex; flex-wrap: wrap; align-items: flex-end; gap: 8px; }
+.agent-credential-field { display: grid; min-width: 150px; gap: 3px; color: var(--muted-foreground); font-size: 10px; }
+.agent-credential-field select,
+.agent-credential-field input { min-width: 150px; font-size: 11px; }
+.agent-credential-status { margin: 0; color: var(--muted-foreground); line-height: 1.5; }
+@media (prefers-reduced-motion: reduce) {
+  .agent-runtime-profile-summary { transition: none; }
+}
 .agent-composer-dock .agent-prompts { width: 100%; margin: 0 0 12px; padding-top: 12px; }
 .agent-composer-dock .agent-prompts button { min-height: 27px; padding-top: 3px; padding-bottom: 3px; }
 .agent-composer-dock .agent-composer-hint { margin-bottom: 0; }
@@ -1182,6 +1237,51 @@ select {
   border-color: color-mix(in srgb, var(--success) 28%, var(--border));
   background: var(--success-subtle);
   color: var(--success);
+}
+
+/* Shared disclosure primitive (see components/ui.tsx). Native button semantics
+ * keep it keyboard-accessible; the panel is only `hidden`, so folded content is
+ * never removed from the DOM or from tests that read textContent. */
+.disclosure {
+  min-width: 0;
+  border-top: 1px solid var(--border);
+}
+.disclosure-summary {
+  display: flex;
+  width: 100%;
+  min-height: 32px;
+  cursor: pointer;
+  align-items: center;
+  gap: 6px;
+  border: 0;
+  background: transparent;
+  padding: 6px 0;
+  color: var(--muted-foreground);
+  font-size: 12px;
+  font-weight: 600;
+  text-align: left;
+  outline: none;
+}
+.disclosure-summary:hover { color: var(--foreground); }
+.disclosure-summary:focus-visible { border-radius: 4px; box-shadow: 0 0 0 2px var(--ring); }
+.disclosure-chevron {
+  flex: none;
+  width: 14px;
+  height: 14px;
+  transition: transform 150ms ease;
+}
+.disclosure-chevron-open { transform: rotate(90deg); }
+.disclosure-title { min-width: 0; }
+.disclosure-hint {
+  margin-left: auto;
+  flex: none;
+  color: var(--muted-foreground);
+  font-size: 11px;
+  font-weight: 400;
+}
+.disclosure-panel { min-width: 0; padding-bottom: 8px; }
+@media (prefers-reduced-motion: reduce) {
+  .disclosure-chevron { transition: none; }
 }
 
 .text-button-danger {
@@ -1885,6 +1985,18 @@ select {
 .research-panel-header { border-bottom: 1px solid var(--border); padding: 14px 16px; }
 .dashboard-list-row { display: flex; min-height: 38px; align-items: center; gap: 8px; padding: 8px 12px; color: var(--foreground); font-size: 12px; }
 .dashboard-list-row:hover { background: var(--primary-subtle); }
+/* Dashboard artifact/inbox rows: multi-line records whose source line is the
+ * push-ledger fact (rule, run status, Obsidian relative path). */
+.dashboard-record-row { display: flex; min-width: 0; gap: 8px; padding: 9px 12px; color: var(--foreground); font-size: 12px; }
+.dashboard-record-row:hover { background: var(--primary-subtle); }
+.dashboard-record-icon { flex: none; padding-top: 2px; }
+.dashboard-record-title { display: block; font-weight: 600; overflow-wrap: anywhere; }
+.dashboard-record-meta,
+.dashboard-record-summary,
+.dashboard-record-source,
+.dashboard-record-detail { display: block; margin-top: 2px; color: var(--muted-foreground); font-size: 11px; line-height: 1.6; overflow-wrap: anywhere; }
+.dashboard-record-source { font-weight: 600; }
+.dashboard-record-source-unmatched { font-weight: 500; font-style: italic; }
 .settings-engine-grid { display: grid; gap: 10px; }
 .settings-engine { display: grid; gap: 4px; border: 1px solid var(--border); border-radius: 6px; background: var(--muted); padding: 11px; color: var(--foreground); }
 .settings-engine p { margin: 0; font-size: 11px; line-height: 1.6; color: var(--muted-foreground); }
@@ -1923,33 +2035,13 @@ select#batch-action option[value="import_zotero"] { display: none; }
 }
 .literature-inspector-panel { min-width: 0; max-width: 100%; overflow: hidden; }
 .literature-search-layout > .literature-inspector-panel {
+  display: flex;
   min-width: 0;
   max-width: 100%;
-  overflow: auto;
+  flex-direction: column;
+  overflow: hidden;
 }
 .literature-inspector-panel { position: relative; }
-.literature-resize-handle {
-  position: absolute;
-  z-index: 3;
-  top: 0;
-  bottom: 0;
-  left: -0.35rem;
-  width: 0.7rem;
-  cursor: col-resize;
-  touch-action: none;
-}
-.literature-resize-handle::after {
-  position: absolute;
-  top: 0;
-  bottom: 0;
-  left: 0.3rem;
-  width: 0.1rem;
-  background: transparent;
-  content: '';
-}
-.literature-resize-handle:hover::after,
-.literature-resize-handle:focus-visible::after,
-.literature-resize-handle-active::after { background: var(--primary); }
 .literature-inspector-panel-collapsed > header { min-height: 100%; height: 100%; flex-wrap: nowrap; justify-content: center; padding: 0.5rem; }
 .literature-inspector-panel-collapsed > header > div:first-child,
 .literature-inspector-panel-collapsed > :not(header) { display: none; }
@@ -2185,7 +2277,7 @@ select#batch-action option[value="import_zotero"] { display: none; }
 .literature-search-layout > .research-panel:not(.literature-search-panel),
 .literature-search-layout > .literature-inspector-panel { min-height: 420px; }
 .literature-search-layout > .research-panel:not(.literature-search-panel) { overflow: hidden; }
-.literature-search-layout > .literature-inspector-panel { position: sticky; top: 12px; max-height: calc(100dvh - 112px); overflow: auto; }
+.literature-search-layout > .literature-inspector-panel { position: sticky; top: 12px; max-height: calc(100dvh - 112px); overflow: hidden; }
 .literature-page .literature-search-layout .research-panel > header { min-height: 56px; padding: 11px 14px; }
 .literature-page .literature-search-layout .paper-row { min-height: 88px; padding: 12px 14px; }
 .literature-page .literature-search-layout .paper-row h3 { font-size: 13px; line-height: 1.35; }
@@ -2193,6 +2285,26 @@ select#batch-action option[value="import_zotero"] { display: none; }
 .literature-paper-actions { display: flex; flex: none; align-items: center; gap: 5px; padding-top: 1px; }
 .literature-paper-actions .literature-impact-badge { order: -2; }
 .literature-paper-failure { color: var(--danger); font-size: 10px; font-weight: 700; white-space: nowrap; }
+/* Shared external-link control (see components/external-link.tsx). It is a real
+ * anchor for platform keyboard/new-window semantics, but activation is
+ * intercepted and forwarded to Main system.openExternal. */
+.external-url-link { display: inline-flex; min-width: 0; align-items: center; gap: 0.3rem; color: var(--primary); }
+.external-url-anchor { display: inline-flex; min-width: 0; align-items: center; gap: 0.3rem; border-radius: 4px; color: inherit; text-decoration: underline; text-underline-offset: 2px; }
+.external-url-anchor:hover { text-decoration-thickness: 2px; }
+.external-url-anchor:focus-visible, .external-url-copy:focus-visible { outline: none; box-shadow: 0 0 0 2px var(--ring); }
+/* The dense result-row trigger keeps its own square icon-button geometry. */
+.literature-paper-icon-button.external-url-anchor { display: grid; place-items: center; text-decoration: none; }
+.external-url-text { overflow: hidden; text-overflow: ellipsis; }
+.external-url-anchor-pdf .external-url-text::after { content: " PDF"; font-weight: 700; }
+.external-url-copy { display: inline-flex; cursor: pointer; align-items: center; gap: 0.2rem; border: 0; border-radius: 4px; background: transparent; padding: 0.1rem 0.25rem; color: var(--muted-foreground); font-size: 10px; }
+.external-url-copy:hover { background: var(--muted); color: var(--foreground); }
+.external-url-status:empty { display: none; }
+.external-url-status { display: inline-flex; align-items: center; gap: 0.2rem; font-size: 10px; line-height: 1.4; }
+.external-url-status-ok { color: var(--muted-foreground); }
+.external-url-status-error { color: var(--danger); font-weight: 600; }
+.external-url-blocked { display: grid; grid-template-columns: auto minmax(0, 1fr) auto; align-items: center; gap: 0.3rem; color: var(--danger); font-size: 10px; }
+.external-url-blocked .external-url-text { text-decoration: line-through; }
+.external-url-blocked-reason { grid-column: 2 / -1; font-weight: 600; }
 .literature-paper-icon-button { display: grid; width: 30px; height: 30px; place-items: center; border-radius: 6px; color: var(--muted-foreground); }
 .literature-paper-icon-button:hover { background: var(--muted); color: var(--foreground); }
 .literature-paper-actions .inline-flex { min-height: 30px; }
@@ -2342,12 +2454,44 @@ select#batch-action option[value="import_zotero"] { display: none; }
 }
 .literature-staging-row { align-items: center; }
 .literature-page .literature-inspector-panel {
+  display: flex;
   height: calc(100dvh - 11.5rem);
   min-height: 0;
   max-height: none;
+  flex-direction: column;
+  overflow: hidden;
+}
+/* Only the content area scrolls, so the preview/confirmation footer stays
+ * visible and reachable no matter how long the paper metadata is. */
+.literature-inspector-scroll {
+  min-height: 0;
+  flex: 1 1 auto;
   overflow-y: auto;
+  overscroll-behavior: contain;
   scrollbar-gutter: stable;
 }
+/* The Inspector column is only `--literature-inspector-ratio` (16%-40%) of the
+ * split, so ~200px wide at the default: the preview/permission copy wraps much
+ * taller than the panel's fixed `calc(100dvh - 11.5rem)`. A non-shrinking
+ * footer then consumes the whole panel and squeezes the metadata scroller above
+ * it to zero height, which is exactly what the long-content contract forbids.
+ * Capping the footer keeps both regions laid out at every pane width; the
+ * overflow it may have left scrolls inside the footer instead. */
+.literature-inspector-footer {
+  flex: none;
+  max-height: 60%;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  scrollbar-gutter: stable;
+  border-top: 1px solid var(--border);
+  background: var(--surface);
+  padding: 0.75rem 0.85rem;
+}
+/* The write-permission row pairs a fixed-width button with a long explanation.
+ * With `flex: 1 1 0` the explanation keeps only the leftover pixels and wraps
+ * into a one-character column (900px tall at the default pane width), which is
+ * what made the footer overflow in the first place. Give it a full line. */
+.literature-inspector-footer .flex-wrap > .flex-1 { flex: 1 1 14rem; }
 .literature-page .literature-inspector-panel-collapsed { min-height: 0; }
 
 /* Inspector follows the reference composition: its own tabs and compact
@@ -2377,6 +2521,13 @@ select#batch-action option[value="import_zotero"] { display: none; }
   font-weight: 700;
 }
 .literature-inspector-tab-active { border-bottom-color: var(--primary); color: var(--primary-strong); }
+/* Tabs that have no implementation yet are disabled instead of pretending to be
+ * interactive, and they say so in their label. */
+.literature-inspector-tab:disabled { cursor: not-allowed; opacity: 0.55; }
+.literature-inspector-tab:disabled:hover { border-bottom-color: transparent; }
+/* An explicit read-only notice for Zotero (for example Zotero 9, which returns
+ * no Zotero-Server-ID): the connection can read but never write. */
+.write-blocked-note { color: color-mix(in srgb, var(--accent) 78%, var(--foreground)); }
 .literature-inspector-paper-head {
   display: grid;
   grid-template-columns: 4rem minmax(0, 1fr);
@@ -2414,10 +2565,11 @@ select#batch-action option[value="import_zotero"] { display: none; }
 .literature-inspector-fields dt,
 .literature-inspector-label { color: var(--muted-foreground); font-size: 10px; }
 .literature-inspector-fields dd { margin: 0.15rem 0 0; overflow-wrap: anywhere; color: var(--foreground); font-size: 11px; line-height: 1.4; }
-.literature-inspector-doi { display: grid; grid-template-columns: auto minmax(0, 1fr) auto; align-items: center; gap: 0.45rem; border-top: 1px solid var(--border); padding: 0.75rem 0.85rem; font-size: 10px; }
+.literature-inspector-doi { display: grid; grid-template-columns: auto minmax(0, 1fr); align-items: center; gap: 0.45rem; border-top: 1px solid var(--border); padding: 0.65rem 0.85rem; font-size: 10px; }
 .literature-inspector-doi > span { color: var(--foreground); font-weight: 700; }
-.literature-inspector-doi > a { overflow: hidden; color: var(--primary); text-overflow: ellipsis; white-space: nowrap; }
-.literature-inspector-doi > button { cursor: pointer; border: 0; background: transparent; color: var(--muted-foreground); font-size: 10px; }
+.literature-inspector-doi .external-url-link { flex-wrap: wrap; }
+.literature-inspector-doi .external-url-status { width: 100%; }
+.literature-inspector-doi-link { overflow: hidden; color: var(--primary); text-overflow: ellipsis; white-space: nowrap; }
 .literature-inspector-zotero-status { display: grid; gap: 0.3rem; margin: 0 0.85rem 0.85rem; border: 1px solid color-mix(in srgb, var(--success) 30%, var(--border)); border-radius: 6px; background: color-mix(in srgb, var(--success-subtle) 62%, var(--surface)); padding: 0.7rem; }
 .literature-inspector-zotero-status strong { color: var(--foreground); font-size: 11px; }
 .literature-inspector-zotero-status span { color: var(--success); font-size: 11px; font-weight: 700; }
@@ -2426,7 +2578,9 @@ select#batch-action option[value="import_zotero"] { display: none; }
 .literature-inspector-zotero-failed span { color: var(--danger); }
 .literature-inspector-body > div:not(.literature-inspector-tabs):not(.literature-inspector-paper-head):not(.literature-inspector-doi):not(.literature-inspector-zotero-status) { padding: 0 0.85rem 0.8rem; }
 .literature-inspector-abstract { margin: 0.3rem 0 0; color: var(--foreground); font-size: 11px; line-height: 1.5; }
-.literature-inspector-url { display: block; margin-top: 0.3rem; overflow-wrap: anywhere; color: var(--primary); font-size: 10px; }
+.literature-inspector-url { display: inline-flex; min-width: 0; align-items: center; gap: 0.3rem; margin-top: 0.3rem; max-width: 100%; overflow-wrap: anywhere; color: var(--primary); font-size: 10px; }
+.literature-inspector-url .external-url-text { white-space: normal; overflow-wrap: anywhere; }
+.zotero-item-link { font-size: 12px; }
 
 /* Keep a successful search acknowledgement out of the document flow so the
  * first page of results remains visible immediately. Errors stay in flow. */
@@ -2456,4 +2610,171 @@ select#batch-action option[value="import_zotero"] { display: none; }
 @media (max-width: 1050px) {
   .literature-page .literature-inspector-panel { margin-top: 0; height: auto; min-height: 24rem; }
   .literature-page .literature-search-layout { grid-template-columns: minmax(0, 1fr); }
+}
+
+/* ---------------------------------------------------------------------------
+ * Task 08 narrow-viewport pass.
+ *
+ * The packaged window clamps to `minWidth: 1080`, so these rules are the
+ * smallest-viewport contract the CSS promises (`max-width: 720px` already
+ * forced the icon rail here) rather than a shipped desktop mode:
+ *  - the sidebar becomes an overlay drawer driven by App.tsx state, so the
+ *    collapse button changes something instead of being a no-op on a rail CSS
+ *    had already collapsed;
+ *  - the topbar keeps every control inside the viewport instead of pushing the
+ *    quick-Todo input and its action off the clipped right edge;
+ *  - the Agent history rail stays reachable instead of being `display: none`.
+ * Keep this block last: it intentionally outranks the earlier shell rules.
+ * ------------------------------------------------------------------------- */
+@media (max-width: 720px) {
+  .topbar {
+    gap: 8px;
+    padding: 0 10px;
+  }
+  .topbar .quick-todo {
+    width: auto;
+    max-width: none;
+    min-width: 0;
+    flex: 1 1 6rem;
+  }
+  .topbar .quick-todo input { min-width: 0; }
+  .topbar .quick-todo button { flex: none; }
+  .global-search { flex: 1 1 6rem; min-width: 0; }
+  .global-search kbd { display: none; }
+  .status-bar { padding: 0 10px; }
+
+  .sidebar-scrim {
+    position: fixed;
+    z-index: 55;
+    inset: 0;
+    cursor: pointer;
+    border: 0;
+    background: color-mix(in srgb, var(--sidebar) 55%, transparent);
+  }
+  .sidebar-narrow-open,
+  .literature-focus-shell > .sidebar-narrow-open {
+    position: fixed;
+    z-index: 60;
+    top: 0;
+    bottom: 0;
+    left: 0;
+    width: min(232px, 84vw);
+    min-width: 0;
+    box-shadow: 0 12px 32px rgb(0 0 0 / 0.35);
+  }
+  .sidebar-narrow-open .sidebar-label,
+  .sidebar-narrow-open .sidebar-heading { display: block; }
+  .sidebar-narrow-open .sidebar-brand {
+    justify-content: flex-start;
+    padding-right: 12px;
+    padding-left: 12px;
+  }
+  .sidebar-narrow-open .nav-item {
+    justify-content: flex-start;
+    padding-right: 8px;
+    padding-left: 8px;
+  }
+  .sidebar-narrow-open .sidebar-scroll { max-height: none; }
+  /* The literature page pins a 200px rail for its focus layout; on a narrow
+   * viewport that leaves almost no width for the workspace itself. */
+  .literature-focus-shell > .sidebar {
+    width: 68px;
+    min-width: 68px;
+  }
+
+  /* The Zotero workspace is a three-column layout with 14rem minimum side
+   * columns (≈480px), which cannot fit a narrow viewport: it used to give the
+   * page its own horizontal scrollbar. Stack it instead. */
+  .zotero-workspace-grid,
+  .zotero-workspace-grid-collections-collapsed,
+  .zotero-workspace-grid-inspector-collapsed,
+  .zotero-workspace-grid-collections-collapsed.zotero-workspace-grid-inspector-collapsed {
+    grid-template-columns: minmax(0, 1fr);
+    min-height: 0;
+  }
+  .zotero-workspace-grid > .research-panel {
+    max-height: none;
+  }
+
+  /* Agent history: keep the 48px rail (with its expand button) and show the
+   * opened panel as an overlay instead of hiding conversations entirely. */
+  .agent-history-panel { display: flex; }
+  .agent-thread-shell { grid-template-columns: 48px minmax(0, 1fr); }
+  .agent-history-panel:not(.agent-history-panel-collapsed) {
+    position: absolute;
+    z-index: 30;
+    inset: 0 auto 0 0;
+    width: min(248px, 84vw);
+    box-shadow: 0 12px 32px rgb(0 0 0 / 0.35);
+  }
+}
+
+/* Composer toolbar: below this width the fixed-width model/assistant inputs
+ * used to poke past the viewport edge and get clipped. */
+@media (max-width: 900px) {
+  .agent-composer-config { min-width: 0; flex: 1 1 auto; overflow-x: auto; }
+  .agent-toolbar-input,
+  .agent-toolbar-select { min-width: 0; flex: 1 1 auto; }
+  .agent-inline-input,
+  .agent-model-input { width: auto; min-width: 0; flex: 1 1 88px; }
+}
+
+/* Embedded panes own no scroll container: the host page stays the only
+ * vertical scroller. */
+.matrix-embedded { min-width: 0; }
+
+/* Literature Zotero entry: state the frozen write capability before any
+ * preview exists, so a read-only connection (Zotero 9) is never presented as a
+ * writable target. Wraps inside the panel instead of widening the action row. */
+.literature-write-status {
+  padding: 8px 16px 0;
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+/* ---------------------------------------------------------------------------
+ * Shared pane resizing (Literature / Obsidian / Zotero).
+ *
+ * The separator is a `role="separator"` window splitter rendered by
+ * `components/resizable-pane.tsx`. Positioning belongs to the page (in-pane
+ * `left/right` or an absolute offset inside the split container); this block
+ * owns the drag affordance, the visible focus ring and the reduced-motion
+ * contract. It is kept last so it wins over the older per-page handle rules.
+ * ------------------------------------------------------------------------- */
+.pane-resize-host { position: relative; }
+.pane-resize-separator {
+  position: absolute;
+  z-index: 6;
+  top: 0;
+  bottom: 0;
+  width: 0.75rem;
+  border: 0;
+  background: transparent;
+  cursor: col-resize;
+  padding: 0;
+  touch-action: none;
+}
+.pane-resize-separator::after {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: 50%;
+  width: 2px;
+  margin-left: -1px;
+  border-radius: 1px;
+  background: transparent;
+  content: '';
+  transition: background-color 120ms ease-out;
+}
+.pane-resize-separator:hover::after,
+.pane-resize-separator:focus-visible::after,
+.pane-resize-separator[data-dragging='true']::after { background: var(--primary); }
+.pane-resize-separator:focus-visible {
+  outline: 2px solid var(--primary);
+  outline-offset: -1px;
+  border-radius: 3px;
+}
+.pane-resize-separator[data-dragging='true'] { cursor: col-resize; }
+@media (prefers-reduced-motion: reduce) {
+  .pane-resize-separator::after { transition: none; }
 }

@@ -1,11 +1,15 @@
 import { randomUUID } from 'node:crypto'
 import { dirname, isAbsolute, join, relative, resolve, sep } from 'node:path'
 import { mkdir, writeFile } from 'node:fs/promises'
-import type { AgentLedgerPush, AgentRpcMethod, RpcRequest, RpcResponse } from '@prw/contracts'
+import type { AgentLedgerPush, AgentRpcMethod, AgentRpcRequest, RpcRequest, RpcResponse } from '@prw/contracts'
 import {
+  AgentCredentialSaveInputSchema,
   AgentLedgerPushSchema,
   AgentLedgerSubscriptionInputSchema,
   AgentRpcRequestSchema,
+  // The one allowlist shared by preload, Main and renderer: only absolute
+  // http/https URLs without credentials may reach `shell.openExternal`.
+  ExternalOpenUrlSchema,
   RpcRequestSchema,
   IntegrationProfileSchema,
   SaveIntegrationProfileInputSchema,
@@ -26,6 +30,8 @@ import {
   LiteratureStagingToZoteroPreviewInputSchema,
   LiteratureStagingToZoteroPreviewSchema,
   LiteratureStagingToZoteroExecuteInputSchema,
+  ZoteroRemoteDeletePreviewInputSchema,
+  ZoteroRemoteDeleteExecuteInputSchema,
   KnowledgeEngineKindSchema,
   KnowledgeEngineSaveInputSchema,
   KnowledgeEngineTestInputSchema,
@@ -40,6 +46,12 @@ import { z, ZodError } from 'zod'
 import type { CredentialRpcCredential } from '../core/client.js'
 import { appError } from '../core/errors.js'
 import {
+  AgentCredentialUnsupportedError,
+  listAgentCredentialStatuses,
+  resolveAgentCredentials,
+  saveAgentCredential
+} from './agent-credentials.js'
+import {
   CredentialVaultError,
   credentialKey,
   type CredentialVault
@@ -52,6 +64,18 @@ export const WORKBENCH_AGENT_RPC_CHANNEL = 'workbench:agent:v1'
 export const WORKBENCH_AGENT_LEDGER_SUBSCRIBE_CHANNEL = 'workbench:agent:ledger-subscribe'
 export const WORKBENCH_AGENT_LEDGER_PUSH_CHANNEL = 'workbench:agent:ledger-push'
 
+/**
+ * Agent methods that may run a CLI child process and therefore receive the
+ * app-owned runtime credential. The set stays explicit so a credential can
+ * never be attached to a local CRUD or status request by mistake.
+ */
+const AGENT_CREDENTIAL_METHODS: ReadonlySet<AgentRpcMethod> = new Set([
+  'agent.connectors.list',
+  'agent.connectors.test',
+  'agent.runs.start',
+  'agent.runs.retry'
+])
+
 interface RegisterRpcOptions {
   readonly client: CoreRpcTransport
   readonly credentialVault: CredentialVault
@@ -62,6 +86,18 @@ interface RegisterRpcOptions {
 export interface CoreRpcTransport {
   request(method: RpcRequest['method'], payload: unknown): Promise<RpcResponse>
   requestAgent?(method: AgentRpcMethod, payload: unknown): Promise<RpcResponse>
+  /** Main-only Agent transport. The credential entries are Main-resolved and
+   * travel beside the payload for exactly one dispatch; an empty list is a
+   * valid, fail-closed request. */
+  requestAgentWithCredential?(
+    method: AgentRpcMethod,
+    payload: unknown,
+    credentials: readonly {
+      readonly runtime: 'codex' | 'pi'
+      readonly provider: string
+      readonly secret: string
+    }[]
+  ): Promise<RpcResponse>
   /** Subscribe to normalized ledger pushes originating in the Core process.
    * Main is the only subscriber; it forwards to window webContents that asked
    * for the specific run. */
@@ -80,15 +116,6 @@ const IdInputSchema = z.object({ id: z.string().min(1) })
 const ArchiveInputSchema = IdInputSchema.extend({ expectedRevision: z.int().nonnegative() })
 const IntegrationSyncInputSchema = IdInputSchema.extend({
   direction: z.enum(['pull', 'push'])
-})
-const ExternalUrlSchema = z.string().url().superRefine((value, context) => {
-  const url = new URL(value)
-  if (!['https:', 'http:', 'zotero:', 'file:'].includes(url.protocol)) {
-    context.addIssue({ code: 'custom', message: 'Only approved external URL protocols may be opened.' })
-  }
-  if (['https:', 'http:'].includes(url.protocol) && (url.username || url.password)) {
-    context.addIssue({ code: 'custom', message: 'External URL must not contain credentials.' })
-  }
 })
 
 const ZoteroLocationSchema = z.string().superRefine((value, context) => {
@@ -155,6 +182,8 @@ type ZoteroProfileRequest =
   | z.infer<typeof ZoteroImportInputSchema>
   | z.infer<typeof ZoteroImportPreviewInputSchema>
   | z.infer<typeof PaperToZoteroPreviewInputSchema>
+  | z.infer<typeof ZoteroRemoteDeletePreviewInputSchema>
+  | z.infer<typeof ZoteroRemoteDeleteExecuteInputSchema>
   | z.infer<typeof LiteratureStagingToZoteroPreviewInputSchema>
   | z.infer<typeof PaperImportFromZoteroInputSchema>
 
@@ -188,6 +217,10 @@ export class SecureRpcRouter {
         return ZoteroImportPreviewInputSchema.parse(payload)
       case 'zotero.paperToZotero.preview':
         return PaperToZoteroPreviewInputSchema.parse(payload)
+      case 'zotero.deleteRemote.preview':
+        return ZoteroRemoteDeletePreviewInputSchema.parse(payload)
+      case 'zotero.deleteRemote.execute':
+        return ZoteroRemoteDeleteExecuteInputSchema.parse(payload)
       case 'literature.stagingToZotero.preview':
         return LiteratureStagingToZoteroPreviewInputSchema.parse(payload)
       case 'papers.importFromZotero':
@@ -223,6 +256,8 @@ export class SecureRpcRouter {
         case 'zotero.importSelected.preview':
         case 'zotero.paperToZotero.preview':
         case 'literature.stagingToZotero.preview':
+        case 'zotero.deleteRemote.preview':
+        case 'zotero.deleteRemote.execute':
         case 'papers.importFromZotero': {
           const profileValue = this.parseZoteroProfileRequest(method, payload)
           const secret = await this.credentialVault.get(credentialKey('integration', profileValue.profileId))
@@ -262,7 +297,7 @@ export class SecureRpcRouter {
             return this.requestWithCredential(method, input, profileId, secret)
           }
       case 'system.openExternal':
-          await shell.openExternal(ExternalUrlSchema.parse(payload))
+          await shell.openExternal(ExternalOpenUrlSchema.parse(payload))
           return { id: 'external-opened', ok: true, data: null }
         default:
           return this.client.request(method, payload)
@@ -490,6 +525,36 @@ export function registerRpcHandler(options: RegisterRpcOptions): () => void {
           error: appError('CORE_UNAVAILABLE', 'The Agent service is not available.', true)
         }
       }
+      // App-owned runtime credentials live in Main's safeStorage vault. Core
+      // refuses the `agent.credentials.*` methods by design, so they are
+      // answered locally and the secret never enters the renderer or a payload.
+      if (parsed.data.method === 'agent.credentials.status' || parsed.data.method === 'agent.credentials.save') {
+        try {
+          const statuses = parsed.data.method === 'agent.credentials.status'
+            ? await listAgentCredentialStatuses(options.credentialVault)
+            : await saveAgentCredential(options.credentialVault, AgentCredentialSaveInputSchema.parse(parsed.data.payload))
+          return { id: parsed.data.id, ok: true, data: statuses }
+        } catch (error) {
+          return { id: parsed.data.id, ok: false, error: normalizeMainError(error) }
+        }
+      }
+      const requestAgentWithCredential = options.client.requestAgentWithCredential
+      if (requestAgentWithCredential !== undefined && AGENT_CREDENTIAL_METHODS.has(parsed.data.method)) {
+        try {
+          // Every configured credential is attached on purpose: Core resolves
+          // the runtime a request actually uses (a retry replays the original
+          // runtime), so Main does not have to guess it here.
+          const credentials = await resolveAgentCredentials(options.credentialVault)
+          return await requestAgentWithCredential.call(
+            options.client,
+            parsed.data.method,
+            parsed.data.payload,
+            credentials
+          )
+        } catch (error) {
+          return { id: parsed.data.id, ok: false, error: normalizeMainError(error) }
+        }
+      }
       return requestAgent.call(options.client, parsed.data.method, parsed.data.payload)
     }
   )
@@ -644,6 +709,9 @@ async function saveTextFile(
 
 function normalizeMainError(error: unknown) {
   if (error instanceof CredentialVaultError) {
+    return appError(error.code, error.message)
+  }
+  if (error instanceof AgentCredentialUnsupportedError) {
     return appError(error.code, error.message)
   }
   if (error instanceof ExistingIntegrationLocationError) {

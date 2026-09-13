@@ -2,6 +2,7 @@ import { useMutation, useQueryClient } from '@tanstack/react-query'
 import { PaperIdSchema, ProjectIdSchema, type LiteratureMatrixEntry, type Paper, type Project } from '@prw/contracts'
 import { Edit3, Plus, Save, Trash2 } from 'lucide-react'
 import { useEffect, useId, useMemo, useState, type FormEvent } from 'react'
+import { SelectionBar } from '../../components/selection'
 import { EmptyState, ErrorState, LoadingState, PageHeader } from '../../components/states'
 import {
   Button,
@@ -164,7 +165,7 @@ function MatrixCell({ value, fallback = '未填写' }: { value: string; fallback
   )
 }
 
-export function LiteratureMatrixPage({ projects }: { projects: Project[] }): React.JSX.Element {
+export function LiteratureMatrixPage({ projects, embedded = false }: { projects: Project[]; embedded?: boolean }): React.JSX.Element {
   const [projectId, setProjectId] = useState('')
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set())
   const [deleteFeedback, setDeleteFeedback] = useState<string | null>(null)
@@ -178,6 +179,10 @@ export function LiteratureMatrixPage({ projects }: { projects: Project[] }): Rea
   const unmappedPapers = availablePapers.filter((paper) => !mappedPaperIds.has(paper.id))
   const entries = matrixQuery.data ?? []
   const allSelected = entries.length > 0 && entries.every((entry) => selectedIds.has(entry.id))
+  // The matrix list is loaded in full for the active project filter, so "全选"
+  // can honestly cover every row of the current filter — and the bar says which
+  // filter that is instead of implying the whole library is selected.
+  const projectFilterLabel = projectId ? projects.find((project) => project.id === projectId)?.name ?? '已失效项目' : '全部项目'
 
   useEffect(() => {
     const available = new Set(entries.map((entry) => entry.id))
@@ -212,7 +217,10 @@ export function LiteratureMatrixPage({ projects }: { projects: Project[] }): Rea
   }
 
   return (
-    <div className="page-scroll">
+    // `embedded` keeps the page's own scroll container out of a host page that
+    // already scrolls (Project Space), which otherwise nests two vertical
+    // scrollers and steals the wheel from the outer page.
+    <div className={embedded ? 'matrix-embedded' : 'page-scroll'}>
       <PageHeader
         actions={(
           <div className="flex items-center gap-2">
@@ -239,16 +247,27 @@ export function LiteratureMatrixPage({ projects }: { projects: Project[] }): Rea
           action={(
             <div className="flex items-center gap-3">
               <span className="text-xs text-muted-foreground">{entries.length} 条证据记录</span>
-              {entries.length > 0 ? <label className="inline-flex items-center gap-1.5 text-xs text-muted-foreground">
-                <input aria-label="全选矩阵条目" checked={allSelected} className="research-checkbox" onChange={toggleAll} type="checkbox" />
-                全选
-              </label> : null}
-              {selectedIds.size > 0 ? <Button aria-label={`删除选中的 ${selectedIds.size} 条矩阵记录`} disabled={deleteMutation.isPending} loading={deleteMutation.isPending} onClick={() => removeSelected([...selectedIds])} size="sm" variant="danger"><Trash2 aria-hidden="true" className="size-3.5" />删除选中</Button> : null}
             </div>
           )}
           eyebrow="COMPARE / EVIDENCE"
           title="结构化比较"
         >
+          <div className="px-4 pt-3">
+            <SelectionBar
+              allSelected={allSelected}
+              disabled={entries.length === 0}
+              indeterminate={selectedIds.size > 0 && !allSelected}
+              label="文献矩阵选择"
+              onClear={() => setSelectedIds(new Set())}
+              onToggleAll={toggleAll}
+              scope={`范围：${projectFilterLabel}下的全部 ${entries.length} 条矩阵记录（无分页）；删除为永久操作，不会删除原文献`}
+              selectAllLabel="全选矩阵条目"
+              selectedCount={selectedIds.size}
+              totalCount={entries.length}
+            >
+              <Button aria-label={`删除选中的 ${selectedIds.size} 条矩阵记录`} disabled={selectedIds.size === 0 || deleteMutation.isPending} loading={deleteMutation.isPending} onClick={() => removeSelected([...selectedIds])} size="sm" variant="danger"><Trash2 aria-hidden="true" className="size-3.5" />删除选中</Button>
+            </SelectionBar>
+          </div>
           {matrixQuery.isLoading || papersQuery.isLoading ? <div className="p-4"><LoadingState label="正在组装文献矩阵…" /></div> : null}
           {matrixQuery.error ? <div className="p-4"><ErrorState error={matrixQuery.error} onRetry={() => void matrixQuery.refetch()} /></div> : null}
           {papersQuery.error ? <div className="p-4"><ErrorState error={papersQuery.error} onRetry={() => void papersQuery.refetch()} /></div> : null}

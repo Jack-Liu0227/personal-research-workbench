@@ -1,6 +1,7 @@
 import type { AgentRun, SyncRun } from '@prw/contracts'
 import { AlertCircle, CheckCircle2, Clock3, LoaderCircle, XCircle } from 'lucide-react'
 import type { ReactNode } from 'react'
+import { SelectionCheckbox } from '../../components/selection'
 import { cn, formatDateTime, getErrorMessage } from '../../lib/utils'
 
 const positiveStates = new Set(['completed', 'ready', 'enabled', 'final', 'read', 'synced'])
@@ -158,15 +159,57 @@ export function AgentRunList({ runs, emptyText = '尚无 Agent 运行记录', on
   )
 }
 
-export function SyncRunList({ runs }: { runs: SyncRun[] }): React.JSX.Element {
-  if (runs.length === 0) return <p className="research-empty-inline">尚无同步记录</p>
+const syncDirectionLabels: Record<SyncRun['direction'], string> = {
+  both: '双向同步',
+  pull: '拉取',
+  push: '写入'
+}
+
+/** Human label of one sync run. It is the only identity a run has (no name),
+ * so it is used for the row, the selection checkbox and the delete receipts. */
+export function describeSyncRun(run: SyncRun): string {
+  return `${syncDirectionLabels[run.direction]} · ${formatDateTime(run.startedAt)}`
+}
+
+/**
+ * Settings → 最近同步 list.
+ *
+ * Every rendered run owns its checkbox when `selection` is provided, so a
+ * "全选" claim can never include a row the user cannot see. The list renders
+ * the whole loaded range (the caller states that exact boundary) instead of a
+ * silent `slice`, which would let a bulk delete touch an invisible record.
+ */
+export function SyncRunList({
+  emptyText = '尚无同步记录',
+  rowAction,
+  runs,
+  selection
+}: {
+  emptyText?: string
+  /** Optional per-row control, e.g. the single-record delete button. */
+  rowAction?: (run: SyncRun) => ReactNode
+  runs: SyncRun[]
+  selection?: {
+    selectedIds: ReadonlySet<string>
+    onToggle: (id: string, checked: boolean) => void
+  }
+}): React.JSX.Element {
+  if (runs.length === 0) return <p className="research-empty-inline">{emptyText}</p>
   return (
     <div className="divide-y divide-border">
-      {runs.slice(0, 8).map((run) => (
+      {runs.map((run) => (
         <article className="research-run-row" key={run.id}>
+          {selection ? (
+            <SelectionCheckbox
+              ariaLabel={`选择同步记录：${describeSyncRun(run)}`}
+              checked={selection.selectedIds.has(run.id)}
+              onChange={(checked) => selection.onToggle(run.id, checked)}
+              title={`选择同步记录：${describeSyncRun(run)}`}
+            />
+          ) : null}
           <div className="min-w-0 flex-1">
             <div className="flex flex-wrap items-center gap-2">
-              <span className="text-xs font-bold text-foreground">{run.direction === 'both' ? '双向同步' : run.direction === 'pull' ? '拉取' : '写入'}</span>
+              <span className="text-xs font-bold text-foreground">{syncDirectionLabels[run.direction]}</span>
               <StatusBadge status={run.status} />
             </div>
             <p className="mt-1 text-[11px] text-muted-foreground">
@@ -174,6 +217,7 @@ export function SyncRunList({ runs }: { runs: SyncRun[] }): React.JSX.Element {
             </p>
             {run.message ? <p className="mt-1 text-xs text-muted-foreground">{run.message}</p> : null}
           </div>
+          {rowAction ? <div className="flex shrink-0 items-center gap-2">{rowAction(run)}</div> : null}
         </article>
       ))}
     </div>

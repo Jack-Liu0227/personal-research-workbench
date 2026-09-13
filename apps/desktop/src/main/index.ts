@@ -1,5 +1,5 @@
 import { createHash, randomUUID } from 'node:crypto'
-import { readFileSync } from 'node:fs'
+import { existsSync, readFileSync } from 'node:fs'
 import { mkdir } from 'node:fs/promises'
 import { dirname, join, relative, resolve } from 'node:path'
 import { app, BrowserWindow, dialog } from 'electron'
@@ -94,7 +94,9 @@ async function bootstrap(): Promise<void> {
     appVersion: workbenchVersion(),
     servicePipePath,
     serviceHandshakeToken: randomUUID(),
-    serviceInfoPath
+    serviceInfoPath,
+    projectRoot: developmentProjectRoot(),
+    packagedApp: app.isPackaged
   })
   await coreClient.waitUntilReady()
   await ensureDefaultZoteroProfile(coreClient)
@@ -264,6 +266,28 @@ app.on('before-quit', () => {
 app.on('window-all-closed', () => {
   if (process.platform !== 'darwin') app.quit()
 })
+
+/**
+ * Repository checkout that owns the canonical `.agents/skills` sources, for a
+ * development/e2e process only.
+ *
+ * Main resolves it once from its own bundle location instead of letting the
+ * Core process guess from `process.cwd()`: Core runs with the workbench
+ * user-data directory as its working directory, so a dev run must not depend on
+ * the launch directory. An installed app returns `undefined` and discovers
+ * skills through the build-generated `resources/skills` mirror alone.
+ */
+function developmentProjectRoot(): string | undefined {
+  if (app.isPackaged) return undefined
+  let directory = __dirname
+  for (let depth = 0; depth <= 8; depth += 1) {
+    if (existsSync(join(directory, '.agents', 'skills'))) return directory
+    const parent = dirname(directory)
+    if (parent === directory) break
+    directory = parent
+  }
+  return undefined
+}
 
 function workbenchVersion(): string {
   if (app.isPackaged) return app.getVersion()

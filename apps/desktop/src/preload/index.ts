@@ -2,12 +2,14 @@ import type {
   AgentApprovalDecisionInput,
   AgentConnectorSaveInput,
   AgentBindingSaveInput,
+  AgentCredentialSaveInput,
   AgentProxyProfileSaveInput, AgentProxyBindingSaveInput,
   AgentConversationCreateInput,
   AgentConversationArchiveItem,
   AgentConversationListInput,
   AgentConversationMessagesInput,
   AgentConversationRecordsInput,
+  ArchiveBulkLock,
   AgentLedgerPush,
   AgentRunEventsInput,
   AgentRunListInput,
@@ -30,12 +32,17 @@ import {
   AgentProxyProfileSchema, AgentProxyProfileSaveInputSchema, AgentProxyBindingSchema, AgentProxyBindingSaveInputSchema,
   AgentConversationCreateInputSchema,
   AgentConversationArchiveBulkInputSchema,
+  ArchiveBulkInputSchema,
+  ArchiveBulkReceiptSchema,
+  ArchiveBulkResultSchema,
   AgentConversationListInputSchema,
   AgentConversationMessagesInputSchema,
   AgentConversationRecordsInputSchema,
   AgentConversationSchema,
   AgentConnectorSaveInputSchema,
   AgentConnectorSchema,
+  AgentCredentialSaveInputSchema,
+  AgentCredentialStatusSchema,
   AgentEventSchema,
   AgentInboxItemSchema,
   AgentMessageSchema,
@@ -47,8 +54,11 @@ import {
   AgentLedgerPushSchema,
   AgentRunStartInputSchema,
   AgentRuntimeKindSchema,
+  AgentScheduleSkillCatalogEntrySchema,
   AutomationRuleSaveInputSchema,
   AutomationRuleSchema,
+  AutomationRunHistoryEntrySchema,
+  AutomationRunHistoryInputSchema,
   ArtifactKindSchema,
   BoardColumnSchema,
   BulkHardDeleteTaskInputSchema,
@@ -128,11 +138,20 @@ import {
   NoteListInputSchema,
   DeleteNoteInputSchema,
   DeleteNoteFolderInputSchema,
+  CreateNoteFolderInputSchema,
+  MoveNoteInputSchema,
+  NoteMetadataPreviewInputSchema,
+  ApplyNoteMetadataInputSchema,
+  NoteDuplicateInputSchema,
   ReadNoteInputSchema,
   WriteNoteInputSchema,
   NoteSchema,
   NoteDeleteReceiptSchema,
   NoteFolderDeleteReceiptSchema,
+  NoteFolderCreateReceiptSchema,
+  NoteMoveReceiptSchema,
+  NoteMetadataPreviewSchema,
+  NoteDuplicateReportSchema,
   ZoteroCollectionSchema,
   ZoteroCapabilityStatusSchema,
   ZoteroAuthorizeInputSchema,
@@ -152,6 +171,10 @@ import {
   PaperToZoteroPreviewInputSchema,
   PaperToZoteroPreviewSchema,
   PaperToZoteroExecuteInputSchema,
+  ZoteroRemoteDeletePreviewInputSchema,
+  ZoteroRemoteDeletePreviewSchema,
+  ZoteroRemoteDeleteExecuteInputSchema,
+  ZoteroRemoteDeleteReceiptSchema,
   ScholarWorkspaceStatusSchema,
   WorkspaceServiceStatusSchema,
   ObsidianIndexStatusInputSchema,
@@ -172,7 +195,9 @@ import {
   KnowledgeEngineConfigSchema,
   KnowledgeEngineSaveInputSchema,
   KnowledgeEngineTestInputSchema,
-  KnowledgeEngineTestResultSchema
+  KnowledgeEngineTestResultSchema,
+  /** Same allowlist Main enforces; a non-http(s) URL never leaves the renderer bridge. */
+  ExternalOpenUrlSchema
 } from '@prw/contracts'
 import { contextBridge, ipcRenderer } from 'electron'
 import { z, type ZodType } from 'zod'
@@ -451,6 +476,25 @@ const api: WorkbenchApiV2 = {
       { id: IdSchema.parse(id), expectedRevision: RevisionSchema.parse(expectedRevision) },
       VoidResultSchema
     ),
+    /** Record-only bulk archive. One IPC request, one Core transaction; the
+     * Main-process safeStorage credential is intentionally out of scope. */
+    bulkRemove: (input) => invoke(
+      'integrations.bulkRemove',
+      ArchiveBulkInputSchema.parse(input),
+      ArchiveBulkResultSchema
+    ),
+    /** Settings → 最近同步. Sync runs are audit rows: removal soft-archives them
+     * with a revision lock and never touches credentials or external data. */
+    removeRun: (id, expectedRevision) => invoke(
+      'integrations.removeRun',
+      { id: IdSchema.parse(id), expectedRevision: RevisionSchema.parse(expectedRevision) },
+      VoidResultSchema
+    ),
+    bulkRemoveRuns: (input) => invoke(
+      'integrations.bulkRemoveRuns',
+      ArchiveBulkInputSchema.parse(input),
+      ArchiveBulkResultSchema
+    ),
     test: (id) => invoke(
       'integrations.test',
       { id: IdSchema.parse(id) },
@@ -598,7 +642,12 @@ const api: WorkbenchApiV2 = {
     read: (input) => invoke('notes.read', ReadNoteInputSchema.parse(input), NoteSchema),
     write: (input) => invoke('notes.write', WriteNoteInputSchema.parse(input), NoteSchema),
     delete: (input) => invoke('notes.delete', DeleteNoteInputSchema.parse(input), NoteDeleteReceiptSchema),
-    deleteFolder: (input) => invoke('notes.deleteFolder', DeleteNoteFolderInputSchema.parse(input), NoteFolderDeleteReceiptSchema)
+    deleteFolder: (input) => invoke('notes.deleteFolder', DeleteNoteFolderInputSchema.parse(input), NoteFolderDeleteReceiptSchema),
+    createFolder: (input) => invoke('notes.createFolder', CreateNoteFolderInputSchema.parse(input), NoteFolderCreateReceiptSchema),
+    move: (input) => invoke('notes.move', MoveNoteInputSchema.parse(input), NoteMoveReceiptSchema),
+    previewMetadata: (input) => invoke('notes.metadata.preview', NoteMetadataPreviewInputSchema.parse(input), NoteMetadataPreviewSchema),
+    applyMetadata: (input) => invoke('notes.metadata.apply', ApplyNoteMetadataInputSchema.parse(input), NoteSchema),
+    duplicates: (input) => invoke('notes.duplicates', NoteDuplicateInputSchema.parse(input), NoteDuplicateReportSchema)
   },
   zotero: {
     capability: (profileId) => invoke(
@@ -663,6 +712,20 @@ const api: WorkbenchApiV2 = {
         PaperToZoteroExecuteInputSchema.parse(input),
         ZoteroImportResultSchema
       )
+    },
+    /** 两侧删除 Zotero 条目：preview 冻结远端 revision 与本地投影，execute 在显式确认后
+     * 先删除 Zotero 远端条目，只有远端确认删除（或 404）时才删除本地投影；两者都返回逐条回执。 */
+    deleteRemote: {
+      preview: (input) => invoke(
+        'zotero.deleteRemote.preview',
+        ZoteroRemoteDeletePreviewInputSchema.parse(input),
+        ZoteroRemoteDeletePreviewSchema
+      ),
+      execute: (input) => invoke(
+        'zotero.deleteRemote.execute',
+        ZoteroRemoteDeleteExecuteInputSchema.parse(input),
+        ZoteroRemoteDeleteReceiptSchema
+      )
     }
   },
   knowledge: {
@@ -685,7 +748,7 @@ const api: WorkbenchApiV2 = {
   },
   system: {
     health: () => invoke('system.health', null, HealthSchema),
-    openExternal: (url) => invoke('system.openExternal', z.string().url().parse(url), VoidResultSchema),
+    openExternal: (url) => invoke('system.openExternal', ExternalOpenUrlSchema.parse(url), VoidResultSchema),
     selectFolder: () => invoke('system.selectFolder', SystemSelectFolderInputSchema.parse(null), SystemSelectFolderResultSchema)
     , revealPath: (input) => invoke('system.revealPath', SystemRevealPathInputSchema.parse(input), VoidResultSchema)
     , saveTextFile: (input) => invoke('system.saveTextFile', SystemSaveTextFileInputSchema.parse(input), SystemSaveTextFileResultSchema)
@@ -732,7 +795,17 @@ const agentApi: WorkbenchAgentApiV1 = {
         AgentConversationArchiveBulkInputSchema.parse({ items }),
         VoidResultSchema
       )
-    }
+    },
+    remove: (conversationId, expectedRevision) => invokeAgent(
+      'agent.conversations.remove',
+      { conversationId: IdSchema.parse(conversationId), expectedRevision: RevisionSchema.parse(expectedRevision) },
+      ArchiveBulkReceiptSchema
+    ),
+    removeBulk: (items: ReadonlyArray<ArchiveBulkLock>) => invokeAgent(
+      'agent.conversations.removeBulk',
+      ArchiveBulkInputSchema.parse({ items }),
+      ArchiveBulkResultSchema
+    )
   },
   connectors: {
     list: () => invokeAgent('agent.connectors.list', null, z.array(AgentConnectorSchema)),
@@ -753,6 +826,16 @@ const agentApi: WorkbenchAgentApiV1 = {
       'agent.bindings.save',
       AgentBindingSaveInputSchema.parse(input),
       AgentBindingSchema
+    )
+  },
+  // Main owns the safeStorage vault, so these two methods are answered in Main
+  // and only ever return the non-secret status projection to the renderer.
+  credentials: {
+    status: () => invokeAgent('agent.credentials.status', null, z.array(AgentCredentialStatusSchema)),
+    save: (input: AgentCredentialSaveInput) => invokeAgent(
+      'agent.credentials.save',
+      AgentCredentialSaveInputSchema.parse(input),
+      z.array(AgentCredentialStatusSchema)
     )
   },
   proxyProfiles: { list: () => invokeAgent('agent.proxyProfiles.list', null, z.array(AgentProxyProfileSchema)), save: (input: AgentProxyProfileSaveInput) => invokeAgent('agent.proxyProfiles.save', AgentProxyProfileSaveInputSchema.parse(input), AgentProxyProfileSchema) },
@@ -807,6 +890,9 @@ const agentApi: WorkbenchAgentApiV1 = {
   },
   automation: {
     rules: () => invokeAgent('automation.rules.list', null, z.array(AutomationRuleSchema)),
+    /** Installed/not-installed state of every selectable schedule skill. The
+     * editor must never render a reserved or missing skill as usable. */
+    skills: () => invokeAgent('automation.skills.list', null, z.array(AgentScheduleSkillCatalogEntrySchema)),
     save: (input) => invokeAgent(
       'automation.rules.save',
       AutomationRuleSaveInputSchema.parse(input),
@@ -819,6 +905,12 @@ const agentApi: WorkbenchAgentApiV1 = {
         VoidResultSchema
       )
     },
+    /** Archive the selected rules only; run/occurrence history is never deleted. */
+    bulkArchive: (input) => invokeAgent(
+      'automation.rules.bulkArchive',
+      ArchiveBulkInputSchema.parse(input),
+      ArchiveBulkResultSchema
+    ),
     runNow: (id) => invokeAgent(
       'automation.rules.runNow',
       { id: IdSchema.parse(id) },
@@ -828,6 +920,30 @@ const agentApi: WorkbenchAgentApiV1 = {
       'automation.runs.list',
       { limit: z.int().min(1).max(100).parse(limit) },
       z.array(AgentRunRecordSchema)
+    ),
+    history: (input) => invokeAgent(
+      'automation.runs.history',
+      AutomationRunHistoryInputSchema.parse(input ?? {}),
+      z.array(AutomationRunHistoryEntrySchema)
+    ),
+    /** Soft-archive one RUN HISTORY record; only this record's archive flag moves. */
+    archiveRun: async (runId, expectedRevision) => {
+      await invokeAgent(
+        'automation.runs.archive',
+        { runId: IdSchema.parse(runId), expectedRevision: RevisionSchema.parse(expectedRevision) },
+        VoidResultSchema
+      )
+    },
+    /** Archive the selected RUN HISTORY records with per-run receipts. */
+    bulkArchiveRuns: (input) => invokeAgent(
+      'automation.runs.archiveBulk',
+      ArchiveBulkInputSchema.parse(input),
+      ArchiveBulkResultSchema
+    ),
+    retryRun: (runId) => invokeAgent(
+      'automation.runs.retry',
+      { runId: IdSchema.parse(runId) },
+      AgentRunRecordSchema
     )
   },
   inbox: {
