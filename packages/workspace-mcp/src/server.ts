@@ -5,7 +5,7 @@ import { z } from 'zod'
 import { WorkspaceServiceClient } from './client.js'
 
 export function createWorkspaceMcpServer(client: WorkspaceServiceClient): McpServer {
-  const server = new McpServer({ name: 'personal-research-workbench', version: '0.1.0' })
+  const server = new McpServer({ name: 'personal-research-workbench', version: '0.0.2' })
 
   server.registerResource('workspace-projects', 'workspace://projects', {
     title: 'Workspace projects',

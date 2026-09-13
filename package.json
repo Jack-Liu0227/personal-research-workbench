@@ -1,6 +1,6 @@
 {
   "name": "personal-research-workbench",
-  "version": "0.1.0",
+  "version": "0.0.2",
   "private": true,
   "type": "module",
   "description": "Local-first personal research workbench for tasks, literature and AI-assisted writing.",
