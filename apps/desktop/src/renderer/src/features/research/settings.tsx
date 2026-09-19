@@ -1,16 +1,34 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import type { AgentConnector, AgentProxyProfile, AgentRuntimeKind, ArchiveBulkResult, IntegrationProfile, IntegrationProvider, KnowledgeEngineConfig, KnowledgeEngineKind, Project, SyncRun, UpdateState } from '@prw/contracts'
-import { Cable, CheckCircle2, ChevronDown, ChevronUp, Download, Edit3, FolderOpen, Plus, RefreshCw, Save, TestTube2, Trash2 } from 'lucide-react'
+import type { AgentAuthPromptKind, AgentAuthPromptOption, AgentAuthType, AgentConnector, AgentCredentialStatus, AgentModelCatalogEntry, AgentPermissionMode, AgentProxyProfile, AgentRuntimeKind, AgentSettingsSaveInput, AgentToolProfile, ArchiveBulkResult, IntegrationProfile, IntegrationProvider, KnowledgeEngineConfig, KnowledgeEngineKind, Project, SyncRun, UpdateState } from '@prw/contracts'
+import { Cable, CheckCircle2, ChevronDown, ChevronUp, Download, Edit3, ExternalLink, FolderOpen, KeyRound, Plus, RefreshCw, Save, TestTube2, Trash2 } from 'lucide-react'
 import { Fragment, useEffect, useId, useRef, useState, type FormEvent, type ReactElement } from 'react'
 import { ArchiveReceiptList, SelectionBar, SelectionCheckbox } from '../../components/selection'
+import { ExternalUrlLink } from '../../components/external-link'
 import { EmptyState, ErrorState, LoadingState, PageHeader } from '../../components/states'
 import { Button, Dialog, DialogClose, DialogContent, DialogTrigger, Field, Input, Textarea } from '../../components/ui'
 import { cn, formatDateTime, getErrorMessage } from '../../lib/utils'
+import { defaultSelectionIssue, defaultSelectionSummary } from '../../lib/model-discovery'
 import { getWorkbenchAgentApi, getWorkbenchApi } from '../../lib/workbench'
 import { queryKeys, useIntegrationsQuery, useSyncRunsQuery } from '../queries'
+import { CustomProviderSection } from './custom-providers'
 import { describeSyncRun, MutationFeedback, ResearchPanel, ResearchTabs, StatusBadge, SyncRunList } from './shared'
 
 type SettingsTab = 'general' | 'workspace' | 'literature' | 'proxy' | 'connectors' | 'agent' | 'engines' | 'mcp' | 'security' | 'about'
+
+/**
+ * Deep-link target requested by another surface before it navigates here.
+ *
+ * The Agent workspace keeps no run configuration of its own, so its composer
+ * points at the section that owns it. The shell unmounts a page when the route
+ * changes, which makes a one-shot module value enough — and it avoids putting a
+ * route parameter on every intermediate component just for one hint link.
+ */
+let pendingSection: SettingsTab | null = null
+
+/** Select the section shown the next time Settings mounts. */
+export function openSettingsSection(section: SettingsTab): void {
+  pendingSection = section
+}
 
 const integrationLabels: Record<IntegrationProvider, string> = {
   obsidian: 'Obsidian',
@@ -617,7 +635,7 @@ function ProxySettingsPanel(): React.JSX.Element {
     onSuccess: async () => { setFeedback('Agent runtime 的代理绑定已保存。'); await bindings.refetch() },
     onError: (error) => setFeedback(getErrorMessage(error))
   })
-  const runtimes: Array<{ runtime: AgentRuntimeKind; label: string }> = [{ runtime: 'codex', label: 'Codex' }, { runtime: 'pi', label: 'Pi' }]
+  const runtimes: Array<{ runtime: AgentRuntimeKind; label: string }> = [{ runtime: 'pi', label: 'Pi（内嵌 Agent）' }]
   return <SettingInfoPanel eyebrow="SETTINGS / PROXY" title="统一网络代理">
     <p>代理配置与文献检索同级管理。启用的 Profile 会供 Literature、Google Scholar、Agent 和其他联网工具复用；本机地址默认绕过代理。</p>
     <div className="settings-form-grid">
@@ -645,148 +663,366 @@ function ProxySettingsPanel(): React.JSX.Element {
   </SettingInfoPanel>
 }
 
-function AgentRuntimeSettingsPanel(): React.JSX.Element {
-  const queryClient = useQueryClient()
-  const connectors = useQuery({ queryKey: ['agent-connectors'], queryFn: () => getWorkbenchAgentApi().connectors.list(), refetchInterval: 30_000 })
-  const [paths, setPaths] = useState<Partial<Record<AgentRuntimeKind, string>>>({})
-  const [enabled, setEnabled] = useState<Partial<Record<AgentRuntimeKind, boolean>>>({})
-  const [proxy, setProxy] = useState<Partial<Record<AgentRuntimeKind, { enabled: boolean; http: string; https: string; noProxy: string }>>>({})
-  const [feedback, setFeedback] = useState<string | null>(null)
-  const runtimeLabels: Record<AgentRuntimeKind, string> = { codex: 'Codex', pi: 'Pi' }
-
-  useEffect(() => {
-    if (!connectors.data) return
-    setPaths(Object.fromEntries(connectors.data.map((connector) => [connector.runtime, connector.executablePath ?? ''])))
-    setEnabled(Object.fromEntries(connectors.data.map((connector) => [connector.runtime, connector.enabled])))
-    setProxy(Object.fromEntries(connectors.data.map((connector) => [connector.runtime, {
-      enabled: connector.proxyEnabled,
-      http: connector.httpProxy ?? '',
-      https: connector.httpsProxy ?? '',
-      noProxy: connector.noProxy ?? ''
-    }])))
-  }, [connectors.data])
-
-  const testMutation = useMutation({
-    mutationFn: (runtime: AgentRuntimeKind) => getWorkbenchAgentApi().connectors.test(runtime),
-    onSuccess: (result) => { setFeedback(`${runtimeLabels[result.runtime]}：${result.message}`); void queryClient.invalidateQueries({ queryKey: ['agent-connectors'] }) },
-    onError: (error) => setFeedback(getErrorMessage(error))
-  })
-  const saveMutation = useMutation({
-    mutationFn: (connector: AgentConnector) => {
-      const currentProxy = proxy[connector.runtime]
-      return getWorkbenchAgentApi().connectors.save({
-        id: connector.id,
-        runtime: connector.runtime,
-        executablePath: (paths[connector.runtime] ?? '').trim() || null,
-        enabled: enabled[connector.runtime] ?? connector.enabled,
-        proxyEnabled: currentProxy?.enabled ?? connector.proxyEnabled,
-        httpProxy: currentProxy?.http.trim() || null,
-        httpsProxy: currentProxy?.https.trim() || null,
-        noProxy: currentProxy?.noProxy.trim() || null,
-        expectedRevision: connector.revision
-      })
-    },
-    onSuccess: (result) => { setFeedback(`${runtimeLabels[result.runtime]} 配置已保存。`); void queryClient.invalidateQueries({ queryKey: ['agent-connectors'] }) },
-    onError: (error) => setFeedback(getErrorMessage(error))
-  })
-
-  if (connectors.isLoading) return <SettingInfoPanel eyebrow="SETTINGS / AGENT" title="Agent 运行时"><LoadingState label="正在读取 Codex/Pi 配置…" /></SettingInfoPanel>
-  if (connectors.error) return <SettingInfoPanel eyebrow="SETTINGS / AGENT" title="Agent 运行时"><ErrorState error={connectors.error} onRetry={() => void connectors.refetch()} /></SettingInfoPanel>
-
-  return <AgentRuntimeSettingsView
-    connectors={connectors.data ?? []}
-    enabled={enabled}
-    feedback={feedback}
-    onEnabledChange={(runtime, value) => setEnabled((current) => ({ ...current, [runtime]: value }))}
-    onPathChange={(runtime, value) => setPaths((current) => ({ ...current, [runtime]: value }))}
-    onSave={(connector) => saveMutation.mutate(connector)}
-    onTest={(runtime) => testMutation.mutate(runtime)}
-    paths={paths}
-    savingRuntime={saveMutation.isPending ? saveMutation.variables?.runtime ?? null : null}
-    testingRuntime={testMutation.isPending ? testMutation.variables ?? null : null}
-    />
-
-  /* Legacy one-line renderer retained temporarily for reference while the
-   * settings view is split into the accessible proxy-aware component below.
-
-  return <SettingInfoPanel eyebrow="SETTINGS / AGENT" title="Agent 运行时"><p>配置本机 Codex 与 Pi runtime。路径、启用状态和最近一次探测结果由 Workspace Service 保存；模型与助手在 Agent 首页或定时任务中选择。</p><div className="grid gap-3">{(connectors.data ?? []).map((connector) => <article className="rounded-lg border border-border bg-muted/20 p-4" key={connector.id}><div className="flex flex-wrap items-start gap-3"><div className="grid size-9 shrink-0 place-items-center rounded-md border border-border bg-surface text-primary"><span aria-hidden="true" className={cn('status-led', connector.available && connector.enabled ? 'bg-online' : 'bg-danger')} /></div><div className="min-w-0 flex-1"><div className="flex flex-wrap items-center gap-2"><h3 className="text-sm font-bold text-foreground">{runtimeLabels[connector.runtime]}</h3><span className={cn('research-status', connector.available && connector.enabled ? 'research-status-positive' : 'research-status-warning')}>{connector.available && connector.enabled ? '可用' : connector.enabled ? '未探测' : '已停用'}</span>{connector.version ? <code className="text-[11px] text-muted-foreground">{connector.version}</code> : null}</div><p className="mt-1 text-xs leading-5 text-muted-foreground">{connector.message || '尚未探测。保存路径后点击探测。'}</p><div className="mt-2 flex flex-wrap gap-2 text-[11px] text-muted-foreground">{connector.localDefaultModel ? <span className="research-tag">本机模型：{connector.localDefaultModel}</span> : null}{connector.localThinkingLevel ? <span className="research-tag">Thinking：{connector.localThinkingLevel}</span> : null}{connector.localPermission ? <span className="research-tag">本机权限：{connector.localPermission}</span> : null}</div></div></div><div className="mt-3 grid gap-2 sm:grid-cols-[minmax(0,1fr)_auto_auto] sm:items-center"><label className="sr-only" htmlFor={`agent-runtime-path-${connector.runtime}`}>{runtimeLabels[connector.runtime]} 可执行文件路径</label><Input id={`agent-runtime-path-${connector.runtime}`} onChange={(event) => setPaths((current) => ({ ...current, [connector.runtime]: event.target.value }))} placeholder={connector.runtime === 'codex' ? '例如 codex 或 C:\\Tools\\codex.cmd' : '例如 pi 或 C:\\Tools\\pi.cmd'} value={paths[connector.runtime] ?? ''} /><Button loading={saveMutation.isPending && saveMutation.variables?.runtime === connector.runtime} onClick={() => saveMutation.mutate(connector)} size="sm" variant="secondary"><Save aria-hidden="true" className="size-3.5" />保存</Button><Button disabled={!connector.enabled} loading={testMutation.isPending && testMutation.variables === connector.runtime} onClick={() => testMutation.mutate(connector.runtime)} size="sm"><TestTube2 aria-hidden="true" className="size-3.5" />探测</Button></div><label className="mt-3 flex items-center gap-2 text-xs text-muted-foreground"><input checked={enabled[connector.runtime] ?? connector.enabled} className="research-checkbox" onChange={(event) => setEnabled((current) => ({ ...current, [connector.runtime]: event.target.checked }))} type="checkbox" />允许在 Agent 首页和定时任务中使用</label></article>)}</div>{feedback ? <p aria-live="polite" className="form-feedback form-feedback-success" role="status">{feedback}</p> : null}<div className="rounded-lg border border-border bg-muted/20 p-4 text-xs leading-5"><p className="font-semibold text-foreground">安全边界</p><p className="mt-1">CLI 只接收受控环境变量和隔离 run 目录；不会读取 Pi/Codex 用户认证目录。凭据配置将在 Main safeStorage 适配器完成后开放，当前定时任务保持 read-only。</p></div></SettingInfoPanel>
-  */
+/** One in-flight interactive login. `prompt` is the only blocking step; the
+ * owning Provider row stays expanded until Core pushes `done` or the user cancels. */
+interface ActiveLogin {
+  loginId: string
+  provider: string
+  authType: AgentAuthType
+  message: string
+  url: string | null
+  instructions: string | null
+  deviceCode: { userCode: string; verificationUri: string } | null
+  prompt: { promptId: string; kind: AgentAuthPromptKind; message: string; placeholder: string | null; options: AgentAuthPromptOption[] } | null
 }
 
-type RuntimeProxyDraft = { enabled: boolean; http: string; https: string; noProxy: string }
-
-function formatRuntimePermission(runtime: AgentRuntimeKind, value: string): string {
-  if (runtime === 'codex' && value === 'user') return '按需确认'
-  if (runtime === 'codex' && value === 'never') return '全自动'
-  if (runtime === 'pi' && value === 'ask') return '询问'
-  return value
+interface AgentAuthState {
+  login: ActiveLogin | null
+  promptValue: string
 }
 
-function AgentRuntimeSettingsView({
-  connectors,
-  enabled,
-  feedback,
-  onEnabledChange,
-  onPathChange,
-  onSave,
-  onTest,
-  paths,
-  savingRuntime,
-  testingRuntime
-}: {
-  connectors: AgentConnector[]
-  enabled: Partial<Record<AgentRuntimeKind, boolean>>
-  feedback: string | null
-  onEnabledChange: (runtime: AgentRuntimeKind, value: boolean) => void
-  onPathChange: (runtime: AgentRuntimeKind, value: string) => void
-  onSave: (connector: AgentConnector) => void
-  onTest: (runtime: AgentRuntimeKind) => void
-  paths: Partial<Record<AgentRuntimeKind, string>>
-  savingRuntime: AgentRuntimeKind | null
-  testingRuntime: AgentRuntimeKind | null
+const authTypeLabels: Record<AgentAuthType, string> = { api_key: 'API Key', oauth: 'OAuth 登录' }
+const permissionModeLabels: Record<AgentPermissionMode, string> = { 'read-only': '只读（不写入）', auto: '自动批准（本地写入直接生效）', 'full-access': '完全访问（本地写入直接生效）' }
+const toolProfileLabels: Record<AgentToolProfile, string> = { 'read-only': '仅读取任务/日历', 'approved-write': '可创建与更新任务、日历、提醒' }
+
+/** Provider configuration: credentials, default model and local write policy.
+ * Everything here is app-owned. Secrets move one way only — the API Key input is
+ * cleared on success and the vault status is a boolean, never the value. */
+function AgentModelSettingsPanel({ authFeedback, authState, onLoginAttempt, onLoginCancelled, onLoginPromptAnswered, onLoginStarted, onPromptValueChange }: {
+  authFeedback: string | null
+  authState: AgentAuthState
+  onLoginAttempt: (provider: string) => void
+  onLoginCancelled: (loginId: string) => void
+  onLoginPromptAnswered: (loginId: string) => void
+  onLoginStarted: (loginId: string) => void
+  onPromptValueChange: (value: string) => void
 }): React.JSX.Element {
-  const runtimeLabels: Record<AgentRuntimeKind, string> = { codex: 'Codex', pi: 'Pi' }
-  const [expanded, setExpanded] = useState<Set<AgentRuntimeKind>>(() => new Set())
-  const toggle = (runtime: AgentRuntimeKind): void => {
-    setExpanded((current) => {
-      const next = new Set(current)
-      if (next.has(runtime)) next.delete(runtime)
-      else next.add(runtime)
-      return next
+  const queryClient = useQueryClient()
+  const statusQuery = useQuery({ queryKey: ['agent-credential-status'], queryFn: () => getWorkbenchAgentApi().credentials.status() })
+  const catalogQuery = useQuery({ queryKey: ['agent-model-catalog'], queryFn: () => getWorkbenchAgentApi().models.catalog() })
+  const settingsQuery = useQuery({ queryKey: ['agent-settings'], queryFn: () => getWorkbenchAgentApi().settings.get() })
+  const [draft, setDraft] = useState<AgentSettingsSaveInput | null>(null)
+  const [selectedProvider, setSelectedProvider] = useState<string | null>(null)
+  // One inline key editor at a time. The value is renderer state only until it
+  // is submitted, and the reply from Main is a status list, never the key.
+  const [keyTarget, setKeyTarget] = useState<string | null>(null)
+  const [keyValue, setKeyValue] = useState('')
+  const [providerFilter, setProviderFilter] = useState('')
+  const [feedback, setFeedback] = useState<string | null>(null)
+  const { login, promptValue } = authState
+
+  const settings = settingsQuery.data ?? null
+  // The form is seeded from the stored row and then owned locally, so a slow
+  // refetch cannot overwrite what the user is currently editing.
+  useEffect(() => {
+    if (!settings) return
+    setDraft((current) => current ?? {
+      provider: settings.provider,
+      model: settings.model,
+      thinking: settings.thinking,
+      permissionMode: settings.permissionMode,
+      toolProfile: settings.toolProfile,
+      approvalPolicy: settings.approvalPolicy,
+      responseLanguage: settings.responseLanguage,
+      expectedRevision: settings.revision
+    })
+  }, [settings])
+  useEffect(() => {
+    if (selectedProvider || !settings) return
+    setSelectedProvider(settings.provider ?? '')
+  }, [selectedProvider, settings])
+  useEffect(() => {
+    // A `/key <provider>` command in the Agent chat can only hand over a provider
+    // id, never a key, so the command's whole effect is to land here with that
+    // provider's key editor already open.
+    const target = takePendingProviderTarget()
+    if (!target) return
+    setSelectedProvider(target.provider)
+    if (target.intent === 'key') setKeyTarget(target.provider)
+  }, [])
+
+  const saveCredential = useMutation({
+    mutationFn: (input: { provider: string; apiKey: string | null }) => getWorkbenchAgentApi().credentials.save(input),
+    onSuccess: (statuses, input) => {
+      setKeyValue('')
+      setKeyTarget(null)
+      setFeedback(input.apiKey === null ? `${input.provider} 的凭据已清除。` : `${input.provider} 的 API Key 已保存到本机 safeStorage；页面不会回显密钥。`)
+      queryClient.setQueryData(['agent-credential-status'], statuses)
+      void queryClient.invalidateQueries({ queryKey: ['agent-model-catalog'] })
+    },
+    onError: (error) => setFeedback(getErrorMessage(error))
+  })
+  const startLogin = useMutation({
+    mutationFn: (provider: string) => getWorkbenchAgentApi().models.loginStart({ provider }),
+    onMutate: (provider) => onLoginAttempt(provider),
+    onSuccess: (result, provider) => { onLoginStarted(result.loginId); setSelectedProvider(provider); setFeedback(null) },
+    onError: (error) => { onLoginCancelled(''); setFeedback(getErrorMessage(error)) }
+  })
+  const answerLogin = useMutation({
+    mutationFn: (input: { loginId: string; promptId: string; value: string }) => getWorkbenchAgentApi().models.loginAnswer(input),
+    onSuccess: (_result, input) => { onPromptValueChange(''); onLoginPromptAnswered(input.loginId) },
+    onError: (error) => setFeedback(getErrorMessage(error))
+  })
+  const cancelLogin = useMutation({
+    mutationFn: (loginId: string) => getWorkbenchAgentApi().models.loginCancel({ loginId }),
+    onSuccess: (_result, loginId) => { onLoginCancelled(loginId); setFeedback('已取消登录。') },
+    onError: (error) => setFeedback(getErrorMessage(error))
+  })
+  const logout = useMutation({
+    mutationFn: (provider: string) => getWorkbenchAgentApi().models.logout({ provider }),
+    onSuccess: (statuses) => { setFeedback('已登出并清除本机凭据。'); queryClient.setQueryData(['agent-credential-status'], statuses) },
+    onError: (error) => setFeedback(getErrorMessage(error))
+  })
+  const saveSettings = useMutation({
+    mutationFn: (input: AgentSettingsSaveInput) => getWorkbenchAgentApi().settings.save(input),
+    onSuccess: (saved) => { setFeedback('默认模型与本地写入策略已保存。'); setDraft({ ...saved, expectedRevision: saved.revision }); queryClient.setQueryData(['agent-settings'], saved) },
+    onError: (error) => setFeedback(getErrorMessage(error))
+  })
+
+  if (statusQuery.isLoading || catalogQuery.isLoading || settingsQuery.isLoading) {
+    return <SettingInfoPanel eyebrow="SETTINGS / MODELS" title="模型与 Agent"><LoadingState label="正在加载内嵌 Pi 运行时与模型目录…" /></SettingInfoPanel>
+  }
+  if (statusQuery.error || catalogQuery.error || settingsQuery.error) {
+    return <SettingInfoPanel eyebrow="SETTINGS / MODELS" title="模型与 Agent"><ErrorState error={statusQuery.error ?? catalogQuery.error ?? settingsQuery.error} onRetry={() => { void statusQuery.refetch(); void catalogQuery.refetch(); void settingsQuery.refetch() }} /></SettingInfoPanel>
+  }
+  if (!draft) return <SettingInfoPanel eyebrow="SETTINGS / MODELS" title="模型与 Agent"><LoadingState label="正在准备表单…" /></SettingInfoPanel>
+
+  const catalog = catalogQuery.data ?? []
+  const providerEntries = mergeProviderEntries(catalog, statusQuery.data ?? [])
+  const activeCatalog = catalog.find((entry) => entry.provider === draft.provider) ?? null
+  const configuredProviders = providerEntries.filter((entry) => entry.credentialPresent)
+  const selectedModel = (activeCatalog?.models ?? []).find((model) => model.id === draft.model) ?? null
+  // The stored default is an exact `provider/modelId` selector, so it is only
+  // savable while that exact pair exists in the catalog. Allowing anything else
+  // would store a preference for a model that does not exist and move the
+  // failure to the next run instead of leaving it here.
+  const defaultIssue = defaultSelectionIssue(draft.provider, draft.model, catalog)
+  return <SettingInfoPanel eyebrow="SETTINGS / MODELS" title="模型与 Agent">
+    <p>模型凭据、默认模型与本地写入策略都在这里维护。凭据只保存在本机 Main 进程的 safeStorage 中，不写入数据库、不进入日志，也不会复用 Pi CLI 的个人登录态；运行时在本进程内直接加载 Pi SDK，不启动外部 CLI 进程，也不读取 <code>~/.pi</code>、<code>~/.codex</code>。</p>
+
+    <ProviderSetupList
+      catalog={catalog}
+      disabled={saveCredential.isPending || startLogin.isPending || logout.isPending}
+      entries={providerEntries}
+      filter={providerFilter}
+      answerPending={answerLogin.isPending}
+      keyTarget={keyTarget}
+      keyValue={keyValue}
+      onCancelKey={() => { setKeyTarget(null); setKeyValue('') }}
+      onClear={(provider) => saveCredential.mutate({ provider, apiKey: null })}
+      onFilterChange={setProviderFilter}
+      onKeyChange={setKeyValue}
+      onLogin={(provider) => { setFeedback(null); startLogin.mutate(provider) }}
+      onLogout={(provider) => logout.mutate(provider)}
+      onOpenKey={(provider) => { setSelectedProvider(provider); setKeyTarget(provider); setKeyValue('') }}
+      onSaveKey={(provider) => saveCredential.mutate({ provider, apiKey: keyValue })}
+      login={login}
+      onAnswerLogin={(input) => answerLogin.mutate(input)}
+      onLoginAttempt={onLoginAttempt}
+      onCancelLogin={(loginId) => cancelLogin.mutate(loginId)}
+      onPromptValueChange={onPromptValueChange}
+      promptValue={promptValue}
+      onSelect={setSelectedProvider}
+    />
+    <p className="agent-credential-status" id="agent-api-key-hint">API Key 只在密码输入框中提交，保存后立即写入 Main 的 safeStorage 并只回传状态；页面、SQLite、账本与日志都不保存密钥明文。</p>
+
+    <div className="settings-form-grid mt-4">
+      <label>默认 Provider
+        <select className="select-control" onChange={(event) => setDraft({ ...draft, provider: event.target.value || null, model: null, thinking: null })} value={draft.provider ?? ''}>
+          <option value="">未指定（运行时使用第一个已配置的凭据）</option>
+          {configuredProviders.map((entry) => <option key={entry.provider} value={entry.provider}>{entry.label}</option>)}
+        </select>
+      </label>
+      <label>默认模型
+        <select className="select-control" disabled={draft.provider === null} onChange={(event) => { const model = (activeCatalog?.models ?? []).find((item) => item.id === event.target.value) ?? null; setDraft({ ...draft, model: event.target.value || null, thinking: model && draft.thinking && model.thinkingLevels.includes(draft.thinking) ? draft.thinking : (model?.thinkingLevels[0] ?? null) }) }} value={draft.model ?? ''}>
+          <option value="">跟随 provider 默认</option>
+          {(activeCatalog?.models ?? []).map((model) => <option key={model.id} value={model.id}>{model.name}</option>)}
+        </select>
+      </label>
+      <label>Thinking 深度
+        <select className="select-control" disabled={!selectedModel || selectedModel.thinkingLevels.length === 0} onChange={(event) => setDraft({ ...draft, thinking: event.target.value || null })} value={draft.thinking ?? ''}>
+          <option value="">模型默认</option>
+          {(selectedModel?.thinkingLevels ?? []).map((level) => <option key={level} value={level}>{level}</option>)}
+        </select>
+      </label>
+      <label>默认权限模式
+        <select className="select-control" onChange={(event) => setDraft({ ...draft, permissionMode: event.target.value as AgentPermissionMode })} value={draft.permissionMode}>
+          {(Object.keys(permissionModeLabels) as AgentPermissionMode[]).map((mode) => <option key={mode} value={mode}>{permissionModeLabels[mode]}</option>)}
+        </select>
+      </label>
+      <label>本地工具范围
+        <select className="select-control" onChange={(event) => setDraft({ ...draft, toolProfile: event.target.value as AgentToolProfile })} value={draft.toolProfile}>
+          {(Object.keys(toolProfileLabels) as AgentToolProfile[]).map((profile) => <option key={profile} value={profile}>{toolProfileLabels[profile]}</option>)}
+        </select>
+      </label>
+    </div>
+    <div className="form-actions mt-3">
+      <Button disabled={defaultIssue !== null} loading={saveSettings.isPending} onClick={() => saveSettings.mutate({ ...draft, model: draft.model?.trim() || null, thinking: draft.thinking?.trim() || null })} size="sm" variant="primary"><Save aria-hidden="true" className="size-3.5" />保存默认配置</Button>
+      <span className="text-xs text-muted-foreground">Revision {settings?.revision ?? 0} · 最近更新 {settings ? formatDateTime(settings.updatedAt) : '—'}</span>
+    </div>
+    <p className="mt-2 text-xs text-muted-foreground">{defaultSelectionSummary(draft.provider, draft.model)}</p>
+    {defaultIssue ? <p className="mt-1 text-xs text-danger" role="alert">{defaultIssue}</p> : null}
+    {feedback ?? authFeedback ? <p aria-live="polite" className="form-feedback mt-3" role="status">{feedback ?? authFeedback}</p> : null}
+
+    <CustomProviderSection />
+  </SettingInfoPanel>
+}
+
+/**
+ * The Agent chat cannot carry a secret, so `/key <provider>` leaves the provider
+ * id here and the panel picks it up when it mounts. Reading is a take: the
+ * request is consumed so a later unrelated Settings visit does not reopen it.
+ */
+function takePendingProviderTarget(): { provider: string; intent: 'key' | 'login' } | null {
+  try {
+    const provider = localStorage.getItem('workbench-agent-command-provider')
+    if (!provider) return null
+    const intent = localStorage.getItem('workbench-agent-command-intent') === 'key' ? 'key' : 'login'
+    localStorage.removeItem('workbench-agent-command-provider')
+    localStorage.removeItem('workbench-agent-command-intent')
+    return { provider, intent }
+  } catch {
+    // Renderer storage is optional; a blocked store only means no deep link.
+    return null
+  }
+}
+
+/** Providers are the union of the SDK catalog and the stored vault index, so a
+ * credential whose provider disappeared from the SDK stays visible and therefore
+ * deletable instead of becoming an invisible orphan in safeStorage. */
+function mergeProviderEntries(catalog: AgentModelCatalogEntry[], statuses: AgentCredentialStatus[]): AgentCredentialStatus[] {
+  const merged = new Map<string, AgentCredentialStatus>()
+  for (const status of statuses) merged.set(status.provider, status)
+  for (const entry of catalog) {
+    const existing = merged.get(entry.provider)
+    merged.set(entry.provider, {
+      provider: entry.provider,
+      label: existing?.label && existing.label !== entry.provider ? existing.label : entry.name,
+      credentialPresent: existing?.credentialPresent ?? false,
+      authType: existing?.authType ?? null,
+      updatedAt: existing?.updatedAt ?? null
     })
   }
-  return <SettingInfoPanel eyebrow="SETTINGS / AGENT" title="Agent 运行时">
-    <p>集中管理本机 Codex 与 Pi runtime。点击任意行展开详细配置；模型、Thinking 和权限状态来自真实 runtime 探测。</p>
-    <div className="agent-runtime-table-wrap" role="region" aria-label="Agent runtime 配置表" tabIndex={0}>
-      <table className="agent-runtime-table">
-        <thead><tr><th>Runtime</th><th>可执行文件</th><th>版本</th><th>登录</th><th>默认模型</th><th>权限</th><th>状态</th><th>操作</th></tr></thead>
-        <tbody>{connectors.map((connector) => {
-          const isExpanded = expanded.has(connector.runtime)
-          const detailsId = `agent-runtime-details-${connector.runtime}`
-          const status = connector.enabled ? (connector.available ? '可用' : '未探测') : '已停用'
-          return <Fragment key={connector.id}>
-            <tr className={cn('agent-runtime-row', isExpanded && 'agent-runtime-row-expanded')} aria-expanded={isExpanded} onClick={() => toggle(connector.runtime)}>
-              <td><button className="agent-runtime-name" onClick={(event) => { event.stopPropagation(); toggle(connector.runtime) }} aria-controls={detailsId} aria-expanded={isExpanded}><span aria-hidden="true" className={cn('status-led', connector.available && connector.enabled ? 'bg-online' : 'bg-danger')} />{runtimeLabels[connector.runtime]}{isExpanded ? <ChevronUp aria-hidden="true" className="size-3.5" /> : <ChevronDown aria-hidden="true" className="size-3.5" />}</button></td>
-              <td className="agent-runtime-path-cell" title={connector.executablePath ?? '未配置'}>{connector.executablePath ?? '未配置'}</td>
-              <td>{connector.version ?? '—'}</td>
-              <td>{connector.authReady === true ? '已就绪' : connector.authReady === false ? '需登录' : '—'}</td>
-              <td>{connector.localDefaultModel ?? '—'}</td>
-              <td>{connector.localPermission ? formatRuntimePermission(connector.runtime, connector.localPermission) : '—'}</td>
-              <td><span className={cn('research-status', connector.available && connector.enabled ? 'research-status-positive' : 'research-status-warning')}>{status}</span></td>
-              <td><Button aria-controls={detailsId} aria-expanded={isExpanded} onClick={(event) => { event.stopPropagation(); toggle(connector.runtime) }} size="sm" variant="ghost">{isExpanded ? '收起' : '编辑'}</Button></td>
-            </tr>
-            {isExpanded ? <tr className="agent-runtime-details-row"><td colSpan={8}><div className="agent-runtime-details" id={detailsId}>
-              <div className="agent-runtime-detail-heading"><div><h3>{runtimeLabels[connector.runtime]} 详细配置</h3><p>{connector.message || '尚未探测。保存路径后点击探测。'}</p></div><span className="research-tag">{connector.localThinkingLevel ? `Thinking：${connector.localThinkingLevel}` : 'Thinking：未探测'}</span></div>
-              <div className="agent-runtime-detail-grid"><label>可执行文件路径<Input aria-label={`${runtimeLabels[connector.runtime]} 可执行文件路径`} onChange={(event) => onPathChange(connector.runtime, event.target.value)} placeholder={connector.runtime === 'codex' ? '例如 codex 或 C:\\Tools\\codex.cmd' : '例如 pi 或 C:\\Tools\\pi.cmd'} value={paths[connector.runtime] ?? ''} /></label><label className="agent-runtime-switch"><span>允许在 Agent 首页和定时任务中使用</span><input checked={enabled[connector.runtime] ?? connector.enabled} className="research-checkbox" onChange={(event) => onEnabledChange(connector.runtime, event.target.checked)} type="checkbox" /></label></div>
-              <div className="agent-runtime-detail-actions"><span className="text-xs text-muted-foreground">代理由“设置 → 代理”统一管理；凭据不会在此页面显示。</span><div className="flex gap-2"><Button loading={savingRuntime === connector.runtime} onClick={() => onSave(connector)} size="sm" variant="secondary"><Save aria-hidden="true" className="size-3.5" />保存</Button><Button disabled={!connector.enabled} loading={testingRuntime === connector.runtime} onClick={() => onTest(connector.runtime)} size="sm"><TestTube2 aria-hidden="true" className="size-3.5" />探测</Button></div></div>
-            </div></td></tr> : null}
-          </Fragment>
-        })}</tbody>
-      </table>
+  return [...merged.values()].sort((left, right) => Number(right.credentialPresent) - Number(left.credentialPresent) || left.label.localeCompare(right.label))
+}
+
+/**
+ * Pi's OAuth detail stays inside the provider row. This is intentionally not a
+ * page-level dialog: the URL/device code/manual callback answer belongs to the
+ * provider that started the login and must remain adjacent to its controls.
+ */
+function ProviderAuthFlow({ login, promptValue, answerPending, onAnswerLogin, onCancelLogin, onPromptValueChange }: {
+  login: ActiveLogin
+  promptValue: string
+  answerPending: boolean
+  onAnswerLogin: (input: { loginId: string; promptId: string; value: string }) => void
+  onCancelLogin: (loginId: string) => void
+  onPromptValueChange: (value: string) => void
+}): React.JSX.Element {
+  const prompt = login.prompt
+  return <div aria-live="polite" className="agent-provider-auth-flow" role="status">
+    <div className="agent-provider-auth-heading">
+      <strong>{authTypeLabels[login.authType]}</strong>
+      <span className="research-tag">{login.message}</span>
     </div>
-    {feedback ? <p aria-live="polite" className="form-feedback form-feedback-success" role="status">{feedback}</p> : null}
-    <div className="rounded-lg border border-border bg-muted/20 p-4 text-xs leading-5"><p className="font-semibold text-foreground">安全边界</p><p className="mt-1">工作台只通过 Codex/Pi CLI 自带的登录状态检查确认本机凭据是否可用，不读取或复制 token，也不会把凭据写入 SQLite。运行时沿用本机 CLI 的模型、Thinking 和登录配置；工作台仍强制使用隔离 run 目录与 read-only 工具策略。</p></div>
-  </SettingInfoPanel>
+    {login.url ? <p className="agent-provider-auth-copy">授权地址：<ExternalUrlLink ariaLabel="在浏览器中打开授权地址" fieldLabel="授权地址" href={login.url} label={login.url} />{login.instructions ? ` — ${login.instructions}` : ''}</p> : null}
+    {login.deviceCode ? <p className="agent-provider-auth-copy">设备码 <code>{login.deviceCode.userCode}</code> · <ExternalUrlLink ariaLabel="在浏览器中打开设备码验证页" fieldLabel="设备码验证地址" href={login.deviceCode.verificationUri} label={login.deviceCode.verificationUri} /></p> : null}
+    {prompt ? <form className="agent-provider-auth-form" onSubmit={(event) => { event.preventDefault(); onAnswerLogin({ loginId: login.loginId, promptId: prompt.promptId, value: promptValue }) }}>
+      <label>{prompt.message}
+        {prompt.kind === 'select'
+          ? <select className="select-control" disabled={answerPending} onChange={(event) => onPromptValueChange(event.target.value)} value={promptValue}>{prompt.options.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}</select>
+          : <Input autoComplete="off" disabled={answerPending} onChange={(event) => onPromptValueChange(event.target.value)} placeholder={prompt.placeholder ?? '按 Pi 提示输入'} type={prompt.kind === 'secret' ? 'password' : 'text'} value={promptValue} />}
+      </label>
+      <div className="agent-provider-auth-actions"><Button disabled={answerPending || (prompt.kind === 'select' && promptValue === '')} loading={answerPending} size="sm" type="submit" variant="primary">提交</Button><Button disabled={answerPending} onClick={() => onCancelLogin(login.loginId)} size="sm" type="button" variant="ghost">取消登录</Button></div>
+    </form> : <div className="agent-provider-auth-actions"><Button disabled={answerPending} onClick={() => onCancelLogin(login.loginId)} size="sm" variant="ghost">取消登录</Button></div>}
+  </div>
+}
+
+/**
+ * Provider rows, each of which owns its credential.
+ *
+ * One consolidated row per provider is deliberate: a key belongs to exactly one
+ * provider, and a shared "Provider + API Key" pair above the list let the two
+ * halves disagree (a key could be typed while another provider was selected).
+ * The row never renders a stored secret — `credentialPresent` is a boolean.
+ */
+function ProviderSetupList({ answerPending, catalog, disabled, entries, filter, keyTarget, keyValue, login, onAnswerLogin, onCancelKey, onCancelLogin, onClear, onFilterChange, onKeyChange, onLogin, onLoginAttempt, onLogout, onOpenKey, onPromptValueChange, onSaveKey, onSelect, promptValue }: {
+  catalog: AgentModelCatalogEntry[]
+  disabled: boolean
+  answerPending: boolean
+  entries: AgentCredentialStatus[]
+  filter: string
+  keyTarget: string | null
+  keyValue: string
+  onCancelKey: () => void
+  onClear: (provider: string) => void
+  onFilterChange: (value: string) => void
+  onKeyChange: (value: string) => void
+  onLogin: (provider: string) => void
+  onLoginAttempt: (provider: string) => void
+  onLogout: (provider: string) => void
+  onOpenKey: (provider: string) => void
+  onSaveKey: (provider: string) => void
+  login: ActiveLogin | null
+  onAnswerLogin: (input: { loginId: string; promptId: string; value: string }) => void
+  onCancelLogin: (loginId: string) => void
+  onPromptValueChange: (value: string) => void
+  promptValue: string
+  onSelect: (provider: string) => void
+}): React.JSX.Element {
+  if (entries.length === 0) {
+    return <p className="mt-4 text-xs text-muted-foreground">模型目录为空：内嵌的 Pi SDK 未返回任何 provider，请检查安装是否完整。</p>
+  }
+  const needle = filter.trim().toLowerCase()
+  const visible = needle.length === 0
+    ? entries
+    : entries.filter((entry) => entry.provider.toLowerCase().includes(needle) || entry.label.toLowerCase().includes(needle))
+  return <div className="mt-4 grid gap-2">
+    {entries.length > 8
+      ? <Input aria-label="筛选 Provider" className="max-w-sm" onChange={(event) => onFilterChange(event.target.value)} placeholder="按名称或 id 筛选 Provider" type="search" value={filter} />
+      : null}
+    {visible.length === 0 ? <p className="text-xs text-muted-foreground">没有匹配 “{filter.trim()}” 的 Provider。</p> : null}
+    {visible.map((entry) => {
+      const authTypes = catalog.find((item) => item.provider === entry.provider)?.authTypes ?? []
+      const editing = keyTarget === entry.provider
+      const keyLabel = entry.credentialPresent && entry.authType === 'api_key' ? '更换 API Key' : '设置 API Key'
+      const activeLogin = login?.provider === entry.provider ? login : null
+      return <div className="settings-row rounded-md border border-border" key={entry.provider}>
+        <div className="min-w-0 flex-1">
+          <button className="agent-runtime-name" onClick={() => onSelect(entry.provider)} type="button"><span aria-hidden="true" className={cn('agent-runtime-dot', entry.credentialPresent ? 'agent-runtime-dot-online' : 'agent-runtime-dot-muted')} />{entry.label}</button>
+          <span className="ml-2 text-xs text-muted-foreground">{entry.credentialPresent ? `已配置${entry.authType ? ` · ${authTypeLabels[entry.authType]}` : ''}${entry.updatedAt ? ` · ${formatDateTime(entry.updatedAt)}` : ''}` : '未配置'} · 可用认证：{authTypes.length > 0 ? authTypes.map((type) => authTypeLabels[type]).join(' / ') : '未声明'}</span>
+        </div>
+        {authTypes.includes('api_key')
+          ? <Button disabled={disabled} onClick={() => (editing ? onCancelKey() : onOpenKey(entry.provider))} size="sm" variant="secondary"><KeyRound aria-hidden="true" className="size-3.5" />{editing ? '取消' : keyLabel}</Button>
+          : null}
+        {authTypes.includes('oauth')
+          ? <Button disabled={disabled || login !== null} onClick={() => { onLoginAttempt(entry.provider); onLogin(entry.provider) }} size="sm" variant="secondary">{entry.credentialPresent && entry.authType === 'oauth' ? '重新授权' : 'OAuth 登录'}<ExternalLink aria-hidden="true" className="size-3.5" /></Button>
+          : null}
+        {entry.credentialPresent ? <Button disabled={disabled} onClick={() => (entry.authType === 'oauth' ? onLogout(entry.provider) : onClear(entry.provider))} size="sm" variant="ghost"><Trash2 aria-hidden="true" className="size-3.5" />{entry.authType === 'oauth' ? '登出并清除' : '清除凭据'}</Button> : null}
+        {editing ? <form className="settings-row-key" onSubmit={(event) => { event.preventDefault(); if (keyValue.trim().length > 0) onSaveKey(entry.provider) }}>
+          <Input
+            aria-describedby="agent-api-key-hint"
+            aria-label={`${entry.label} 的 API Key`}
+            autoComplete="off"
+            disabled={disabled}
+            onChange={(event) => onKeyChange(event.target.value)}
+            placeholder={entry.credentialPresent ? '已保存；输入新值可替换' : '粘贴该服务的 API Key'}
+            type="password"
+            value={keyValue}
+          />
+          <Button disabled={disabled || keyValue.trim().length === 0} size="sm" type="submit" variant="primary"><Save aria-hidden="true" className="size-3.5" />保存</Button>
+        </form> : null}
+        {activeLogin ? <ProviderAuthFlow
+          answerPending={answerPending}
+          login={activeLogin}
+          onAnswerLogin={onAnswerLogin}
+          onCancelLogin={onCancelLogin}
+          onPromptValueChange={onPromptValueChange}
+          promptValue={promptValue}
+        /> : null}
+      </div>
+    })}
+  </div>
 }
 
 type KnowledgeEngineDraft = {
@@ -899,6 +1135,70 @@ function McpSettingsPanel(): React.JSX.Element {
 }
 
 export function IntegrationsSettingsPage({ projects: _projects }: { projects: Project[] }): React.JSX.Element {
-  const [tab, setTab] = useState<SettingsTab>('general')
-  return <div className="page-scroll"><PageHeader description="管理工作区、外部工具、代理、Agent 运行时和知识引擎映射；页面仅显示后端真实状态。" eyebrow="SETTINGS / WORKSPACE" title="设置" /><div className="mt-4"><ResearchTabs items={[{ value: 'general', label: '通用' }, { value: 'workspace', label: '工作区与数据' }, { value: 'literature', label: '文献检索' }, { value: 'proxy', label: '代理' }, { value: 'connectors', label: '工具连接' }, { value: 'agent', label: 'Agent 运行时' }, { value: 'engines', label: '知识引擎' }, { value: 'mcp', label: 'MCP Server' }, { value: 'security', label: '安全与审计' }, { value: 'about', label: '关于与更新' }]} label="设置分区" onChange={setTab} value={tab} /></div><div className="mt-4">{tab === 'general' ? <GeneralSettingsPanel /> : null}{tab === 'workspace' ? <WorkspaceSettingsPanel /> : null}{tab === 'literature' ? <LiteratureSettingsPanel /> : null}{tab === 'proxy' ? <ProxySettingsPanel /> : null}{tab === 'connectors' ? <ConnectorsPanel /> : null}{tab === 'agent' ? <AgentRuntimeSettingsPanel /> : null}{tab === 'engines' ? <EnginesPanel /> : null}{tab === 'mcp' ? <McpSettingsPanel /> : null}{tab === 'security' ? <SecuritySettingsPanel /> : null}{tab === 'about' ? <UpdatesSettingsPanel /> : null}</div></div>
+  const queryClient = useQueryClient()
+  const [authState, setAuthState] = useState<AgentAuthState>({ login: null, promptValue: '' })
+  const [authFeedback, setAuthFeedback] = useState<string | null>(null)
+  const activeLoginId = useRef<string | null>(null)
+  const expectedLoginProvider = useRef<string | null>(null)
+  const ownedLoginIds = useRef(new Set<string>())
+
+  // Auth events are subscribed above the tab panels. Switching settings tabs
+  // must not orphan Pi's login coroutine or lose the prompt needed to finish it.
+  useEffect(() => {
+    const unsubscribe = getWorkbenchAgentApi().models.onAuthEvent((event) => {
+      const owned = ownedLoginIds.current.has(event.loginId)
+      const expected = event.kind === 'started' && expectedLoginProvider.current === event.provider
+      if (!owned && event.kind === 'started' && activeLoginId.current === null && expected) {
+        ownedLoginIds.current.add(event.loginId)
+        activeLoginId.current = event.loginId
+        expectedLoginProvider.current = null
+      }
+      if (!ownedLoginIds.current.has(event.loginId) || (activeLoginId.current !== null && activeLoginId.current !== event.loginId)) return
+      switch (event.kind) {
+        case 'started':
+          activeLoginId.current = event.loginId
+          setAuthState({ login: { loginId: event.loginId, provider: event.provider, authType: event.authType, message: '正在启动授权…', url: null, instructions: null, deviceCode: null, prompt: null }, promptValue: '' })
+          break
+        case 'info':
+          setAuthState((current) => current.login ? { ...current, login: { ...current.login, message: event.message } } : current)
+          break
+        case 'auth_url':
+          setAuthState((current) => current.login ? { ...current, login: { ...current.login, message: '已请求用系统浏览器打开授权页面；若未自动打开，请点击下方链接。', url: event.url, instructions: event.instructions } } : current)
+          break
+        case 'device_code':
+          setAuthState((current) => current.login ? { ...current, login: { ...current.login, message: '已在浏览器中打开验证页面；若未打开，请点击下方链接。', deviceCode: { userCode: event.userCode, verificationUri: event.verificationUri } } } : current)
+          break
+        case 'progress':
+          setAuthState((current) => current.login ? { ...current, login: { ...current.login, message: event.message } } : current)
+          break
+        case 'prompt':
+          setAuthState((current) => current.login ? { ...current, promptValue: event.promptKind === 'select' ? (event.options[0]?.value ?? '') : '', login: { ...current.login, prompt: { promptId: event.promptId, kind: event.promptKind, message: event.message, placeholder: event.placeholder, options: event.options } } } : current)
+          break
+        case 'done':
+          setAuthFeedback(event.ok ? `${event.provider} 登录完成，凭据已保存到本机 safeStorage。` : (event.error ?? `${event.provider} 登录未完成。`))
+          if (event.ok) {
+            void queryClient.invalidateQueries({ queryKey: ['agent-credential-status'] })
+            void queryClient.invalidateQueries({ queryKey: ['agent-model-catalog'] })
+          }
+          ownedLoginIds.current.delete(event.loginId)
+          if (activeLoginId.current === event.loginId) activeLoginId.current = null
+          setAuthState({ login: null, promptValue: '' })
+          break
+      }
+    })
+    return () => {
+      unsubscribe()
+      const loginId = activeLoginId.current
+      if (loginId) void getWorkbenchAgentApi().models.loginCancel({ loginId }).catch(() => {})
+    }
+  }, [queryClient])
+
+  // `pendingSection` is read once on mount and cleared, so a later manual tab
+  // change is not undone when the page re-renders.
+  const [tab, setTab] = useState<SettingsTab>(() => {
+    const requested = pendingSection ?? 'general'
+    pendingSection = null
+    return requested
+  })
+  return <div className="page-scroll"><PageHeader description="管理工作区、外部工具、代理、模型认证与知识引擎映射；页面仅显示后端真实状态。" eyebrow="SETTINGS / WORKSPACE" title="设置" /><div className="mt-4"><ResearchTabs items={[{ value: 'general', label: '通用' }, { value: 'workspace', label: '工作区与数据' }, { value: 'literature', label: '文献检索' }, { value: 'proxy', label: '代理' }, { value: 'connectors', label: '工具连接' }, { value: 'agent', label: '模型与 Agent' }, { value: 'engines', label: '知识引擎' }, { value: 'mcp', label: 'MCP Server' }, { value: 'security', label: '安全与审计' }, { value: 'about', label: '关于与更新' }]} label="设置分区" onChange={setTab} value={tab} /></div><div className="mt-4">{tab === 'general' ? <GeneralSettingsPanel /> : null}{tab === 'workspace' ? <WorkspaceSettingsPanel /> : null}{tab === 'literature' ? <LiteratureSettingsPanel /> : null}{tab === 'proxy' ? <ProxySettingsPanel /> : null}{tab === 'connectors' ? <ConnectorsPanel /> : null}{tab === 'agent' ? <AgentModelSettingsPanel authFeedback={authFeedback} authState={authState} onLoginAttempt={(provider) => { expectedLoginProvider.current = provider; setAuthFeedback(null) }} onLoginCancelled={(loginId) => { expectedLoginProvider.current = null; ownedLoginIds.current.delete(loginId); activeLoginId.current = null; setAuthState({ login: null, promptValue: '' }) }} onLoginPromptAnswered={(loginId) => setAuthState((current) => current.login?.loginId === loginId ? { ...current, promptValue: '', login: { ...current.login, prompt: null } } : current)} onLoginStarted={(loginId) => { ownedLoginIds.current.add(loginId); activeLoginId.current = loginId; expectedLoginProvider.current = null }} onPromptValueChange={(value) => setAuthState((current) => ({ ...current, promptValue: value }))} /> : null}{tab === 'engines' ? <EnginesPanel /> : null}{tab === 'mcp' ? <McpSettingsPanel /> : null}{tab === 'security' ? <SecuritySettingsPanel /> : null}{tab === 'about' ? <UpdatesSettingsPanel /> : null}</div></div>
 }

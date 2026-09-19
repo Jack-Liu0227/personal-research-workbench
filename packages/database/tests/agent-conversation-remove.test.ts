@@ -41,7 +41,7 @@ afterEach(() => {
 
 /** One conversation as the history rail lists it. */
 function conversation(repository: WorkbenchRepository, title: string) {
-  return repository.createAgentConversation({ title, runtime: 'codex' })
+  return repository.createAgentConversation({ title, runtime: 'pi' })
 }
 
 /** One run of a conversation, plus the ledger rows the delete must not touch. */
@@ -49,7 +49,7 @@ function conversationRun(repository: WorkbenchRepository, conversationId: string
   const run = repository.startManagedAgentRun({
     jobId: null,
     conversationId,
-    runtime: 'codex',
+    runtime: 'pi',
     transport: 'inprocess',
     workflowKey: 'research_plan',
     projectId: null,

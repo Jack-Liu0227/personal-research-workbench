@@ -35,8 +35,11 @@ function CodeBlock({ code, language, blockKey }: { code: string; language?: stri
   )
 }
 
-/** A dependency-free, inert Markdown preview for local-first content. */
-export function MarkdownPreview({ source }: { source: string }): React.JSX.Element {
+/** A dependency-free, inert Markdown preview for local-first content. Callers
+ * may pass `className` to restyle the container — the chat uses it to drop the
+ * editor's padding and internal scrolling, since a message is already inside a
+ * padded, scrolling column. */
+export function MarkdownPreview({ source, className }: { source: string; className?: string }): React.JSX.Element {
   const blocks: ReactNode[] = []
   let code: string[] | null = null
   let language = ''
@@ -85,7 +88,7 @@ export function MarkdownPreview({ source }: { source: string }): React.JSX.Eleme
   })
   const trailingCode = code as string[] | null
   if (trailingCode !== null) blocks.push(<CodeBlock blockKey={`code-${codeIndex}`} code={trailingCode.join('\n')} language={language} key={`code-${codeIndex}`} />)
-  return <div aria-label="Markdown 实时预览" className="grid content-start gap-3 overflow-auto p-4 text-sm text-foreground">{blocks.length > 0 ? blocks : <p className="text-sm text-muted-foreground">暂无内容，开始编辑后将在这里预览。</p>}</div>
+  return <div aria-label="Markdown 实时预览" className={cn('grid content-start gap-3 overflow-auto p-4 text-sm text-foreground', className)}>{blocks.length > 0 ? blocks : <p className="text-sm text-muted-foreground">暂无内容，开始编辑后将在这里预览。</p>}</div>
 }
 
 /**

@@ -1,4 +1,4 @@
-import { AlertTriangle, Bot, ChevronDown, CircleDot, UserRound, Wrench } from 'lucide-react'
+import { AlertTriangle, Bot, ChevronDown, CircleDot, Info, Layers, Package, UserRound, Wrench } from 'lucide-react'
 import { useMemo } from 'react'
 import type { AgentRunRecordEntry, AgentRuntimeKind } from '@prw/contracts'
 import { MarkdownPreview } from '../../components/markdown-editor'
@@ -8,40 +8,104 @@ import {
   firstLine,
   formatClock,
   formatDuration,
-  groupRecordsByTurn,
+  groupRecordsByRun,
   recordKindLabels,
   safeDisplayContent,
   statusTone,
-  usageSummary
+  usageSummary,
+  type LedgerRun,
+  type LedgerTurn
 } from './ledger'
 
-const runtimeLabels: Record<AgentRuntimeKind, string> = { codex: 'Codex', pi: 'Pi' }
+const runtimeLabels: Record<AgentRuntimeKind, string> = { pi: 'Pi' }
 
 /**
- * Chat tab: a Turn-grouped projection of the ledger.
+ * Chat tab: a run-grouped projection of the ledger.
  *
- * Assistant text keeps using the existing MarkdownPreview component — the
- * "no new dependency" rule for this change means no new renderer, not dropping
- * the renderer the app already ships.
+ * A conversation is a sequence of runs — one per user message — and every run
+ * restarts turn numbering at 0. Rendering the flat ledger grouped by `turn`
+ * therefore collapsed the whole conversation into "all of your messages, then
+ * all of the replies", which is exactly the layout the user reported as broken.
+ * The ledger is instead rendered as run → turn → record, so each question stays
+ * adjacent to its own answer no matter how long the conversation grows.
+ *
+ * Assistant text keeps using the existing MarkdownPreview component — the "no
+ * new dependency" rule for this change means no new renderer, not dropping the
+ * renderer the app already ships.
  */
 export function ConversationView({ records, runtime, isRunning }: {
   readonly records: readonly AgentRunRecordEntry[]
   readonly runtime: AgentRuntimeKind
   readonly isRunning: boolean
 }): React.JSX.Element {
-  const turns = useMemo(() => groupRecordsByTurn(records), [records])
+  const runs = useMemo(() => groupRecordsByRun(records), [records])
   if (records.length === 0) {
     return <p className="agent-thread-empty-copy">这是一段新对话，发送第一条消息即可开始。</p>
   }
   return <div className="agent-ledger-stream">
-    {turns.map((turn) => <section className="agent-turn" key={turn.turn}>
-      {turn.turn > 0 ? <div className="agent-turn-divider">
-        <span className="agent-turn-label">Turn {turn.turn}</span>
-        <span className="agent-turn-metric">{formatDuration(turn.durationMs)}</span>
-        <span className="agent-turn-metric">{usageSummary(turn.usage)}</span>
-      </div> : null}
-      <RecordList records={turn.records} runtime={runtime} isRunning={isRunning} />
-    </section>)}
+    {runs.map((run, index) => <RunBlock
+      isRunning={isRunning}
+      key={run.runId}
+      run={run}
+      runtime={runtime}
+      showHeading={runs.length > 1}
+      turnOffset={runs.slice(0, index).reduce((total, previous) => total + previous.turns.length, 0)}
+    />)}
+  </div>
+}
+
+/**
+ * One run: its user message, then every turn it produced.
+ *
+ * The heading is only rendered for a multi-run conversation; a single run needs
+ * no "运行 1" label, and adding one would push the first reply down for no
+ * information.
+ */
+function RunBlock({ run, runtime, isRunning, showHeading, turnOffset }: {
+  readonly run: LedgerRun
+  readonly runtime: AgentRuntimeKind
+  readonly isRunning: boolean
+  readonly showHeading: boolean
+  readonly turnOffset: number
+}): React.JSX.Element {
+  return <section className="agent-run" data-run-id={run.runId}>
+    {showHeading ? <div className="agent-run-heading">
+      <span className="agent-run-label">运行 {turnOffset + 1}</span>
+      <span className="agent-run-metric">{formatClock(run.startedAt)}</span>
+      <span className="agent-run-metric">{formatDuration(run.durationMs)}</span>
+      {run.usage ? <span className="agent-run-metric">{usageSummary(run.usage)}</span> : null}
+    </div> : null}
+    {run.turns.map((turn) => <TurnBlock
+      isRunning={isRunning}
+      key={turn.turn}
+      runtime={runtime}
+      showDivider={turn.turn > 0}
+      turn={turn}
+    />)}
+  </section>
+}
+
+/**
+ * One turn.
+ *
+ * Turn 0 carries the user message that started the run, so it gets no divider:
+ * the message itself is the visual boundary. Later turns are reported as "the
+ * agent continued without a new prompt" and do need one.
+ */
+function TurnBlock({ turn, runtime, isRunning, showDivider }: {
+  readonly turn: LedgerTurn
+  readonly runtime: AgentRuntimeKind
+  readonly isRunning: boolean
+  readonly showDivider: boolean
+}): React.JSX.Element {
+  const endsOnly = turn.records.every((record) => record.kind === 'turn_end' && !record.detail)
+  return <div className="agent-turn">
+    {showDivider && !endsOnly ? <div className="agent-turn-divider">
+      <span className="agent-turn-label">Turn {turn.turn}</span>
+      <span className="agent-turn-metric">{formatDuration(turn.durationMs)}</span>
+      <span className="agent-turn-metric">{usageSummary(turn.usage)}</span>
+    </div> : null}
+    <RecordList isRunning={isRunning} records={turn.records} runtime={runtime} />
   </div>
 }
 
@@ -74,6 +138,13 @@ function RecordList({ records, runtime, isRunning }: {
   </>
 }
 
+/**
+ * Every record kind the ledger can produce, rendered explicitly.
+ *
+ * `system`, `context` and `compacted` were previously folded into the generic
+ * fallback note, which made a context compaction indistinguishable from an
+ * ordinary log line even though it changes what the model can still see.
+ */
 function RecordRow({ record, runtime, isRunning, nested }: {
   readonly record: AgentRunRecordEntry
   readonly runtime: AgentRuntimeKind
@@ -100,10 +171,12 @@ function RecordRow({ record, runtime, isRunning, nested }: {
         <CircleDot aria-hidden="true" className={cn('agent-meta-dot', `agent-tone-${tone}`)} />
         <span className="agent-meta-chip">{recordStatusLabel(record)}</span>
       </div>
-      {record.detail
-        ? <MarkdownPreview source={safeDisplayContent(record.detail)} />
-        : <p className="agent-ledger-placeholder">{isRunning ? '正在生成…' : '本次运行没有输出文本。'}</p>}
-      {isRunning && record.status === 'running' ? <span aria-hidden="true" className="agent-stream-cursor" /> : null}
+      <div className="agent-stream-body">
+        {record.detail
+          ? <MarkdownPreview className="agent-markdown" source={safeDisplayContent(record.detail)} />
+          : <p className="agent-ledger-placeholder">{isRunning ? '正在生成…' : '本次运行没有输出文本。'}</p>}
+        {isRunning && record.status === 'running' ? <span aria-hidden="true" className="agent-stream-cursor" /> : null}
+      </div>
     </article>
   }
   if (record.kind === 'reasoning') {
@@ -129,6 +202,9 @@ function RecordRow({ record, runtime, isRunning, nested }: {
       </div>
     </div>
   }
+  if (record.kind === 'compacted' || record.kind === 'system' || record.kind === 'context') {
+    return <LifecycleNote record={record} />
+  }
   if (record.kind === 'diagnostic') {
     const tone = statusTone(record.status)
     return <details className={cn('agent-diagnostic', `agent-diagnostic-${tone}`)}>
@@ -149,6 +225,22 @@ function RecordRow({ record, runtime, isRunning, nested }: {
   return <p className="agent-ledger-note">
     <strong>{record.title || recordKindLabels[record.kind]}</strong>
     {' · '}{summary}
+  </p>
+}
+
+/**
+ * Context lifecycle notes: a compaction, an injected system message or a new
+ * context item. These are informational only, and the icon differs so a
+ * compaction (which permanently drops earlier detail from the model's view) is
+ * not mistaken for a routine context injection.
+ */
+function LifecycleNote({ record }: { readonly record: AgentRunRecordEntry }): React.JSX.Element {
+  const Icon = record.kind === 'compacted' ? Package : record.kind === 'context' ? Layers : Info
+  return <p className="agent-ledger-lifecycle" data-kind={record.kind}>
+    <Icon aria-hidden="true" className="size-3.5" />
+    <strong>{record.title || recordKindLabels[record.kind]}</strong>
+    <span>{firstLine(record.detail || record.outputText || '（无补充说明）')}</span>
+    <time dateTime={record.createdAt}>{formatClock(record.createdAt)}</time>
   </p>
 }
 

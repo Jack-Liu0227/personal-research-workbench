@@ -81,5 +81,6 @@ Agent proxy profiles and runtime bindings are persisted through the Workspace Se
 - Zotero capability、Collections、Items、Inspector link 拆分加载，关闭自动重试；未选择条目时不读取 links，未进入显式 Paper 选择路径时不全量读取 Papers。
 - Agent capability probe 改为异步并行并使用 60 秒真实结果缓存；页面与 Automation 依赖按需加载。
 - `last30days` 每日推送固定为中文正文，同时保留原始标题、来源、引语、URL 和 skill footer/citation contract。
+- Agent 运行时改为 Core 进程内嵌入 Pi SDK（不再 spawn Codex/Pi CLI）：运行配置移入「设置 → 模型与 Agent」，一级导航收敛为 Agent/日历/任务 + 折叠的「研究」分组，对话按 run→turn 分组渲染；详见 `docs/implementation/24-pi-inprocess-agent-backend.md` 与 `25-agent-conversation-ui-and-settings.md`。
 
-验证：`pnpm typecheck` PASS；`pnpm build` PASS；`pnpm test:e2e` PASS；`pnpm test` 仅输出仓库声明的 intentional no-op。隔离 E2E shell 计时为 Agent 390ms、Zotero 393ms、Obsidian 390ms。真实 Vault、真实 Zotero/Better BibTeX、真实 Codex/Pi 及 200% 缩放/Windows 安装包人工验收仍待执行，不据此提升 DONE。
+验证：`pnpm typecheck` PASS；`pnpm build` PASS；`pnpm test:e2e` PASS；`pnpm test` 仅输出仓库声明的 intentional no-op。隔离 E2E shell 计时为 Agent 390ms、Zotero 393ms、Obsidian 390ms。真实 Vault、真实 Zotero/Better BibTeX、真实模型凭据的一次完整 run 及 200% 缩放/Windows 安装包人工验收仍待执行，不据此提升 DONE。

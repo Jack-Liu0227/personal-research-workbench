@@ -1,7 +1,7 @@
-import { ArrowUp, Bot, Check, ChevronDown, Clock3, ExternalLink, FolderOpen, MessageSquare, PanelLeftClose, PanelLeftOpen, Plus, Sparkles, Square, Trash2 } from 'lucide-react'
-import { useEffect, useMemo, useRef, useState } from 'react'
-import type { AgentConversation, AgentConnector, AgentCredentialProvider, AgentCredentialSaveInput, AgentEventRecord, AgentPermissionMode, AgentRunRecord, AgentRunRecordEntry, AgentRuntimeKind, ArchiveBulkLock, ArchiveBulkResult, Project } from '@prw/contracts'
-import { agentCredentialProviders, ProjectIdSchema } from '@prw/contracts'
+import { ArrowUp, Bot, Boxes, Clock3, Cpu, ExternalLink, FolderOpen, MessageSquare, PanelLeftClose, PanelLeftOpen, Plus, Settings2, Sparkles, Square, Terminal, Trash2 } from 'lucide-react'
+import { useEffect, useMemo, useRef, useState, type KeyboardEvent as ReactKeyboardEvent } from 'react'
+import type { AgentConversation, AgentEventRecord, AgentModelOption, AgentPermissionMode, AgentRunRecord, AgentRunRecordEntry, AgentRuntimeKind, ArchiveBulkLock, ArchiveBulkResult, Project } from '@prw/contracts'
+import { ProjectIdSchema, agentModelSelector } from '@prw/contracts'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { Button, Input, Textarea } from '../../components/ui'
 import { ArchiveReceiptList, SelectionBar, receiptResultFrom } from '../../components/selection'
@@ -10,22 +10,56 @@ import { cn } from '../../lib/utils'
 import { useDefaultProjectId } from '../../lib/recent-project'
 import { getWorkbenchAgentApi } from '../../lib/workbench'
 import { ResearchTabs } from '../research/shared'
+import { openSettingsSection } from '../research/settings'
 import { ConversationView } from './conversation-view'
+import { ExternalActionCards } from './external-actions'
 import { StatsRow, StepStrip, type RealtimeState } from './progress'
 import { TrajectoryView } from './trajectory-view'
 import { mergeRecords, runStats, safeDisplayTitle } from './ledger'
+import { AGENT_MAGIC_HELP, filterAgentMagicSuggestions, parseAgentMagicCommand } from './magic-commands'
 
-const runtimeLabels: Record<AgentRuntimeKind, string> = { codex: 'Codex', pi: 'Pi' }
-const runtimeDefaults: Record<AgentRuntimeKind, { model: string; permission: string; thinking: string }> = {
-  codex: { model: '', permission: '跟随 Codex 配置', thinking: '跟随 Codex 配置' },
-  pi: { model: '', permission: '跟随 Pi 配置', thinking: '跟随 Pi 配置' }
+/**
+ * One local command outcome, rendered inside the message stream.
+ *
+ * Commands are answered by the renderer, not the model, so their results must
+ * not look like an assistant reply: each card names the command that produced it
+ * and is labelled as local. They are deliberately session-scoped — a command
+ * result is UI feedback, not part of the persisted conversation ledger.
+ */
+interface AgentCommandResult {
+  readonly id: string
+  readonly command: string
+  readonly text: string
+  readonly tone: 'info' | 'error'
 }
+
+/** The embedded runtime is the only one, so the label is a constant rather than
+ * a lookup table with a single entry. */
+const runtimeLabels: Record<AgentRuntimeKind, string> = { pi: 'Pi' }
 const promptExamples = [
   '帮我整理今天最重要的科研安排，并按优先级排序',
   '检索这个项目的最新文献，输出可核验的研究摘要',
   '把当前项目拆成下一步可执行的任务清单'
 ]
 const trajectoryPageSize = 300
+
+/**
+ * Group one provider's models by the wire API they are called through.
+ *
+ * The app supports both OpenAI wire formats at once, so a provider's list can
+ * mix them and the same model name can legitimately appear twice. Grouping keeps
+ * the choice explicit instead of presenting two identical-looking rows.
+ */
+function groupModelsByApi(models: readonly AgentModelOption[]): readonly { readonly api: string; readonly models: readonly AgentModelOption[] }[] {
+  const groups = new Map<string, AgentModelOption[]>()
+  for (const model of models) {
+    const api = model.api ?? '未声明协议'
+    const bucket = groups.get(api)
+    if (bucket) bucket.push(model)
+    else groups.set(api, [model])
+  }
+  return [...groups].map(([api, entries]) => ({ api, models: entries }))
+}
 
 /** Delivery outcome of a scheduled run, read from the coarse run events. */
 type DeliveryStatus =
@@ -60,7 +94,14 @@ function readDeliveryStatus(events: readonly AgentEventRecord[]): DeliveryStatus
 }
 
 type AgentView = 'conversation' | 'trajectory'
-type HistoryFilter = 'all' | 'codex' | 'pi' | 'project'
+/**
+ * History filter. The runtime filter is gone with the second runtime: with one
+ * embedded runtime, filtering by it can only ever show everything or nothing,
+ * so "all" versus "bound to a project" is the only distinction worth a tab.
+ */
+type HistoryFilter = 'all' | 'project'
+
+const historyFilterLabels: Record<HistoryFilter, string> = { all: '全部', project: '项目' }
 
 function readStoredBoolean(key: string): boolean {
   try { return localStorage.getItem(key) === 'true' } catch { return false }
@@ -70,14 +111,11 @@ function readStoredView(): AgentView {
   try { return localStorage.getItem('workbench-agent-view') === 'trajectory' ? 'trajectory' : 'conversation' } catch { return 'conversation' }
 }
 
-export function AgentPage({ projects, onNavigate }: { projects: Project[]; onNavigate?: (view: 'dashboard' | 'tasks' | 'agent' | 'automation', openInNewTab?: boolean) => void }): React.JSX.Element {
+export function AgentPage({ projects, onNavigate }: { projects: Project[]; onNavigate?: (view: 'dashboard' | 'tasks' | 'agent' | 'automation' | 'settings', openInNewTab?: boolean) => void }): React.JSX.Element {
   const queryClient = useQueryClient()
   const [view, setView] = useState<AgentView>(readStoredView)
-  const [runtime, setRuntime] = useState<AgentRuntimeKind>('codex')
-  const [model, setModel] = useState(runtimeDefaults.codex.model)
-  const [thinking, setThinking] = useState('')
+  const [runtime, setRuntime] = useState<AgentRuntimeKind>('pi')
   const [assistantKey, setAssistantKey] = useState('researcher')
-  const [permissionMode, setPermissionMode] = useState<AgentPermissionMode>('read-only')
   // A new conversation starts in the most recently used project, while
   // 未分类 stays an explicit, remembered choice.
   const { chooseProjectId, projectId, setProjectId } = useDefaultProjectId(projects)
@@ -100,13 +138,10 @@ export function AgentPage({ projects, onNavigate }: { projects: Project[]; onNav
   const [realtime, setRealtime] = useState<RealtimeState>('unsupported')
   const [earlierRecords, setEarlierRecords] = useState<AgentRunRecordEntry[]>([])
   const [loadingEarlier, setLoadingEarlier] = useState(false)
-  // App-owned runtime credential. Only the non-secret status ever reaches the
-  // renderer; the key is written straight through to Main's safeStorage vault.
-  const [credentialRuntime, setCredentialRuntime] = useState<AgentRuntimeKind>('codex')
-  const [credentialProvider, setCredentialProvider] = useState<AgentCredentialProvider>('openai')
-  const [credentialSecret, setCredentialSecret] = useState('')
-  const [credentialFeedback, setCredentialFeedback] = useState('')
-  const recordsEndRef = useRef<HTMLDivElement | null>(null)
+  // Local command results (see AgentCommandResult) and the `/` palette state.
+  const [commandResults, setCommandResults] = useState<AgentCommandResult[]>([])
+  const [paletteIndex, setPaletteIndex] = useState(0)
+  const [paletteDismissed, setPaletteDismissed] = useState(false)
 
   useEffect(() => {
     try { localStorage.setItem('workbench-agent-history-collapsed', String(historyCollapsed)) } catch { /* optional renderer storage */ }
@@ -183,15 +218,44 @@ export function AgentPage({ projects, onNavigate }: { projects: Project[]; onNav
     refetchInterval: view === 'trajectory' && isRunActive ? 1_500 : false,
     placeholderData: (previous) => previous
   })
-  const connectors = useQuery({
-    queryKey: ['agent-connectors'],
-    queryFn: () => getWorkbenchAgentApi().connectors.list(),
-    staleTime: 60_000,
-    retry: false,
-    refetchInterval: false,
-    refetchOnMount: false,
+  // Run configuration lives in Settings, not in this page: the composer reads
+  // the saved profile so a run always uses the model the user configured in one
+  // place, and the status line links there instead of duplicating the controls.
+  const settings = useQuery({
+    queryKey: ['agent-settings'],
+    queryFn: () => getWorkbenchAgentApi().settings.get(),
+    staleTime: 30_000,
     placeholderData: (previous) => previous
   })
+  const runProfile = settings.data ?? null
+  const permissionMode: AgentPermissionMode = runProfile?.permissionMode ?? 'auto'
+  // Composer selectors. The provider list is gated to providers that actually
+  // hold a credential, because offering a provider whose runs can only fail is
+  // worse than offering fewer options; the model list is that provider's own
+  // catalog, so a model id is always shown together with the wire API it will
+  // be called through.
+  const catalog = useQuery({
+    queryKey: ['agent-model-catalog'],
+    queryFn: () => getWorkbenchAgentApi().models.catalog(),
+    staleTime: 60_000,
+    placeholderData: (previous) => previous
+  })
+  const credentialStatuses = useQuery({
+    queryKey: ['agent-credential-status'],
+    queryFn: () => getWorkbenchAgentApi().credentials.status(),
+    staleTime: 60_000,
+    placeholderData: (previous) => previous
+  })
+  const configuredProviderIds = useMemo(() => {
+    const stored = new Set((credentialStatuses.data ?? []).filter((entry) => entry.credentialPresent).map((entry) => entry.provider))
+    return new Set((catalog.data ?? []).filter((entry) => stored.has(entry.provider)).map((entry) => entry.provider))
+  }, [catalog.data, credentialStatuses.data])
+  const composerProvider = runProfile?.provider ?? null
+  const composerModels = useMemo(
+    () => (catalog.data ?? []).find((entry) => entry.provider === composerProvider)?.models ?? [],
+    [catalog.data, composerProvider]
+  )
+
   // Delivery status of the latest run. The run page has to answer "was today's
   // push written to the Vault, and under which relative path" without opening
   // the trajectory or the database, so the coarse events are projected here.
@@ -203,41 +267,6 @@ export function AgentPage({ projects, onNavigate }: { projects: Project[]; onNav
     placeholderData: (previous) => previous
   })
   const delivery = useMemo(() => readDeliveryStatus(runEvents.data ?? []), [runEvents.data])
-  const credentials = useQuery({
-    queryKey: ['agent-credentials'],
-    queryFn: () => getWorkbenchAgentApi().credentials.status(),
-    staleTime: 30_000,
-    placeholderData: (previous) => previous
-  })
-  const activeCredential = credentials.data?.find((entry) => entry.runtime === credentialRuntime) ?? null
-  const credentialChoices = agentCredentialProviders(credentialRuntime)
-  const saveCredentialMutation = useMutation({
-    mutationFn: (input: AgentCredentialSaveInput) => getWorkbenchAgentApi().credentials.save(input),
-    onSuccess: (statuses, input) => {
-      queryClient.setQueryData(['agent-credentials'], statuses)
-      setCredentialSecret('')
-      setCredentialFeedback(
-        input.apiKey
-          ? `已保存 ${runtimeLabels[input.runtime]} 的运行凭据；仅 Main 可解密，注入 ${statuses.find((entry) => entry.runtime === input.runtime)?.envVar ?? 'CLI 环境变量'}。`
-          : `已清除 ${runtimeLabels[input.runtime]} 的运行凭据。`
-      )
-    },
-    onError: (error) => setCredentialFeedback(error instanceof Error ? error.message : '凭据保存失败。')
-  })
-  const activeConnector = connectors.data?.find((connector) => connector.runtime === runtime)
-  const localPermission = formatLocalPermission(runtime, activeConnector?.localPermission)
-  const permissionOptions = activeConnector?.permissionOptions ?? []
-
-  // The local CLI profile is the source of truth for the initial selector.
-  // Do not overwrite an explicit user edit after the connector probe returns.
-  useEffect(() => {
-    if (connectors.isLoading) return
-    const detected = connectors.data?.find((connector) => connector.runtime === runtime)?.localDefaultModel
-    if (detected && (model === runtimeDefaults[runtime].model || model.trim().length === 0)) setModel(detected)
-    const detectedThinking = connectors.data?.find((connector) => connector.runtime === runtime)?.localThinkingLevel
-    if (detectedThinking && thinking.trim().length === 0) setThinking(detectedThinking)
-  }, [connectors.data, connectors.isLoading, model, runtime, thinking])
-
   // Incremental ledger subscription. It is scoped to the running run only and
   // degrades to the polling queries above when the channel or the preload
   // subscription API is unavailable.
@@ -285,9 +314,36 @@ export function AgentPage({ projects, onNavigate }: { projects: Project[]; onNav
   const oldestTrajectorySeq = trajectoryRecords[0]?.seq
   const hasEarlier = oldestTrajectorySeq !== undefined && oldestTrajectorySeq > 0
 
+  const messagesRef = useRef<HTMLDivElement | null>(null)
+  const composerInputRef = useRef<HTMLTextAreaElement | null>(null)
+  // Keep the empty composer compact like pi-web and grow only with content.
+  const resizeComposerInput = (): void => {
+    const element = composerInputRef.current
+    if (!element) return
+    element.style.height = '24px'
+    element.style.height = `${Math.min(Math.max(element.scrollHeight, 24), 200)}px`
+    element.style.overflowY = element.scrollHeight > 200 ? 'auto' : 'hidden'
+  }
+  useEffect(() => { resizeComposerInput() }, [instructions])
+  // Sticky-bottom scrolling. An unconditional scroll on every appended record
+  // would drag the reader back down while they are reading an earlier turn, so
+  // the stream is only followed while the viewport is already near the bottom.
+  const stickToBottomRef = useRef(true)
+  const handleMessagesScroll = (): void => {
+    const element = messagesRef.current
+    if (!element) return
+    stickToBottomRef.current = element.scrollHeight - element.scrollTop - element.clientHeight < 80
+  }
+
   useEffect(() => {
-    recordsEndRef.current?.scrollIntoView({ block: 'end' })
-  }, [conversationId, conversationRecords.length, view])
+    stickToBottomRef.current = true
+  }, [conversationId])
+
+  useEffect(() => {
+    const element = messagesRef.current
+    if (!element || !stickToBottomRef.current) return
+    element.scrollTo({ top: element.scrollHeight })
+  }, [commandResults.length, conversationId, conversationRecords.length, view])
 
   useEffect(() => {
     const runId = activeRun?.conversationId === conversationId ? activeRun.id : null
@@ -313,21 +369,153 @@ export function AgentPage({ projects, onNavigate }: { projects: Project[]; onNav
     }
   }, [activeRun?.conversationId, activeRun?.id, conversationId])
 
+  /** Append one local command outcome to the stream, keeping the newest 20. */
+  const pushCommandResult = (command: string, text: string, tone: 'info' | 'error' = 'info'): void => {
+    setCommandResults((current) => [...current.slice(-19), { id: `${Date.now().toString(36)}-${current.length.toString(36)}`, command, text, tone }])
+  }
+
+  /**
+   * Persist the default `provider/modelId` pair for the next run.
+   *
+   * The composer selectors and `/model use` write the same value: there is one
+   * default, it is stored in the Agent settings revision, and the runtime fails
+   * closed when the pair is not in the catalog. Nothing here is a per-page
+   * override, so the header line and the next run can never disagree.
+   */
+  const selectDefaultModel = async (provider: string | null, model: string | null): Promise<string> => {
+    if (!runProfile) throw new Error('Agent 设置尚未加载，请稍后重试。')
+    const saved = await getWorkbenchAgentApi().settings.save({ provider, model, thinking: runProfile.thinking, permissionMode: runProfile.permissionMode, toolProfile: runProfile.toolProfile, approvalPolicy: runProfile.approvalPolicy, responseLanguage: runProfile.responseLanguage, expectedRevision: runProfile.revision })
+    queryClient.setQueryData(['agent-settings'], saved)
+    return agentModelSelector(provider, model) ?? '未设置默认模型'
+  }
+
+  const selectModelMutation = useMutation({
+    mutationFn: (input: { readonly provider: string | null; readonly model: string | null }) => selectDefaultModel(input.provider, input.model),
+    onSuccess: (summary) => setFeedback(`默认模型已切换为 ${summary}；下一条消息使用该选择。`),
+    onError: (error) => setFeedback(error instanceof Error ? error.message : '切换默认模型失败。')
+  })
+
+  const executeMagicCommand = async (command: Exclude<ReturnType<typeof parseAgentMagicCommand>, null | { readonly error: string }>, raw: string): Promise<void> => {
+    const api = getWorkbenchAgentApi()
+    if (command.kind === 'help') {
+      pushCommandResult(raw, AGENT_MAGIC_HELP)
+      setInstructions('')
+      return
+    }
+    if (command.kind === 'settings' || command.kind === 'key' || command.kind === 'login') {
+      try {
+        if ('provider' in command) {
+          localStorage.setItem('workbench-agent-command-provider', command.provider)
+          localStorage.setItem('workbench-agent-command-intent', command.kind)
+        } else {
+          localStorage.removeItem('workbench-agent-command-provider')
+          localStorage.removeItem('workbench-agent-command-intent')
+        }
+      } catch { /* optional renderer storage */ }
+      openSettingsSection('agent')
+      onNavigate?.('settings', false)
+      pushCommandResult(raw, command.kind === 'key' ? `已打开设置，请在 Provider「${command.provider}」的安全输入框保存 Key。密钥不会进入聊天记录、模型请求或账本。` : command.kind === 'login' ? `已打开设置，请在 Provider「${command.provider}」启动 OAuth；授权页会自动由系统浏览器打开。` : '已打开模型与 Agent 设置。')
+      setInstructions('')
+      return
+    }
+    if (command.kind === 'logout') {
+      const statuses = await api.models.logout({ provider: command.provider })
+      queryClient.setQueryData(['agent-credential-status'], statuses)
+      queryClient.setQueryData(['agent-model-catalog'], await api.models.catalog())
+      pushCommandResult(raw, `已清除 Provider「${command.provider}」的本机凭据。`)
+      setInstructions('')
+      return
+    }
+    if (command.kind === 'provider-list') {
+      const providers = await api.models.catalog()
+      pushCommandResult(raw, providers.map((provider) => `${provider.provider} · ${provider.name} · ${provider.source}${configuredProviderIds.has(provider.provider) ? ' · 已配置凭据' : ' · 缺少凭据'}`).join('\n') || '暂无 Provider。')
+      setInstructions('')
+      return
+    }
+    if (command.kind === 'model-list') {
+      const providers = await api.models.catalog()
+      const filtered = command.provider === null ? providers : providers.filter((provider) => provider.provider === command.provider)
+      const lines = filtered.flatMap((provider) => provider.models.map((model) => `${provider.provider}/${model.id} · ${model.api ?? '未声明协议'} · ${provider.source}`))
+      pushCommandResult(raw, lines.join('\n') || '没有找到模型；可在设置中重新发现，或为自定义 Provider 手动填写模型 id。')
+      setInstructions('')
+      return
+    }
+    if (command.kind === 'model-use') {
+      const slash = command.selector.indexOf('/')
+      if (slash <= 0 || slash === command.selector.length - 1) throw new Error('/model use 必须使用 provider/modelId。')
+      const provider = command.selector.slice(0, slash)
+      const model = command.selector.slice(slash + 1)
+      try {
+        const summary = await selectDefaultModel(provider, model)
+        pushCommandResult(raw, `默认模型已切换为 ${summary}；下一条消息使用该选择。`)
+      } catch (error) {
+        pushCommandResult(raw, error instanceof Error ? error.message : '切换默认模型失败。', 'error')
+      }
+      setInstructions('')
+      return
+    }
+    const snapshot = await api.models.customProviders.get()
+    if (command.kind === 'provider-add') {
+      if (snapshot.providers.some((provider) => provider.id === command.id)) throw new Error(`Provider「${command.id}」已存在。`)
+      await api.models.customProviders.save({ providers: [...snapshot.providers, { id: command.id, name: command.id, baseUrl: command.baseUrl, api: command.api, models: [] }] })
+      await queryClient.invalidateQueries({ queryKey: ['agent-model-catalog'] })
+      pushCommandResult(raw, `已添加 Provider「${command.id}」（${command.api}）。下一步：/key ${command.id} 保存 Key，再 /provider discover ${command.id} 发现模型。`)
+      setInstructions('')
+      return
+    }
+    if (command.kind === 'provider-remove') {
+      await api.models.customProviders.save({ providers: snapshot.providers.filter((provider) => provider.id !== command.id) })
+      await queryClient.invalidateQueries({ queryKey: ['agent-model-catalog'] })
+      pushCommandResult(raw, `已从 models.json 移除 Provider「${command.id}」；safeStorage 中的 Key 未被删除。`)
+      setInstructions('')
+      return
+    }
+    if (command.kind === 'provider-discover') {
+      const target = snapshot.providers.find((provider) => provider.id === command.id)
+      if (!target) throw new Error(`Provider「${command.id}」不在 models.json 中；先用 /provider add 添加。`)
+      try {
+        const result = await api.models.customProviders.discover({ provider: target.id, baseUrl: target.baseUrl, api: target.api })
+        const pending = result.models.length
+        pushCommandResult(raw, pending === 0
+          ? `「${command.id}」没有返回可用模型：该协议/网关不提供标准模型列表，请在设置中手动填写模型 id。`
+          : `「${command.id}」发现 ${pending} 个候选模型（${result.api}）${result.notice ? `；${result.notice}` : ''}。候选模型需要你在设置中“采用”后才会写入 models.json。`)
+        openSettingsSection('agent')
+        onNavigate?.('settings', false)
+      } catch (error) {
+        pushCommandResult(raw, error instanceof Error ? error.message : '发现模型失败。', 'error')
+      }
+      setInstructions('')
+    }
+  }
+
   const startMutation = useMutation({
     mutationFn: async () => {
       const text = instructions.trim()
+      const magic = parseAgentMagicCommand(text)
+      if (magic && 'error' in magic) {
+        // A malformed command stays local: it is answered here instead of being
+        // sent to the model as prose, because the user addressed the composer.
+        pushCommandResult(text, magic.error, 'error')
+        setInstructions('')
+        return null
+      }
+      if (magic) {
+        await executeMagicCommand(magic, text)
+        return null
+      }
       if (!text) throw new Error('请先输入消息。')
-      const selectedModel = effectiveModel(runtime, model, activeConnector?.localDefaultModel)
+      const selectedModel = runProfile?.model?.trim() || null
       let activeConversation = selectedConversation
       if (!activeConversation || activeConversation.projectId !== (projectId || null) || activeConversation.runtime !== runtime || (activeConversation.permissionMode ?? 'read-only') !== permissionMode) {
-        activeConversation = await getWorkbenchAgentApi().conversations.create({ projectId: projectId ? ProjectIdSchema.parse(projectId) : null, title: text.slice(0, 60), runtime, model: selectedModel, assistantKey: assistantKey.trim() || 'researcher', toolProfile: permissionMode === 'read-only' ? 'read-only' : 'approved-write', permissionMode, approvalPolicy: permissionMode === 'full-access' ? 'never' : 'on-request' })
+        activeConversation = await getWorkbenchAgentApi().conversations.create({ projectId: projectId ? ProjectIdSchema.parse(projectId) : null, title: text.slice(0, 60), runtime, model: selectedModel, assistantKey: assistantKey.trim() || 'researcher', toolProfile: runProfile?.toolProfile ?? 'approved-write', permissionMode, approvalPolicy: runProfile?.approvalPolicy ?? 'never' })
       }
       setConversationId(activeConversation.id)
-      const run = await getWorkbenchAgentApi().runs.start({ jobId: null, conversationId: activeConversation.id, runtime, model: selectedModel, thinking: thinking.trim() || null, workflowKey: 'research_plan', skillKey: null, projectId: activeConversation.projectId, paperIds: [], instructions: text, toolProfile: permissionMode === 'read-only' ? 'read-only' : 'approved-write', permissionMode, approvalPolicy: permissionMode === 'full-access' ? 'never' : 'on-request', idempotencyKey: null, resumeFromRunId: null })
+      const run = await getWorkbenchAgentApi().runs.start({ jobId: null, conversationId: activeConversation.id, runtime, model: selectedModel, thinking: runProfile?.thinking ?? null, workflowKey: 'research_plan', skillKey: null, projectId: activeConversation.projectId, paperIds: [], instructions: text, toolProfile: runProfile?.toolProfile ?? 'approved-write', permissionMode, approvalPolicy: runProfile?.approvalPolicy ?? 'never', idempotencyKey: null, resumeFromRunId: null })
       setActiveRun(run)
       return run
     },
-    onSuccess: () => {
+    onSuccess: (run) => {
+      if (!run) return
       setInstructions('')
       setFeedback('已发送给 Agent；运行状态会持续保存到本地工作区。')
       void queryClient.invalidateQueries({ queryKey: ['agent-conversations'] })
@@ -379,20 +567,10 @@ export function AgentPage({ projects, onNavigate }: { projects: Project[]; onNav
     onError: (error) => { setHistoryReceipt(null); setFeedback(error instanceof Error ? error.message : '批量删除对话失败，未应用任何更改。') }
   })
 
-  const selectRuntime = (next: AgentRuntimeKind) => {
-    setRuntime(next)
-    const detectedModel = connectors.data?.find((connector) => connector.runtime === next)?.localDefaultModel
-    setModel(detectedModel || runtimeDefaults[next].model)
-    const detectedThinking = connectors.data?.find((connector) => connector.runtime === next)?.localThinkingLevel
-    setThinking(detectedThinking || '')
-  }
   const selectConversation = (conversation: AgentConversation) => {
     setConversationId(conversation.id)
     setRuntime(conversation.runtime)
-    setModel(conversation.model || connectors.data?.find((item) => item.runtime === conversation.runtime)?.localDefaultModel || runtimeDefaults[conversation.runtime].model)
-    setThinking(connectors.data?.find((item) => item.runtime === conversation.runtime)?.localThinkingLevel || '')
     setAssistantKey(conversation.assistantKey || 'researcher')
-    setPermissionMode(conversation.permissionMode ?? (conversation.toolProfile === 'approved-write' ? 'auto' : 'read-only'))
     setProjectId(conversation.projectId || '')
     // A draft selected from the new-chat quick prompts belongs to that draft
     // only. Clear it when opening an existing thread so a later send cannot
@@ -417,6 +595,60 @@ export function AgentPage({ projects, onNavigate }: { projects: Project[]; onNav
     onError: (error) => setFeedback(error instanceof Error ? error.message : '停止 Agent 失败。')
   })
   const send = () => { if (!startMutation.isPending && !isRunActive) startMutation.mutate() }
+  // `/` palette. It only offers completions while the composer holds a command
+  // prefix, and Escape dismisses it for the current edit without clearing text.
+  const paletteSuggestions = useMemo(() => (paletteDismissed ? [] : filterAgentMagicSuggestions(instructions)), [instructions, paletteDismissed])
+  const paletteVisible = paletteSuggestions.length > 0
+  const highlightedCommand = paletteSuggestions[Math.min(paletteIndex, paletteSuggestions.length - 1)]?.command ?? null
+  /** Accept a completion. A command that still needs arguments keeps the caret
+   * in the composer; the trailing space in the suggestion makes that visible. */
+  const acceptSuggestion = (command: string): void => {
+    setInstructions(command)
+    setPaletteIndex(0)
+    setPaletteDismissed(false)
+  }
+  /**
+   * Enter sends, except while a completion is highlighted and the typed text is
+   * not yet a complete command — there Enter takes the completion instead of
+   * firing an error. A complete command (`/help`, `/model list`) submits, which
+   * is what the user who typed it in full asked for.
+   */
+  const handleComposerKeyDown = (event: ReactKeyboardEvent<HTMLTextAreaElement>): void => {
+    if (paletteVisible && (event.key === 'ArrowDown' || event.key === 'ArrowUp')) {
+      event.preventDefault()
+      const step = event.key === 'ArrowDown' ? 1 : -1
+      setPaletteIndex((current) => (current + step + paletteSuggestions.length) % paletteSuggestions.length)
+      return
+    }
+    if (event.key === 'Escape' && paletteVisible) {
+      event.preventDefault()
+      setPaletteDismissed(true)
+      return
+    }
+    if (event.key === 'Tab' && paletteVisible && highlightedCommand !== null) {
+      event.preventDefault()
+      acceptSuggestion(highlightedCommand)
+      return
+    }
+    if (event.key === 'Enter' && !event.ctrlKey && !event.metaKey) {
+      const parsed = parseAgentMagicCommand(instructions.trim())
+      if (paletteVisible && highlightedCommand !== null && (parsed === null || 'error' in parsed) && highlightedCommand !== instructions.trim()) {
+        event.preventDefault()
+        acceptSuggestion(highlightedCommand)
+        return
+      }
+      event.preventDefault()
+      send()
+    }
+  }
+  const changeComposerProvider = (provider: string): void => {
+    const first = (catalog.data ?? []).find((entry) => entry.provider === provider)?.models[0]?.id ?? null
+    selectModelMutation.mutate({ provider, model: first })
+  }
+  const changeComposerModel = (model: string): void => {
+    if (composerProvider === null) return
+    selectModelMutation.mutate({ provider: composerProvider, model })
+  }
   const stop = () => { if (latestRun && isRunActive && !cancelMutation.isPending) cancelMutation.mutate(latestRun.id) }
   const loadEarlier = async (): Promise<void> => {
     if (!latestRunId || oldestTrajectorySeq === undefined || loadingEarlier) return
@@ -484,7 +716,7 @@ export function AgentPage({ projects, onNavigate }: { projects: Project[]; onNav
         <div className="agent-history-header-actions"><button aria-expanded={true} aria-label="折叠对话历史" className="agent-history-collapse-button" onClick={() => setHistoryCollapsed(true)} title="折叠对话历史" type="button"><PanelLeftClose aria-hidden="true" className="size-4" /></button><button aria-label="新建对话" className="agent-history-new" onClick={createConversation} title="新建对话" type="button"><Plus aria-hidden="true" className="size-4" /></button></div>
       </div>
       <div className="agent-history-filters" role="tablist" aria-label="对话分类">
-        {([['all', '全部'], ['codex', 'Codex'], ['pi', 'Pi'], ['project', '项目']] as const).map(([value, label]) => <button aria-selected={historyFilter === value} className={cn('agent-history-filter', historyFilter === value && 'agent-history-filter-active')} key={value} onClick={() => setHistoryFilter(value)} role="tab" type="button">{label}</button>)}
+        {(['all', 'project'] as const).map((value) => <button aria-selected={historyFilter === value} className={cn('agent-history-filter', historyFilter === value && 'agent-history-filter-active')} key={value} onClick={() => setHistoryFilter(value)} role="tab" type="button">{historyFilterLabels[value]}</button>)}
       </div>
       <div className="agent-history-list">
         {visibleConversations.length > 0 ? <div className="agent-history-selection-bar">
@@ -495,7 +727,7 @@ export function AgentPage({ projects, onNavigate }: { projects: Project[]; onNav
             label="对话历史选择"
             onClear={() => setSelectedHistoryIds(new Set())}
             onToggleAll={selectAllVisibleHistory}
-            scope={`范围：${{ all: '全部', codex: 'Codex', pi: 'Pi', project: '项目' }[historyFilter]}筛选下的 ${visibleConversations.length} 个对话；切换筛选会清除已隐藏的已选对话`}
+            scope={`范围：${historyFilterLabels[historyFilter]}筛选下的 ${visibleConversations.length} 个对话；切换筛选会清除已隐藏的已选对话`}
             selectAllLabel="全选当前对话"
             selectedCount={selectedHistoryIds.size}
             totalCount={visibleConversations.length}
@@ -527,20 +759,17 @@ export function AgentPage({ projects, onNavigate }: { projects: Project[]; onNav
       <header className="agent-thread-header">
         <div className="agent-thread-heading">
           <Sparkles aria-hidden="true" className="size-4 text-primary" />
-          <div><h1 id="agent-thread-title">{selectedConversation ? safeDisplayTitle(selectedConversation.title) : 'Hi，今天有什么安排？'}</h1><p>{selectedConversation ? `${runtimeLabels[runtime]} · ${assistantKey || 'researcher'}` : '选择一个 runtime，开始你的科研工作流'}</p></div>
+          <div><h1 id="agent-thread-title">{selectedConversation ? safeDisplayTitle(selectedConversation.title) : 'Hi，今天有什么安排？'}</h1><p>{selectedConversation ? `${runtimeLabels[runtime]} · ${assistantKey || 'researcher'}` : '告诉我你做了什么、接下来打算做什么'}</p></div>
         </div>
-        <div aria-label="选择 Agent runtime" className="agent-runtime-bar" role="group">
-          {(['codex', 'pi'] as AgentRuntimeKind[]).map((item) => {
-            const connector = connectors.data?.find((candidate) => candidate.runtime === item)
-            const active = runtime === item
-            return <button aria-pressed={active} className={cn('agent-runtime-pill', active && 'agent-runtime-pill-active')} key={item} onClick={() => selectRuntime(item)} type="button"><span className={cn('agent-runtime-dot', connector?.available ? 'agent-runtime-dot-online' : 'agent-runtime-dot-muted')} /><span>{runtimeLabels[item]}</span>{active ? <Check aria-hidden="true" className="size-3" /> : null}</button>
-          })}
-          <span className="agent-runtime-divider" />
-          {connectors.isFetching ? <InlineLoadingState label="正在探测 runtime…" /> : connectors.error ? <span className="agent-runtime-probe-error" role="status">runtime 探测失败，可在设置中重试</span> : null}
-          <label className="agent-model-select"><span className="sr-only">模型</span><select aria-label="模型" onChange={(event) => setModel(event.target.value)} value={model}><option value="">跟随 CLI 模型</option>{[...new Set([model, ...(activeConnector?.modelOptions ?? [])].filter(Boolean))].map((option) => <option key={option} value={option}>{option}</option>)}</select><ChevronDown aria-hidden="true" className="agent-select-chevron" /></label>
-          <label className="agent-thinking-select"><span className="sr-only">思考深度</span><select aria-label="思考深度" onChange={(event) => setThinking(event.target.value)} value={thinking}><option value="">跟随 CLI 配置</option>{[...new Set([...(activeConnector?.thinkingOptions ?? []), activeConnector?.localThinkingLevel].filter((value): value is string => Boolean(value)))].map((option) => <option key={option} value={option}>{option}</option>)}</select><ChevronDown aria-hidden="true" className="agent-select-chevron" /></label>
-          <label className="agent-permission-select"><span className="sr-only">权限模式</span><select aria-label="权限模式" disabled={permissionOptions.length === 0} onChange={(event) => setPermissionMode(event.target.value as AgentPermissionMode)} value={permissionOptions.includes(permissionMode) ? permissionMode : ''}><option value="">跟随 CLI 配置</option>{permissionOptions.map((option) => <option key={option} value={option}>{permissionLabel(option)}</option>)}</select><ChevronDown aria-hidden="true" className="agent-select-chevron" /></label><span className="agent-runtime-permission" title={localPermission}>{localPermission}</span>
-        </div>
+        {/* Read-only run configuration. It is shown here because the composer
+            needs it to be answerable at a glance ("which model am I actually
+            talking to"), and it is a link because editing it belongs in
+            Settings, not in the conversation header. */}
+        <button className="agent-run-profile-link" onClick={() => { openSettingsSection('agent'); onNavigate?.('settings', false) }} title="在设置中修改模型、思考深度与权限模式" type="button">
+          <Settings2 aria-hidden="true" className="size-3.5" />
+          <span className="agent-run-profile-value">{runtimeLabels[runtime]} · {runProfile?.model || '未选择模型'} · {runProfile?.thinking || '默认思考'}</span>
+          <span className="agent-run-profile-hint">{permissionLabel(permissionMode)}</span>
+        </button>
       </header>
 
       {/* One tab strip per thread, deliberately below the header so the runtime
@@ -554,12 +783,24 @@ export function AgentPage({ projects, onNavigate }: { projects: Project[]; onNav
         />
       </div>
 
-      <div aria-label="当前会话消息" className={cn('agent-thread-messages', view === 'trajectory' && 'agent-thread-messages-records')} role="log">
+      <div aria-label="当前会话消息" className={cn('agent-thread-messages', view === 'trajectory' && 'agent-thread-messages-records')} onScroll={handleMessagesScroll} ref={messagesRef} role="log">
         {view === 'conversation' ? <>
           {!conversationId ? <div className="agent-thread-empty"><div className="agent-thread-empty-icon"><Bot aria-hidden="true" className="size-5" /></div><h2>准备好开始了吗？</h2><p>输入问题、上传上下文，或从下方指令开始。</p></div> : null}
           {conversationId && ledger.isLoading ? <PanelSkeleton lines={5} /> : null}
           {conversationId && !ledger.isLoading ? <ConversationView isRunning={isRunActive} records={conversationRecords} runtime={selectedConversation?.runtime ?? runtime} /> : null}
-          <div ref={recordsEndRef} />
+          {/* Agent-requested external writes. They sit below the transcript
+              because they are the next action the user has to take: everything
+              above them already happened, and nothing here has. */}
+          {conversationId ? <ExternalActionCards conversationId={conversationId} /> : null}
+          {/* Local command answers. They are rendered after the persisted records
+              because they happened after them, and they are labelled as local so
+              they cannot be mistaken for a model reply. */}
+          {commandResults.length > 0 ? <div aria-label="本机命令结果" aria-live="polite" className="agent-command-results">
+            {commandResults.map((entry) => <article className={cn('agent-command-result', entry.tone === 'error' && 'agent-command-result-error')} key={entry.id}>
+              <p className="agent-command-result-head"><Terminal aria-hidden="true" className="size-3" /><code>{entry.command}</code><span>本机命令 · 未发送给模型</span></p>
+              <p className="agent-command-result-text">{entry.text}</p>
+            </article>)}
+          </div> : null}
         </> : <>
           {!latestRunId ? <div className="agent-thread-empty"><div className="agent-thread-empty-icon"><Bot aria-hidden="true" className="size-5" /></div><h2>还没有运行轨迹</h2><p>这段对话还没有发起过 Agent 运行。</p></div> : null}
           {latestRunId ? <TrajectoryView hasEarlier={hasEarlier} isFetching={trajectory.isFetching && trajectoryRecords.length === 0} isRunning={isRunActive} loadingEarlier={loadingEarlier} onLoadEarlier={() => void loadEarlier()} records={trajectoryRecords} /> : null}
@@ -568,40 +809,32 @@ export function AgentPage({ projects, onNavigate }: { projects: Project[]; onNav
 
       <div className="agent-composer-dock">
         {delivery ? <DeliveryStrip delivery={delivery} onNavigate={onNavigate} /> : null}
-        <details className="agent-runtime-profile">
-          <summary className="agent-runtime-profile-summary"><span>运行环境与凭据</span><span className="agent-runtime-profile-hint">{activeConnector ? `${activeConnector.available ? '可用' : '不可用'} · ${authSourceLabel(activeConnector)}` : '正在探测…'}</span></summary>
-          <dl className="agent-runtime-profile-grid">
-            <div><dt>运行时</dt><dd>{runtimeLabels[runtime]}</dd></div>
-            <div><dt>版本</dt><dd>{activeConnector?.version ?? '未检测到'}</dd></div>
-            <div><dt>可执行文件</dt><dd className="agent-runtime-profile-path" title={activeConnector?.executablePath ?? undefined}>{activeConnector?.executablePath ?? '未检测到'}</dd></div>
-            <div><dt>Profile</dt><dd>{activeConnector?.profileSource === 'app-isolated' ? `应用隔离${activeConnector.profileLabel ? `（${activeConnector.profileLabel}）` : ''}` : '未确认；不会复用个人 ~/.codex 或 ~/.pi 登录'}</dd></div>
-            <div><dt>审批通道</dt><dd>{activeConnector?.approvalChannel === 'interactive' ? '可交互' : '非交互（批处理，不会伪造确认）'}</dd></div>
-            <div><dt>权限来源</dt><dd>{localPermission}</dd></div>
-          </dl>
-          {activeConnector && !activeConnector.available ? <p className="agent-runtime-profile-warning" role="status">{activeConnector.message || '运行时不可用；请检查安装或在设置中修正路径。'}</p> : null}
-          <div className="agent-credential-form">
-            <p className="agent-credential-lead">运行凭据存放在 Main 的 safeStorage，只在单次 CLI 进程中注入环境变量；页面只显示状态，不回显密钥。</p>
-            <div className="agent-credential-row">
-              <label className="agent-credential-field">运行时<select aria-label="凭据运行时" onChange={(event) => { const next = event.target.value as AgentRuntimeKind; setCredentialRuntime(next); setCredentialProvider(agentCredentialProviders(next)[0]?.provider ?? 'openai') }} value={credentialRuntime}><option value="codex">Codex</option><option value="pi">Pi</option></select></label>
-              <label className="agent-credential-field">Provider<select aria-label="凭据 provider" onChange={(event) => setCredentialProvider(event.target.value as AgentCredentialProvider)} value={credentialProvider}>{credentialChoices.map((choice) => <option key={choice.provider} value={choice.provider}>{choice.label}（{choice.envVar}）</option>)}</select></label>
-              <label className="agent-credential-field">密钥<Input aria-label="凭据密钥" autoComplete="off" onChange={(event) => setCredentialSecret(event.target.value)} placeholder={activeCredential?.credentialPresent ? '已保存；输入新值可替换' : '粘贴 provider API key'} type="password" value={credentialSecret} /></label>
-              <Button disabled={saveCredentialMutation.isPending || credentialSecret.trim().length === 0} onClick={() => saveCredentialMutation.mutate({ runtime: credentialRuntime, provider: credentialProvider, apiKey: credentialSecret })} size="sm" type="button">保存凭据</Button>
-              <Button disabled={saveCredentialMutation.isPending || activeCredential?.credentialPresent !== true} onClick={() => saveCredentialMutation.mutate({ runtime: credentialRuntime, provider: credentialProvider, apiKey: null })} size="sm" type="button" variant="ghost">清除凭据</Button>
-            </div>
-            <p className="agent-credential-status" role="status">{credentials.error ? '凭据状态读取失败；运行将按“无应用凭据”处理。' : activeCredential?.credentialPresent ? `当前：已配置 ${activeCredential.provider}${activeCredential.envVar ? `（注入 ${activeCredential.envVar}）` : ''}` : '当前：未配置应用凭据；不会复用个人 CLI 登录态，也不会伪造凭据。'}{credentialFeedback ? ` ${credentialFeedback}` : ''}</p>
-          </div>
-        </details>
         <StatsRow isRunning={isRunActive} realtime={realtime} stats={stats} />
         <StepStrip isRunning={isRunActive} records={latestRunRecords} />
         {!conversationId && <div className="agent-prompts agent-prompts-above-composer"><p>试试这些指令</p>{promptExamples.map((prompt) => <button key={prompt} onClick={() => setInstructions(prompt)} type="button">{prompt}</button>)}</div>}
-        <div className={cn('agent-composer', startMutation.isPending && 'agent-composer-busy')}>
-          <Textarea aria-label="发送给 Agent 的消息" className="agent-composer-input" onChange={(event) => setInstructions(event.target.value)} onKeyDown={(event) => { if (event.key === 'Enter' && (event.ctrlKey || event.metaKey)) { event.preventDefault(); send() } }} placeholder="发送消息到工作台 Agent… 输入 / 唤起命令，@ 引用文件，@@ 引用会话，↑/↓ 切换历史消息" value={instructions} />
+        <div className="agent-composer-zone">
+          {paletteVisible ? <div aria-label="命令补全" className="agent-command-palette" role="listbox">
+            {paletteSuggestions.map((suggestion, index) => <button aria-selected={index === Math.min(paletteIndex, paletteSuggestions.length - 1)} className={cn('agent-command-palette-item', index === Math.min(paletteIndex, paletteSuggestions.length - 1) && 'agent-command-palette-item-active')} key={suggestion.command} onClick={() => acceptSuggestion(suggestion.command)} onMouseEnter={() => setPaletteIndex(index)} role="option" type="button">
+              <code>{suggestion.command.trim()}</code>
+              <span>{suggestion.summary}</span>
+            </button>)}
+            <p className="agent-command-palette-hint">↑/↓ 选择 · Tab 或 Enter 补全 · Esc 关闭</p>
+          </div> : null}
+          <div className={cn('agent-composer', startMutation.isPending && 'agent-composer-busy')}>
+          <Textarea ref={composerInputRef} aria-label="发送给 Agent 的消息" className="agent-composer-input" onChange={(event) => { setInstructions(event.target.value); resizeComposerInput(); setPaletteIndex(0); setPaletteDismissed(false) }} onKeyDown={handleComposerKeyDown} placeholder="发送消息到工作台 Agent… 输入 / 唤起命令，@ 引用文件，@@ 引用会话，↑/↓ 选择命令" style={{ minHeight: '24px', maxHeight: '200px' }} value={instructions} />
           <div className="agent-composer-toolbar">
-            <div className="agent-composer-tools"><button aria-label="添加上下文" className="agent-icon-button" title="添加上下文" type="button"><Plus aria-hidden="true" className="size-4" /></button><label className="agent-toolbar-select"><FolderOpen aria-hidden="true" className="size-3.5" /><span className="sr-only">项目</span><select aria-label="在项目中工作" onChange={(event) => chooseProjectId(event.target.value)} value={projectId}><option value="">未分类（不绑定项目）</option>{projects.map((project) => <option key={project.id} value={project.id}>{project.name}</option>)}</select></label></div>
+            <div className="agent-composer-tools"><button aria-label="添加上下文" className="agent-icon-button" title="添加上下文" type="button"><Plus aria-hidden="true" className="size-4" /></button><label className="agent-toolbar-select"><FolderOpen aria-hidden="true" className="size-3.5" /><span className="sr-only">项目</span><select aria-label="在项目中工作" onChange={(event) => chooseProjectId(event.target.value)} value={projectId}><option value="">未分类（不绑定项目）</option>{projects.map((project) => <option key={project.id} value={project.id}>{project.name}</option>)}</select></label>
+              {/* Provider/model for the next run. Only providers holding a
+                  credential are listed: a provider without a key can only
+                  produce a failed run, so offering it would be a trap. */}
+              <label className="agent-toolbar-select" title="下一条消息使用的 Provider（仅列出已保存凭据的 Provider）"><Cpu aria-hidden="true" className="size-3.5" /><span className="sr-only">Provider</span><select aria-label="Agent Provider" disabled={selectModelMutation.isPending || configuredProviderIds.size === 0} onChange={(event) => changeComposerProvider(event.target.value)} value={composerProvider ?? ''}><option value="">{configuredProviderIds.size === 0 ? '未配置凭据' : '未选择 Provider'}</option>{[...configuredProviderIds].sort().map((provider) => <option key={provider} value={provider}>{provider}</option>)}</select></label>
+              <label className="agent-toolbar-select" title="下一条消息使用的模型（按 Provider 与 wire API 区分）"><Boxes aria-hidden="true" className="size-3.5" /><span className="sr-only">模型</span><select aria-label="Agent 模型" disabled={selectModelMutation.isPending || composerProvider === null || composerModels.length === 0} onChange={(event) => changeComposerModel(event.target.value)} value={runProfile?.model ?? ''}><option value="">{composerProvider === null ? '先选 Provider' : composerModels.length === 0 ? '该 Provider 没有模型' : '未选择模型'}</option>{groupModelsByApi(composerModels).map((group) => <optgroup key={group.api} label={group.api}>{group.models.map((model) => <option key={model.id} value={model.id}>{model.name || model.id}</option>)}</optgroup>)}</select></label>
+            </div>
             <div className="agent-composer-config"><label className="agent-toolbar-input"><Bot aria-hidden="true" className="size-3.5" /><span className="sr-only">助手</span><Input aria-label="助手" className="agent-inline-input" onChange={(event) => setAssistantKey(event.target.value)} placeholder="researcher" value={assistantKey} /></label>{isRunActive ? <Button aria-label="停止 Agent 运行" className="agent-send-button" disabled={cancelMutation.isPending} loading={cancelMutation.isPending} onClick={stop} size="icon" variant="danger"><Square aria-hidden="true" className="size-4" /></Button> : <Button aria-label="发送" className="agent-send-button" disabled={!instructions.trim()} loading={startMutation.isPending} onClick={send} size="icon" variant="primary"><ArrowUp aria-hidden="true" className="size-4" /></Button>}</div>
           </div>
+          </div>
         </div>
-        <p className="agent-composer-hint">⌘/Ctrl + Enter 发送 · 当前策略：<strong>{permissionMode}</strong> · 模型与思考深度由上方唯一控制区选择</p>
+        <p className="agent-composer-hint">Enter 发送 · Shift + Enter 换行 · 输入 <code>/</code> 唤起本机命令 · {permissionLabel(permissionMode)}模式（本地任务/日历/提醒写入直接生效）· 上方选择器即默认模型，也可在 <button className="agent-hint-link" onClick={() => { openSettingsSection('agent'); onNavigate?.('settings', false) }} type="button">设置 → 模型与 Agent</button> 中配置</p>
       </div>
     </section>
   </div>
@@ -680,13 +913,6 @@ function isTerminalRun(status: AgentRunRecord['status']): boolean {
   return ['completed', 'partial', 'failed', 'canceled', 'blocked', 'missed'].includes(status)
 }
 
-function effectiveModel(_runtime: AgentRuntimeKind, value: string, detected: string | null | undefined): string | null {
-  const trimmed = value.trim()
-  if (trimmed) return trimmed
-  if (detected) return detected
-  return null
-}
-
 function formatConversationDate(value: string): string {
   const date = new Date(value)
   if (Number.isNaN(date.getTime())) return '刚刚'
@@ -699,29 +925,8 @@ function conversationStatusLabel(status: AgentConversation['status']): string {
   return status === 'running' ? '运行中' : status === 'finished' ? '已完成' : status === 'archived' ? '已归档' : '待处理'
 }
 
-function formatLocalPermission(runtime: AgentRuntimeKind, value: string | null | undefined): string {
-  if (!value) return runtimeDefaults[runtime].permission
-  if (runtime === 'codex') {
-    if (value === 'never') return '全自动'
-    if (value === 'user') return '按需确认'
-  }
-  if (runtime === 'pi' && value === 'ask') return '询问'
-  return value
-}
-
 function permissionLabel(value: AgentPermissionMode): string {
   if (value === 'read-only') return '只读'
   if (value === 'auto') return '自动批准'
   return '完全访问'
 }
-
-/** Truthful one-line summary of where the runtime's authentication comes from. */
-function authSourceLabel(connector: AgentConnector | undefined): string {
-  switch (connector?.authSource) {
-    case 'app-safeStorage': return '应用 safeStorage 凭据'
-    case 'cli-login': return 'CLI 自身登录（应用隔离 profile）'
-    case 'none': return '无可用凭据'
-    default: return '未探测'
-  }
-}
-

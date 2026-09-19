@@ -2,6 +2,7 @@ import { randomUUID } from 'node:crypto'
 import { mkdir, readFile, rename, unlink, writeFile } from 'node:fs/promises'
 import { dirname } from 'node:path'
 import { safeStorage } from 'electron'
+import { AGENT_CREDENTIAL_INDEX_KEY } from './agent-credentials.js'
 
 interface StoredSecrets {
   readonly version: 1
@@ -36,6 +37,25 @@ export function credentialKey(kind: CredentialKind, id: string): string {
     throw new CredentialVaultError('CREDENTIAL_STORAGE_CORRUPT', 'Credential identifier is invalid.')
   }
   return `v2:${kind}:${id}`
+}
+
+/**
+ * Keys the vault itself is allowed to hold: one per credential, plus the
+ * non-secret provider index.
+ *
+ * The read path validates every key before it returns anything, because an
+ * unrecognized key means the file was written by something this build does not
+ * understand and overwriting it could destroy credentials. That strictness is
+ * only safe while it accepts everything this app writes: the index key is
+ * written by `agent-credentials.ts`, so a pattern that rejected it would make
+ * the user's whole vault unreadable — every save, clear, status read and run
+ * would fail with "the credential store is not readable".
+ *
+ * Keeping the check in one place also means a future reserved key has exactly
+ * one place to register instead of silently breaking existing profiles.
+ */
+export function isCredentialStoreKey(key: string): boolean {
+  return key === AGENT_CREDENTIAL_INDEX_KEY || /^v2:(integration|provider|engine):/.test(key)
 }
 
 export function electronSecretCryptography(): SecretCryptography {
@@ -127,7 +147,7 @@ export class CredentialVault {
       }
       const entries: Record<string, string> = {}
       for (const [key, encrypted] of Object.entries(value['entries'])) {
-        if (typeof encrypted !== 'string' || !/^v2:(integration|provider|engine):/.test(key)) {
+        if (typeof encrypted !== 'string' || !isCredentialStoreKey(key)) {
           throw new Error('invalid entry')
         }
         entries[key] = encrypted

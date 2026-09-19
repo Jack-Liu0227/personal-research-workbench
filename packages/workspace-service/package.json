@@ -1,6 +1,6 @@
 {
   "name": "@prw/workspace-service",
-  "version": "0.0.3",
+  "version": "0.0.4",
   "private": true,
   "type": "module",
   "exports": {
@@ -19,6 +19,7 @@
     "@prw/connectors": "workspace:*",
     "@prw/contracts": "workspace:*",
     "@prw/database": "workspace:*",
+    "@prw/workspace-mcp": "workspace:*",
     "undici": "7.29.0",
     "zod": "4.4.3"
   },

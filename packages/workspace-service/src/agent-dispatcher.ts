@@ -1,5 +1,11 @@
 import {
   AgentApprovalDecisionInputSchema,
+  AgentExternalActionDecideInputSchema,
+  AgentExternalActionsInputSchema,
+  AgentAuthLoginAnswerInputSchema,
+  AgentAuthLoginCancelInputSchema,
+  AgentAuthLoginStartInputSchema,
+  AgentAuthLogoutInputSchema,
   AgentBindingSaveInputSchema,
   AgentConversationCreateInputSchema,
   AgentConversationArchiveBulkInputSchema,
@@ -7,11 +13,15 @@ import {
   AgentConversationMessagesInputSchema,
   AgentConversationRecordsInputSchema,
   AgentConnectorSaveInputSchema,
+  AgentCustomProvidersSaveInputSchema,
+  AgentModelDiscoveryInputSchema,
   AgentRpcRequestSchema,
+  AgentRuntimeKindSchema,
   AgentRunEventsInputSchema,
   AgentRunListInputSchema,
   AgentRunRecordsPageInputSchema,
   AgentRunStartInputSchema,
+  AgentSettingsSaveInputSchema,
   ArchiveBulkInputSchema,
   AutomationRuleSaveInputSchema,
   AutomationRunHistoryInputSchema,
@@ -19,21 +29,27 @@ import {
   type RpcResponse
 } from '@prw/contracts'
 import { z } from 'zod'
-import { AgentCoordinator } from './agent-coordinator.js'
+import { AgentCoordinator, noAgentCredentials, type AgentCredentialSource } from './agent-coordinator.js'
+import { AgentModelCoordinator } from './agent-models.js'
+import type { AgentExternalActionCoordinator } from './agent-external-actions.js'
 import { normalizeAppError } from './errors.js'
 
 export interface AgentDispatchServices {
   readonly agent: AgentCoordinator
+  /** Provider catalog, interactive login and the app-wide Agent defaults. */
+  readonly models: AgentModelCoordinator
+  /** Pending external writes waiting on a user decision. */
+  readonly externalActions: AgentExternalActionCoordinator
 }
 
 /**
- * Resolve the app-owned credential for the runtime a request selected.
+ * Every credential Electron Main attached for one RPC, keyed by provider.
  *
- * Core never reaches into a vault or a CLI login: Main resolves the credential
- * before dispatch and passes it as a lookup function. `null` is a legitimate
+ * Core never reaches into a vault or a Pi profile: Main resolves credentials
+ * before dispatch and passes them as a lookup. An empty source is a legitimate
  * answer and makes the run fail closed.
  */
-export type AgentCredentialResolver = (runtime: import('@prw/contracts').AgentRuntimeKind) => { readonly provider: string; readonly secret: string } | null
+export type AgentCredentialResolver = AgentCredentialSource
 
 export interface AgentDispatchMetadata {
   readonly version: string
@@ -43,20 +59,21 @@ export async function dispatchAgentRpc(
   services: AgentDispatchServices,
   _metadata: AgentDispatchMetadata,
   input: unknown,
-  credential: AgentCredentialResolver = () => null
+  credential: AgentCredentialResolver = noAgentCredentials
 ): Promise<RpcResponse> {
   let requestId = 'invalid-agent-request'
   try {
     const request = AgentRpcRequestSchema.parse(input)
     requestId = request.id
-    const data = await execute(services.agent, request, credential)
+    const data = await execute(services, request, credential)
     return { id: request.id, ok: true, data: toJsonValue(data) }
   } catch (error) {
     return { id: requestId, ok: false, error: normalizeAppError(error) }
   }
 }
 
-async function execute(agent: AgentCoordinator, request: AgentRpcRequest, credential: AgentCredentialResolver): Promise<unknown> {
+async function execute(services: AgentDispatchServices, request: AgentRpcRequest, credential: AgentCredentialResolver): Promise<unknown> {
+  const agent = services.agent
   switch (request.method) {
     case 'agent.conversations.list': return agent.listConversations(AgentConversationListInputSchema.parse(request.payload))
     case 'agent.conversations.create': return agent.createConversation(AgentConversationCreateInputSchema.parse(request.payload))
@@ -81,13 +98,14 @@ async function execute(agent: AgentCoordinator, request: AgentRpcRequest, creden
     case 'agent.conversations.removeBulk': return agent.removeConversations(ArchiveBulkInputSchema.parse(request.payload))
     case 'agent.connectors.list': {
       z.null().parse(request.payload)
-      // A probe reports the *effective* credential source: the app-owned one
-      // when present, otherwise the CLI's own login inside the app profile.
+      // The probe reports the *effective* auth state: it sees the same
+      // provider-keyed credentials this request carried, so a saved API key in
+      // Settings is reflected without Core reading any vault.
       return agent.listConnectors(credential)
     }
     case 'agent.connectors.test': {
-      const runtime = z.object({ runtime: z.enum(['codex', 'pi']) }).parse(request.payload).runtime
-      return agent.testConnector(runtime, credential(runtime))
+      const runtime = z.object({ runtime: AgentRuntimeKindSchema }).parse(request.payload).runtime
+      return agent.testConnector(runtime, credential.all)
     }
     case 'agent.connectors.save': return agent.saveConnector(AgentConnectorSaveInputSchema.parse(request.payload))
     // Runtime credentials live in Main's safeStorage vault. Core must never
@@ -99,6 +117,34 @@ async function execute(agent: AgentCoordinator, request: AgentRpcRequest, creden
       error.name = 'FEATURE_DISABLED'
       throw error
     }
+    // Model catalog and login. The catalog needs no credential to enumerate
+    // providers, but the login handshake does: the same provider-keyed
+    // credentials this RPC carried are handed to the SDK's own credential
+    // store, so an existing token is refreshed instead of being re-asked for.
+    case 'agent.models.catalog': z.null().parse(request.payload); return services.models.catalog()
+    case 'agent.models.login.start': return services.models.loginStart(AgentAuthLoginStartInputSchema.parse(request.payload), credential.all)
+    case 'agent.models.login.answer': {
+      services.models.loginAnswer(AgentAuthLoginAnswerInputSchema.parse(request.payload))
+      return null
+    }
+    case 'agent.models.login.cancel': {
+      services.models.loginCancel(AgentAuthLoginCancelInputSchema.parse(request.payload))
+      return null
+    }
+    case 'agent.models.logout': return services.models.logout(AgentAuthLogoutInputSchema.parse(request.payload), credential.all)
+    // User-added providers are read from and written to the app-owned
+    // models.json, so no credential travels with these calls: the file holds
+    // endpoints and model ids, never keys.
+    case 'agent.models.custom.get': z.null().parse(request.payload); return services.models.customProviders()
+    case 'agent.models.custom.save':
+      return services.models.saveCustomProviders(AgentCustomProvidersSaveInputSchema.parse(request.payload))
+    // The one custom-provider method that does carry a credential: the probe has
+    // to authenticate against the endpoint it is asking. It is not a write — the
+    // answer is candidates for the form, never a change to the stored catalog.
+    case 'agent.models.custom.discover':
+      return services.models.discoverModels(AgentModelDiscoveryInputSchema.parse(request.payload), credential.all)
+    case 'agent.settings.get': z.null().parse(request.payload); return services.models.getSettings()
+    case 'agent.settings.save': return services.models.saveSettings(AgentSettingsSaveInputSchema.parse(request.payload))
     case 'agent.bindings.list': z.null().parse(request.payload); return agent.listBindings()
     case 'agent.bindings.save': return agent.saveBinding(AgentBindingSaveInputSchema.parse(request.payload))
     case 'agent.proxyProfiles.list': z.null().parse(request.payload); return agent.listProxyProfiles()
@@ -128,6 +174,23 @@ async function execute(agent: AgentCoordinator, request: AgentRpcRequest, creden
     }
     case 'agent.approvals.list': return agent.listApprovals(z.object({ runId: z.string().optional() }).parse(request.payload).runId)
     case 'agent.approvals.decide': return agent.decideApproval(AgentApprovalDecisionInputSchema.parse(request.payload))
+    // Pending external writes. `decide` is the only way a preview ever becomes a
+    // write, and it is reachable from the renderer alone: no MCP tool forwards
+    // it, so the Agent that requested the write cannot approve it.
+    case 'agent.externalActions.list': {
+      const input = AgentExternalActionsInputSchema.parse(request.payload)
+      services.externalActions.expire()
+      return services.externalActions.list({
+        ...(input.runId === undefined ? {} : { runId: input.runId }),
+        ...(input.conversationId === undefined ? {} : { conversationId: input.conversationId }),
+        ...(input.status === undefined ? {} : { status: input.status })
+      })
+    }
+    case 'agent.externalActions.decide': {
+      const input = AgentExternalActionDecideInputSchema.parse(request.payload)
+      services.externalActions.expire()
+      return await services.externalActions.decide(input)
+    }
     case 'automation.rules.list': z.null().parse(request.payload); return agent.listAutomationRules()
     case 'automation.skills.list': z.null().parse(request.payload); return agent.listAutomationSkills()
     case 'automation.rules.save': return agent.saveAutomationRule(AutomationRuleSaveInputSchema.parse(request.payload))

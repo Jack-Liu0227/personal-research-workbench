@@ -21,6 +21,8 @@ import type {
   AgentMessage,
   AgentRunRecord,
   AgentRuntimeKind,
+  AgentSettings,
+  AgentSettingsSaveInput,
   AgentRunStatus,
   AgentRun,
   AiProviderProfile,
@@ -98,7 +100,12 @@ import {
   AgentConversationSchema,
   AgentConnectorSchema,
   AgentConnectorSaveInputSchema,
+  AgentSettingsSchema,
+  AgentSettingsSaveInputSchema,
   AgentEventSchema,
+  AgentExternalAction,
+  AgentExternalActionKind,
+  AgentExternalActionStatus,
   AgentInboxItemSchema,
   AgentRunRecordEntrySchema,
   AgentRunRecordsPageInputSchema,
@@ -106,6 +113,7 @@ import {
   AgentUsageSchema,
   AgentMessageSchema,
   AgentRunRecordSchema as ManagedAgentRunSchema,
+  AgentExternalActionSchema,
   AgentApprovalSchema,
   AgentSkillSnapshotSchema,
   ArchiveBulkInputSchema,
@@ -170,12 +178,14 @@ import {
   agentProxyProfiles, agentProxyBindings,
   agentBindings,
   agentApprovals,
+  agentExternalActions,
   agentRunEvents,
   agentRunRecords,
   agentInboxItems,
   agentConversations,
   agentMessages,
   agentRuns,
+  agentSettings,
   workspaceKnowledgeEngines,
   type BoardColumnRow,
   type AgentRunRecordRow,
@@ -192,6 +202,9 @@ import {
 import * as schema from './schema.js'
 
 const sortStep = 1_024
+/** The one row `agent_settings` is allowed to hold, enforced by a CHECK so a
+ * second global row cannot exist even if some future caller inserts blindly. */
+const AGENT_SETTINGS_ID = 'global'
 const minimumSortGap = 0.000_001
 /** One ledger field may not exceed this many characters; the record carries a
  * `truncated` flag instead of silently shortening the value. */
@@ -488,7 +501,6 @@ function toAgentConnector(row: typeof agentConnectors.$inferSelect): AgentConnec
   return AgentConnectorSchema.parse({
     id: row.id,
     runtime: row.runtime,
-    executablePath: row.executablePath,
     version: row.version,
     enabled: row.enabled,
     available: row.available,
@@ -575,6 +587,27 @@ function toAgentApproval(row: typeof agentApprovals.$inferSelect): AgentApproval
   })
 }
 
+/** Renderer-facing projection: the frozen execute payload stays in the database
+ * and is read separately, by the one service path that is allowed to execute. */
+function toAgentExternalAction(row: typeof agentExternalActions.$inferSelect): AgentExternalAction {
+  return AgentExternalActionSchema.parse({
+    id: row.id,
+    runId: row.runId,
+    conversationId: row.conversationId ?? null,
+    kind: row.kind,
+    profileId: row.profileId,
+    status: row.status,
+    summary: row.summary,
+    previewId: row.previewId ?? null,
+    createdAt: row.createdAt,
+    expiresAt: row.expiresAt,
+    decidedAt: row.decidedAt ?? null,
+    receipt: row.receiptJson === null ? null : JSON.parse(row.receiptJson),
+    error: row.error,
+    revision: row.revision
+  })
+}
+
 function toAgentConversation(row: typeof agentConversations.$inferSelect): AgentConversation {
   return AgentConversationSchema.parse({
     id: row.id,
@@ -585,11 +618,26 @@ function toAgentConversation(row: typeof agentConversations.$inferSelect): Agent
     assistantKey: row.assistantKey ?? null,
     toolProfile: row.toolProfile,
     permissionMode: row.permissionMode ?? (row.toolProfile === 'approved-write' ? 'auto' : 'read-only'),
-    approvalPolicy: row.approvalPolicy ?? 'on-request',
+    approvalPolicy: row.approvalPolicy ?? 'never',
+    runtimeSessionId: row.runtimeSessionId ?? null,
     status: row.status,
     createdAt: row.createdAt,
     updatedAt: row.updatedAt,
     archivedAt: row.archivedAt ?? null,
+    revision: row.revision
+  })
+}
+
+function toAgentSettings(row: typeof agentSettings.$inferSelect): AgentSettings {
+  return AgentSettingsSchema.parse({
+    provider: row.provider,
+    model: row.model,
+    thinking: row.thinking,
+    permissionMode: row.permissionMode,
+    toolProfile: row.toolProfile,
+    approvalPolicy: row.approvalPolicy,
+    responseLanguage: row.responseLanguage,
+    updatedAt: row.updatedAt,
     revision: row.revision
   })
 }
@@ -743,6 +791,9 @@ export class WorkbenchRepository {
   private readonly database: BetterSQLite3Database<typeof schema>
   private readonly now: () => Date
   private readonly researchRepository: ResearchRepository
+  /** Paths of pre-migration backups this process actually wrote. A destructive
+   * migration reports itself here instead of silently leaving a file behind. */
+  private readonly migrationBackups: string[] = []
 
   constructor(options: WorkbenchDatabaseOptions) {
     this.databasePath = options.filePath === ':memory:' ? options.filePath : resolve(options.filePath)
@@ -757,7 +808,10 @@ export class WorkbenchRepository {
       this.sqlite.pragma('journal_mode = WAL')
       this.sqlite.pragma('synchronous = NORMAL')
     }
-    migrateDatabase(this.sqlite)
+    migrateDatabase(this.sqlite, {
+      databasePath: this.databasePath,
+      onBackup: (backupPath) => this.migrationBackups.push(backupPath)
+    })
     this.database = drizzle(this.sqlite, { schema })
     this.now = options.now ?? (() => new Date())
     this.researchRepository = new ResearchRepository(this.database, this.now)
@@ -2562,11 +2616,76 @@ export class WorkbenchRepository {
   listAgentConnectors(): AgentConnector[] {
     return this.database.select().from(agentConnectors).orderBy(asc(agentConnectors.runtime)).all().map(toAgentConnector)
   }
-
   getAgentConnector(runtime: AgentRuntimeKind): AgentConnector {
     const row = this.database.select().from(agentConnectors).where(eq(agentConnectors.runtime, runtime)).get()
     if (!row) throw new WorkbenchDatabaseError('NOT_FOUND', 'agent connector not found', { details: { runtime } })
     return toAgentConnector(row)
+  }
+
+  /** Absolute paths of the backups taken before a destructive migration in
+   * this process. Empty on every normal start. */
+  listMigrationBackups(): readonly string[] {
+    return [...this.migrationBackups]
+  }
+
+  /** The single app-wide Agent default row.
+   *
+   * Migration 30 seeds `id = 'global'`, but the row is re-created here if it is
+   * missing: a hand-edited or restored database must not make the Agent page
+   * unreadable, and a hard-coded fallback would silently disagree with the
+   * stored policy the coordinator actually applies. */
+  getAgentSettings(): AgentSettings {
+    const row = this.database.select().from(agentSettings).where(eq(agentSettings.id, AGENT_SETTINGS_ID)).get()
+    if (row) return toAgentSettings(row)
+    const timestamp = this.now().toISOString()
+    const seeded = {
+      id: AGENT_SETTINGS_ID,
+      provider: null,
+      model: null,
+      thinking: null,
+      permissionMode: 'auto' as const,
+      toolProfile: 'approved-write' as const,
+      approvalPolicy: 'never' as const,
+      responseLanguage: 'zh-CN',
+      createdAt: timestamp,
+      updatedAt: timestamp,
+      revision: 0
+    }
+    this.database.insert(agentSettings).values(seeded).onConflictDoNothing().run()
+    return toAgentSettings(seeded)
+  }
+
+  saveAgentSettings(inputValue: AgentSettingsSaveInput): AgentSettings {
+    const input = AgentSettingsSaveInputSchema.parse(inputValue)
+    const current = this.getAgentSettings()
+    if (input.expectedRevision !== null && input.expectedRevision !== current.revision) {
+      throw new WorkbenchDatabaseError('REVISION_CONFLICT', 'agent settings were changed by another operation', { retryable: true })
+    }
+    const row = this.database.update(agentSettings).set({
+      provider: input.provider,
+      model: input.model,
+      thinking: input.thinking,
+      permissionMode: input.permissionMode,
+      toolProfile: input.toolProfile,
+      approvalPolicy: input.approvalPolicy,
+      responseLanguage: input.responseLanguage,
+      updatedAt: this.now().toISOString(),
+      revision: current.revision + 1
+    }).where(eq(agentSettings.id, AGENT_SETTINGS_ID)).returning().get()
+    return toAgentSettings(row!)
+  }
+
+  /**
+   * Remember which Pi session file continues this conversation.
+   *
+   * This is a working-state pointer, so it deliberately does not bump the
+   * conversation revision: a bump would make every concurrent conversation
+   * action (archive, rename) report a spurious CAS conflict after each run.
+   */
+  setAgentConversationRuntimeSession(id: string, runtimeSessionId: string | null): void {
+    this.database.update(agentConversations)
+      .set({ runtimeSessionId, updatedAt: this.now().toISOString() })
+      .where(eq(agentConversations.id, id)).run()
   }
 
   saveAgentConnector(inputValue: AgentConnectorSaveInput): AgentConnector {
@@ -2579,7 +2698,6 @@ export class WorkbenchRepository {
         const row = {
           id,
           runtime: input.runtime,
-          executablePath: input.executablePath,
           version: null,
           enabled: input.enabled,
           available: false,
@@ -2602,7 +2720,6 @@ export class WorkbenchRepository {
       }
       transaction.update(agentConnectors).set({
         runtime: input.runtime,
-        executablePath: input.executablePath,
         enabled: input.enabled,
         proxyEnabled: input.proxyEnabled,
         httpProxy: input.httpProxy,
@@ -2693,6 +2810,7 @@ export class WorkbenchRepository {
       permissionMode: input.permissionMode,
       approvalPolicy: input.approvalPolicy,
       status: 'pending' as const,
+      runtimeSessionId: null,
       createdAt: timestamp,
       updatedAt: timestamp,
       archivedAt: null,
@@ -2953,6 +3071,60 @@ export class WorkbenchRepository {
     return toAgentApproval(updated!)
   }
 
+  createAgentExternalAction(input: {
+    readonly id: string
+    readonly runId: string
+    readonly conversationId: string | null
+    readonly kind: AgentExternalActionKind
+    readonly profileId: string
+    readonly summary: string
+    readonly previewId: string | null
+    readonly payload: unknown
+    readonly expiresAt: string
+  }): AgentExternalAction {
+    const inserted = this.database.insert(agentExternalActions).values({
+      id: input.id,
+      runId: input.runId,
+      conversationId: input.conversationId,
+      kind: input.kind,
+      profileId: input.profileId,
+      status: 'pending',
+      summary: input.summary,
+      previewId: input.previewId,
+      payloadJson: JSON.stringify(input.payload ?? null),
+      receiptJson: null,
+      error: '',
+      createdAt: this.now().toISOString(),
+      expiresAt: input.expiresAt,
+      decidedAt: null,
+      revision: 0
+    }).returning().get()
+    return toAgentExternalAction(inserted!)
+  }
+
+  listAgentExternalActions(filter: { readonly runId?: string; readonly conversationId?: string; readonly status?: AgentExternalActionStatus } = {}): AgentExternalAction[] {
+    const conditions = [
+      ...(filter.runId === undefined ? [] : [eq(agentExternalActions.runId, filter.runId)]),
+      ...(filter.conversationId === undefined ? [] : [eq(agentExternalActions.conversationId, filter.conversationId)]),
+      ...(filter.status === undefined ? [] : [eq(agentExternalActions.status, filter.status)])
+    ]
+    const base = this.database.select().from(agentExternalActions)
+    const query = conditions.length === 0 ? base : base.where(and(...conditions))
+    return query.orderBy(desc(agentExternalActions.createdAt)).limit(200).all().map(toAgentExternalAction)
+  }
+
+  getAgentExternalAction(id: string): AgentExternalAction | null {
+    const row = this.database.select().from(agentExternalActions).where(eq(agentExternalActions.id, id)).get()
+    return row ? toAgentExternalAction(row) : null
+  }
+
+  /** The frozen execute payload, for the internal execute path only. */
+  getAgentExternalActionPayload(id: string): { readonly action: AgentExternalAction; readonly payload: unknown } | null {
+    const row = this.database.select().from(agentExternalActions).where(eq(agentExternalActions.id, id)).get()
+    if (!row) return null
+    return { action: toAgentExternalAction(row), payload: JSON.parse(row.payloadJson) }
+  }
+
   getManagedAgentRun(id: string): AgentRunRecord {
     const row = this.database.select().from(agentRuns).where(eq(agentRuns.id, id)).get()
     if (!row) throw new WorkbenchDatabaseError('NOT_FOUND', 'agent run not found', { details: { id } })
@@ -3091,6 +3263,89 @@ export class WorkbenchRepository {
       }
     }
     return stale.length
+  }
+
+  /**
+   * Consume a pending action's decision.
+   *
+   * Three separate locks, because the failures are different problems for the
+   * user: the revision rejects a card rendered before someone else decided, the
+   * expiry rejects a stale card from a long closed window, and the single UPDATE
+   * guarded by the pending status means two concurrent decisions cannot both
+   * win.
+   */
+  decideAgentExternalAction(input: {
+    readonly id: string
+    readonly decision: 'approve' | 'reject'
+    readonly expectedRevision: number
+  }): AgentExternalAction {
+    const row = this.database.select().from(agentExternalActions).where(eq(agentExternalActions.id, input.id)).get()
+    if (!row) throw new WorkbenchDatabaseError('NOT_FOUND', 'external action not found', { details: { id: input.id } })
+    if (row.status !== 'pending') {
+      throw new WorkbenchDatabaseError('REVISION_CONFLICT', 'this external write was already decided', {
+        details: { id: input.id, status: row.status }
+      })
+    }
+    if (Date.parse(row.expiresAt) <= this.now().getTime()) {
+      this.settleAgentExternalAction({ id: input.id, status: 'expired', error: '确认窗口已过期，请让 Agent 重新生成预览。' })
+      throw new WorkbenchDatabaseError('REVISION_CONFLICT', 'the confirmation window for this external write has expired', {
+        details: { id: input.id }
+      })
+    }
+    if (row.revision !== input.expectedRevision) {
+      throw new WorkbenchDatabaseError('REVISION_CONFLICT', 'this external write changed since the card was rendered', {
+        details: { id: input.id, expected: input.expectedRevision, actual: row.revision }
+      })
+    }
+    const updated = this.database.update(agentExternalActions).set({
+      status: input.decision === 'approve' ? 'approved' : 'rejected',
+      decidedAt: this.now().toISOString(),
+      revision: row.revision + 1
+    }).where(and(eq(agentExternalActions.id, input.id), eq(agentExternalActions.status, 'pending'))).returning().get()
+    if (!updated) {
+      throw new WorkbenchDatabaseError('REVISION_CONFLICT', 'this external write was decided concurrently', {
+        details: { id: input.id }
+      })
+    }
+    return toAgentExternalAction(updated)
+  }
+
+  /** Record the outcome of an approved action. `receipt`/`error` are redacted
+   * projections: never a request body, a response excerpt or a credential. */
+  settleAgentExternalAction(input: {
+    readonly id: string
+    readonly status: Extract<AgentExternalActionStatus, 'executed' | 'failed' | 'conflict' | 'expired'>
+    readonly receipt?: unknown
+    readonly error?: string
+  }): AgentExternalAction {
+    const row = this.database.select().from(agentExternalActions).where(eq(agentExternalActions.id, input.id)).get()
+    if (!row) throw new WorkbenchDatabaseError('NOT_FOUND', 'external action not found', { details: { id: input.id } })
+    const updated = this.database.update(agentExternalActions).set({
+      status: input.status,
+      receiptJson: input.receipt === undefined ? row.receiptJson : JSON.stringify(input.receipt),
+      error: input.error ?? row.error,
+      revision: row.revision + 1
+    }).where(eq(agentExternalActions.id, input.id)).returning().get()
+    return toAgentExternalAction(updated!)
+  }
+
+  /** Close every pending action whose decision window has passed, so the
+   * confirmation card cannot offer a write the preview no longer supports. */
+  expireAgentExternalActions(): number {
+    const now = this.now().toISOString()
+    const expired = this.database.select({ id: agentExternalActions.id, revision: agentExternalActions.revision })
+      .from(agentExternalActions)
+      .where(and(eq(agentExternalActions.status, 'pending'), lt(agentExternalActions.expiresAt, now)))
+      .all()
+    for (const row of expired) {
+      this.database.update(agentExternalActions).set({
+        status: 'expired',
+        decidedAt: now,
+        error: '确认窗口已过期，请让 Agent 重新生成预览。',
+        revision: row.revision + 1
+      }).where(eq(agentExternalActions.id, row.id)).run()
+    }
+    return expired.length
   }
 
   updateManagedAgentRun(input: { readonly id: string; readonly status: AgentRunStatus; readonly output?: string; readonly error?: string | null; readonly artifactId?: string | null }): AgentRunRecord {
@@ -3240,14 +3495,20 @@ export class WorkbenchRepository {
   }
 
   /** Chat projection: the newest `limit` records across every run of one
-   * conversation, returned oldest-first. */
+   * conversation, returned oldest-first.
+   *
+   * `created_at` alone is not a stable run order: two runs started in the same
+   * millisecond tie, and the tie was previously broken by record `seq`, which
+   * interleaved the runs instead of concatenating them. `rowid` is the
+   * insertion order of `agent_runs`, so it breaks the tie the way a user reads
+   * the log — one run after another. */
   listAgentConversationRecords(input: AgentConversationRecordsInput): AgentRunRecordEntry[] {
     const parsed = AgentConversationRecordsInputSchema.parse(input)
     const rows = this.database.select({ record: agentRunRecords })
       .from(agentRunRecords)
       .innerJoin(agentRuns, eq(agentRunRecords.runId, agentRuns.id))
       .where(eq(agentRuns.conversationId, parsed.conversationId))
-      .orderBy(desc(agentRuns.createdAt), desc(agentRunRecords.seq))
+      .orderBy(desc(agentRuns.createdAt), desc(sql`agent_runs.rowid`), desc(agentRunRecords.seq))
       .limit(parsed.limit).all()
     return rows.reverse().map((row) => toAgentRunRecordEntry(row.record))
   }

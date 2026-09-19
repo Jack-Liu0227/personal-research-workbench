@@ -2,7 +2,6 @@ import type {
   AgentApprovalDecisionInput,
   AgentConnectorSaveInput,
   AgentBindingSaveInput,
-  AgentCredentialSaveInput,
   AgentProxyProfileSaveInput, AgentProxyBindingSaveInput,
   AgentConversationCreateInput,
   AgentConversationArchiveItem,
@@ -18,6 +17,15 @@ import type {
   AgentRuntimeKind,
   AgentRpcMethod,
   AppError,
+  AgentAuthEvent,
+  AgentAuthLoginAnswerInput,
+  AgentAuthLoginCancelInput,
+  AgentAuthLoginStartInput,
+  AgentAuthLogoutInput,
+  AgentCredentialSaveInput,
+  AgentModelCatalogEntry,
+  AgentSettings,
+  AgentSettingsSaveInput,
   IntegrationError,
   RpcRequest,
   WorkbenchAgentApiV1,
@@ -28,6 +36,12 @@ import type {
 import {
   AgentApprovalSchema,
   AgentApprovalDecisionInputSchema,
+  AgentExternalActionSchema,
+  AgentExternalActionDecideInputSchema,
+  AgentExternalActionsInputSchema,
+  type AgentExternalAction,
+  type AgentExternalActionDecideInput,
+  type AgentExternalActionsInput,
   AgentBindingSaveInputSchema,
   AgentBindingSchema,
   AgentProxyProfileSchema, AgentProxyProfileSaveInputSchema, AgentProxyBindingSchema, AgentProxyBindingSaveInputSchema,
@@ -44,6 +58,21 @@ import {
   AgentConnectorSchema,
   AgentCredentialSaveInputSchema,
   AgentCredentialStatusSchema,
+  AgentAuthEventSchema,
+  AgentAuthLoginAnswerInputSchema,
+  AgentAuthLoginCancelInputSchema,
+  AgentAuthLoginStartInputSchema,
+  AgentAuthLoginStartResultSchema,
+  AgentAuthLogoutInputSchema,
+  AgentCustomProvidersSaveInputSchema,
+  AgentCustomProvidersSchema,
+  AgentModelDiscoveryInputSchema,
+  AgentModelDiscoveryResultSchema,
+  type AgentCustomProvidersSaveInput,
+  type AgentModelDiscoveryInput,
+  AgentModelCatalogEntrySchema,
+  AgentSettingsSaveInputSchema,
+  AgentSettingsSchema,
   AgentEventSchema,
   AgentInboxItemSchema,
   AgentMessageSchema,
@@ -211,6 +240,9 @@ const agentChannel = 'workbench:agent:v1'
  * is deliberately not a generic `on` bridge. */
 const agentLedgerSubscribeChannel = 'workbench:agent:ledger-subscribe'
 const agentLedgerPushChannel = 'workbench:agent:ledger-push'
+/** Login progress. Pushed rather than polled: an OAuth flow can sit waiting on
+ * a browser for minutes, and the renderer must show that it is still alive. */
+const agentAuthChannel = 'workbench:agent:auth'
 const updateStateChannel = 'workbench:updates:state'
 const updateInvokeChannel = 'workbench:updates:invoke'
 
@@ -300,8 +332,30 @@ function subscribeAgentLedger(runId: string, handler: (push: AgentLedgerPush) =>
   }
 }
 
-function subscribeUpdates(handler: (state: UpdateState) => void): () => void {
+/**
+ * Subscribe to interactive login progress from Core.
+ *
+ * Every event is validated against the shared schema before the handler sees
+ * it. Events are not filtered by login id here: one Core process can run
+ * several logins, and the renderer needs to observe the one it started, so
+ * filtering stays with the caller that minted the id.
+ */
+function subscribeAgentAuth(handler: (event: AgentAuthEvent) => void): () => void {
   let active = true
+  const listener = (_event: unknown, payload: unknown): void => {
+    if (!active) return
+    const parsed = AgentAuthEventSchema.safeParse(payload)
+    if (parsed.success) handler(parsed.data)
+  }
+  ipcRenderer.on(agentAuthChannel, listener)
+  return () => {
+    if (!active) return
+    active = false
+    ipcRenderer.removeListener(agentAuthChannel, listener)
+  }
+}
+
+function subscribeUpdates(handler: (state: UpdateState) => void): () => void {  let active = true
   const listener = (_event: unknown, payload: unknown): void => {
     if (!active) return
     const parsed = UpdateStateSchema.safeParse(payload)
@@ -854,14 +908,71 @@ const agentApi: WorkbenchAgentApiV1 = {
       AgentBindingSchema
     )
   },
-  // Main owns the safeStorage vault, so these two methods are answered in Main
-  // and only ever return the non-secret status projection to the renderer.
+  // Main owns the safeStorage vault, so every credential mutation is answered
+  // in Main and only the non-secret status projection reaches the renderer.
   credentials: {
     status: () => invokeAgent('agent.credentials.status', null, z.array(AgentCredentialStatusSchema)),
     save: (input: AgentCredentialSaveInput) => invokeAgent(
       'agent.credentials.save',
       AgentCredentialSaveInputSchema.parse(input),
       z.array(AgentCredentialStatusSchema)
+    )
+  },
+  // The provider/model catalog comes from the embedded SDK, so it reflects the
+  // pinned Pi version rather than a hand-maintained list. Authenticating is a
+  // two-part conversation: `loginStart` returns an id and progress arrives on
+  // `onAuthEvent`, because an OAuth flow outlives a single request.
+  models: {
+    catalog: () => invokeAgent('agent.models.catalog', null, z.array(AgentModelCatalogEntrySchema)),
+    loginStart: (input: AgentAuthLoginStartInput) => invokeAgent(
+      'agent.models.login.start',
+      AgentAuthLoginStartInputSchema.parse(input),
+      AgentAuthLoginStartResultSchema
+    ),
+    /** Answer one prompt. The prompt id is echoed back so a late answer for a
+     * finished login is discarded by Core instead of reviving it. */
+    loginAnswer: (input: AgentAuthLoginAnswerInput) => invokeAgent(
+      'agent.models.login.answer',
+      AgentAuthLoginAnswerInputSchema.parse(input),
+      VoidResultSchema
+    ),
+    loginCancel: (input: AgentAuthLoginCancelInput) => invokeAgent(
+      'agent.models.login.cancel',
+      AgentAuthLoginCancelInputSchema.parse(input),
+      VoidResultSchema
+    ),
+    /** Returns the refreshed status list: Main reads the vault it just cleared. */
+    logout: (input: AgentAuthLogoutInput) => invokeAgent(
+      'agent.models.logout',
+      AgentAuthLogoutInputSchema.parse(input),
+      z.array(AgentCredentialStatusSchema)
+    ),
+    /** User-added providers of the app-owned models.json. The whole set is sent
+     * on save so a delete in the UI is a delete in the file. */
+    customProviders: {
+      get: () => invokeAgent('agent.models.custom.get', null, AgentCustomProvidersSchema),
+      save: (input: AgentCustomProvidersSaveInput) => invokeAgent(
+        'agent.models.custom.save',
+        AgentCustomProvidersSaveInputSchema.parse(input),
+        AgentCustomProvidersSchema
+      ),
+      /** Ask one endpoint which models it advertises. The payload names the
+       * provider but never the key: Main resolves that provider's credential
+       * from safeStorage and attaches it on its private Core channel. */
+      discover: (input: AgentModelDiscoveryInput) => invokeAgent(
+        'agent.models.custom.discover',
+        AgentModelDiscoveryInputSchema.parse(input),
+        AgentModelDiscoveryResultSchema
+      )
+    },
+    onAuthEvent: subscribeAgentAuth
+  },
+  settings: {
+    get: () => invokeAgent('agent.settings.get', null, AgentSettingsSchema),
+    save: (input: AgentSettingsSaveInput) => invokeAgent(
+      'agent.settings.save',
+      AgentSettingsSaveInputSchema.parse(input),
+      AgentSettingsSchema
     )
   },
   proxyProfiles: { list: () => invokeAgent('agent.proxyProfiles.list', null, z.array(AgentProxyProfileSchema)), save: (input: AgentProxyProfileSaveInput) => invokeAgent('agent.proxyProfiles.save', AgentProxyProfileSaveInputSchema.parse(input), AgentProxyProfileSchema) },
@@ -912,6 +1023,24 @@ const agentApi: WorkbenchAgentApiV1 = {
       'agent.approvals.decide',
       AgentApprovalDecisionInputSchema.parse(input),
       AgentApprovalSchema
+    )
+  },
+  /**
+   * External writes the Agent prepared and a person still has to approve.
+   *
+   * `decide` reaches Core on the Agent RPC surface only: no workbench MCP tool
+   * forwards it, so the Agent that asked for the write cannot approve it.
+   */
+  externalActions: {
+    list: (input: AgentExternalActionsInput = {}) => invokeAgent(
+      'agent.externalActions.list',
+      AgentExternalActionsInputSchema.parse(input),
+      z.array(AgentExternalActionSchema)
+    ),
+    decide: (input: AgentExternalActionDecideInput) => invokeAgent(
+      'agent.externalActions.decide',
+      AgentExternalActionDecideInputSchema.parse(input),
+      AgentExternalActionSchema
     )
   },
   automation: {

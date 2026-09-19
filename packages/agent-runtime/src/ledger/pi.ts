@@ -19,11 +19,23 @@ import {
  * `tool_execution_start/update/end`, and the prompt boundary as
  * `agent_start`/`turn_start`/`turn_end`/`agent_end`.
  */
+export interface PiLedgerNormalizerOptions {
+  readonly toolLabels?: ReadonlyMap<string, string> | undefined
+}
 export class PiLedgerNormalizer extends BaseLedgerNormalizer {
   private assistantOrdinal = 0
   private reasoningOrdinal = 0
   private assistantKey: string | null = null
   private reasoningKey: string | null = null
+  /** Provider-visible tool name back to the workbench name it was registered
+   * from. A tool is registered as `tasks_search` and documented as
+   * `tasks.search`, and the ledger is read by people, so it shows the latter. */
+  private readonly toolLabels: ReadonlyMap<string, string>
+
+  constructor(options: PiLedgerNormalizerOptions = {}) {
+    super()
+    this.toolLabels = options.toolLabels ?? new Map()
+  }
 
   accept(payload: unknown, createdAt: string): AgentRunRecordDraft[] {
     const event = asRecord(payload)
@@ -301,7 +313,7 @@ export class PiLedgerNormalizer extends BaseLedgerNormalizer {
     const status: AgentRecordStatus = type === 'tool_execution_end' ? (failed ? 'failed' : 'completed') : 'running'
     const isNew = this.touch(recordKey, createdAt, 'tool', status)
     if (isNew) this.nextStep()
-    const name = asString(event['toolName']) ?? 'tool'
+    const name = this.toolLabel(asString(event['toolName']) ?? 'tool')
     const output = type === 'tool_execution_start'
       ? ''
       : ledgerText(asRecord(event['partialResult'])?.['content'] ?? asRecord(event['result'])?.['content'])
@@ -361,7 +373,7 @@ export class PiLedgerNormalizer extends BaseLedgerNormalizer {
     const recordKey = `pi:tool:${callId}`
     const isNew = this.touch(recordKey, createdAt, 'tool', status)
     if (isNew) this.nextStep()
-    const name = asString(call['name']) ?? 'tool'
+    const name = this.toolLabel(asString(call['name']) ?? 'tool')
     const args = call['arguments']
     return {
       recordKey,
@@ -376,6 +388,11 @@ export class PiLedgerNormalizer extends BaseLedgerNormalizer {
       callId,
       ...(isNew ? { startedAt: createdAt } : {})
     }
+  }
+
+  /** Provider-visible tool name to the workbench name it was registered from. */
+  private toolLabel(name: string): string {
+    return this.toolLabels.get(name) ?? name
   }
 
   /** The current assistant record key; each assistant message in a turn is its

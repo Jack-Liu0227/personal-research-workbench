@@ -195,7 +195,7 @@ export interface DefaultAgentScheduleRule {
   readonly frequency: 'daily'
   readonly cron: string
   readonly timezone: string
-  readonly runtime: 'codex'
+  readonly runtime: 'pi'
   readonly assistantKey: string
   readonly enabled: true
 }
@@ -218,7 +218,7 @@ export const DEFAULT_AGENT_SCHEDULE_RULES: readonly DefaultAgentScheduleRule[] =
     frequency: 'daily',
     cron: '0 9 * * *',
     timezone: 'Asia/Shanghai',
-    runtime: 'codex',
+    runtime: 'pi',
     assistantKey: 'researcher',
     enabled: true,
     ...DEFAULT_DAILY_PUSH_SCHEDULE_INPUT
@@ -237,7 +237,7 @@ export const DEFAULT_AGENT_SCHEDULE_RULES: readonly DefaultAgentScheduleRule[] =
     frequency: 'daily',
     cron: '0 9 * * *',
     timezone: 'Asia/Shanghai',
-    runtime: 'codex',
+    runtime: 'pi',
     assistantKey: 'researcher',
     enabled: true
   },
@@ -255,7 +255,7 @@ export const DEFAULT_AGENT_SCHEDULE_RULES: readonly DefaultAgentScheduleRule[] =
     frequency: 'daily',
     cron: '0 9 * * *',
     timezone: 'Asia/Shanghai',
-    runtime: 'codex',
+    runtime: 'pi',
     assistantKey: 'researcher',
     enabled: true
   }
@@ -953,7 +953,7 @@ export const ScheduleSchema = z.object({
   workflowKey: AgentWorkflowKeySchema,
   promptTemplateId: z.string().min(1),
   providerProfileId: z.string().nullable(),
-  runtime: z.enum(['codex', 'pi']).nullable().default(null),
+  runtime: z.enum(['pi']).nullable().default(null),
   model: z.string().max(300).nullable().default(null),
   assistantKey: z.string().max(300).nullable().default('researcher'),
   workspacePath: z.string().max(4_000).nullable().default(null),
@@ -988,7 +988,7 @@ export const SaveScheduleInputSchema = z.object({
   workflowKey: AgentWorkflowKeySchema,
   promptTemplateId: z.string().min(1),
   providerProfileId: z.string().min(1).nullable().default(null),
-  runtime: z.enum(['codex', 'pi']).nullable().default(null),
+  runtime: z.enum(['pi']).nullable().default(null),
   model: z.string().trim().max(300).nullable().default(null),
   assistantKey: z.string().trim().max(300).nullable().default('researcher'),
   workspacePath: z.string().trim().max(4_000).nullable().default(null),

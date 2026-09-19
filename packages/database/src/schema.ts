@@ -1,6 +1,8 @@
 import type {
   AgentRun,
   AgentApproval,
+  AgentExternalActionKind,
+  AgentExternalActionStatus,
   AgentApprovalPolicy,
   AgentEventKind,
   AgentRecordKind,
@@ -8,6 +10,7 @@ import type {
   AgentConversation,
   AgentMessage,
   AgentRuntimeKind,
+  AgentSettings,
   AiProviderProfile,
   BoardColumn,
   CalendarEventType,
@@ -688,7 +691,10 @@ export const agentConnectors = sqliteTable(
   {
     id: text('id').primaryKey(),
     runtime: text('runtime').$type<AgentRuntimeKind>().notNull(),
-    executablePath: text('executable_path'),
+    /** SDK version of the embedded runtime (`null` before the first probe).
+     * The `executable_path` column is intentionally left in place as dead
+     * storage: the migration that removed Codex could not drop it without a
+     * full table rebuild, and nothing reads or writes it any more. */
     version: text('version'),
     enabled: integer('enabled', { mode: 'boolean' }).notNull().default(true),
     available: integer('available', { mode: 'boolean' }).notNull().default(false),
@@ -705,6 +711,28 @@ export const agentConnectors = sqliteTable(
   },
   (table) => [uniqueIndex('agent_connectors_runtime_idx').on(table.runtime)]
 )
+
+/**
+ * The single app-wide Agent default row (`id = 'global'`).
+ *
+ * Keeping this in SQLite (and not in the safeStorage vault or a JSON file)
+ * means the Agent page, the schedule editor and the coordinator all read one
+ * authoritative policy through the same repository call instead of each
+ * falling back to a hard-coded literal.
+ */
+export const agentSettings = sqliteTable('agent_settings', {
+  id: text('id').primaryKey(),
+  provider: text('provider'),
+  model: text('model'),
+  thinking: text('thinking'),
+  permissionMode: text('permission_mode').$type<AgentSettings['permissionMode']>().notNull().default('auto'),
+  toolProfile: text('tool_profile').$type<AgentSettings['toolProfile']>().notNull().default('approved-write'),
+  approvalPolicy: text('approval_policy').$type<AgentSettings['approvalPolicy']>().notNull().default('never'),
+  responseLanguage: text('response_language').notNull().default('zh-CN'),
+  createdAt: text('created_at').notNull(),
+  updatedAt: text('updated_at').notNull(),
+  revision: integer('revision').notNull().default(0)
+})
 
 /** Named proxy profiles are independent from a runtime connector so one
  * profile can be safely shared by multiple agents. Secrets are deliberately
@@ -770,6 +798,40 @@ export const agentApprovals = sqliteTable(
   (table) => [
     index('agent_approvals_run_created_idx').on(table.runId, table.createdAt),
     index('agent_approvals_status_created_idx').on(table.status, table.createdAt)
+  ]
+)
+
+/**
+ * Pending external writes the Agent prepared but may not perform alone
+ * (migration 32).
+ *
+ * The Agent can read Zotero and the Vault and can build a preview, but changing
+ * another application's data is a user decision. The row freezes the execute
+ * payload so approving replays exactly the write that was shown, and holds the
+ * `payloadJson` is deliberately not part of the renderer contract.
+ */
+export const agentExternalActions = sqliteTable(
+  'agent_external_actions',
+  {
+    id: text('id').primaryKey(),
+    runId: text('run_id').notNull().references(() => agentRuns.id, { onDelete: 'cascade' }),
+    conversationId: text('conversation_id'),
+    kind: text('kind').$type<AgentExternalActionKind>().notNull(),
+    profileId: text('profile_id').notNull(),
+    status: text('status').$type<AgentExternalActionStatus>().notNull(),
+    summary: text('summary').notNull().default(''),
+    previewId: text('preview_id'),
+    payloadJson: text('payload_json').notNull(),
+    receiptJson: text('receipt_json'),
+    error: text('error').notNull().default(''),
+    createdAt: text('created_at').notNull(),
+    expiresAt: text('expires_at').notNull(),
+    decidedAt: text('decided_at'),
+    revision: integer('revision').notNull().default(0)
+  },
+  (table) => [
+    index('agent_external_actions_run_idx').on(table.runId, table.createdAt),
+    index('agent_external_actions_status_expires_idx').on(table.status, table.expiresAt)
   ]
 )
 
@@ -853,9 +915,12 @@ export const agentConversations = sqliteTable(
     runtime: text('runtime').$type<AgentRuntimeKind>().notNull().default('pi'),
     model: text('model'),
     assistantKey: text('assistant_key'),
-    toolProfile: text('tool_profile').$type<'read-only' | 'approved-write'>().notNull().default('read-only'),
-    permissionMode: text('permission_mode').$type<'read-only' | 'auto' | 'full-access'>().notNull().default('read-only'),
-    approvalPolicy: text('approval_policy').$type<'on-request' | 'never'>().notNull().default('on-request'),
+    toolProfile: text('tool_profile').$type<'read-only' | 'approved-write'>().notNull().default('approved-write'),
+    permissionMode: text('permission_mode').$type<'read-only' | 'auto' | 'full-access'>().notNull().default('auto'),
+    approvalPolicy: text('approval_policy').$type<'on-request' | 'never'>().notNull().default('never'),
+    /** Path of the Pi session file this conversation continues. Working state
+     * only: a missing file degrades to a fresh session, never an error. */
+    runtimeSessionId: text('runtime_session_id'),
     status: text('status').$type<AgentConversation['status']>().notNull().default('pending'),
     createdAt: text('created_at').notNull(),
     updatedAt: text('updated_at').notNull(),
@@ -907,6 +972,7 @@ export type SyncRunRow = typeof syncRuns.$inferSelect
 export type PromptTemplateRow = typeof promptTemplates.$inferSelect
 export type AiProviderProfileRow = typeof aiProviderProfiles.$inferSelect
 export type AgentRunRow = typeof agentRuns.$inferSelect
+export type AgentSettingsRow = typeof agentSettings.$inferSelect
 export type ScheduleRow = typeof schedules.$inferSelect
 export type ScheduleOccurrenceRow = typeof scheduleOccurrences.$inferSelect
 export type AgentConnectorRow = typeof agentConnectors.$inferSelect
@@ -915,6 +981,7 @@ export type AgentProxyBindingRow = typeof agentProxyBindings.$inferSelect
 export type AgentBindingRow = typeof agentBindings.$inferSelect
 export type AgentRunEventRow = typeof agentRunEvents.$inferSelect
 export type AgentApprovalRow = typeof agentApprovals.$inferSelect
+export type AgentExternalActionRow = typeof agentExternalActions.$inferSelect
 export type AgentRunRecordRow = typeof agentRunRecords.$inferSelect
 export type AgentInboxItemRow = typeof agentInboxItems.$inferSelect
 export type AgentConversationRow = typeof agentConversations.$inferSelect

@@ -2,7 +2,7 @@ import { createHash, randomUUID } from 'node:crypto'
 import { existsSync, readFileSync } from 'node:fs'
 import { mkdir } from 'node:fs/promises'
 import { dirname, join, relative, resolve } from 'node:path'
-import { app, BrowserWindow, dialog } from 'electron'
+import { app, BrowserWindow, dialog, shell } from 'electron'
 import { CoreRpcClient } from '../core/client.js'
 import {
   IntegrationProfileSchema,
@@ -13,8 +13,10 @@ import {
 } from '@prw/contracts'
 import {
   CredentialVault,
+  credentialKey,
   electronSecretCryptography
 } from './credentials.js'
+import { readAgentCredential, removeAgentCredential, writeAgentCredential } from './agent-credentials.js'
 import { registerRpcHandler } from './ipc.js'
 import { migrateLegacyUserData } from './data-migration.js'
 import { registerUpdateHandlers } from './updater.js'
@@ -114,6 +116,33 @@ async function bootstrap(): Promise<void> {
     join(app.getPath('userData'), 'config', 'workspace-secrets.json'),
     electronSecretCryptography()
   )
+
+  // The embedded Agent produces credentials inside the Core process but cannot
+  // persist them: `safeStorage` only exists here. Every write therefore arrives
+  // as a request, and Core waits for this ack instead of continuing on a token
+  // the vault never accepted.
+  coreClient.setCredentialWriter(async (provider, credential) => {
+    if (credential === null) await removeAgentCredential(credentialVault, provider)
+    else await writeAgentCredential(credentialVault, provider, credential)
+  })
+  // The mirror of the write channel: a run Core starts on its own (a scheduled
+  // occurrence, or the startup catch-up) has no renderer and therefore no
+  // per-RPC credential envelope. It asks for one provider, and a provider the
+  // vault does not hold simply resolves to `null`, which the run reports as
+  // `AGENT_CREDENTIAL_MISSING` instead of borrowing someone else's key.
+  coreClient.setCredentialReader(async (provider) => {
+    const entry = await readAgentCredential(credentialVault, provider)
+    return entry === null ? null : entry.credential
+  })
+  // Connection secrets travel the same way and for the same reason: an Agent
+  // tool call arrives over the in-process MCP transport with no credential
+  // envelope, so a Zotero write it requests asks for exactly one profile's key.
+  coreClient.setIntegrationSecretReader(async (profileId) =>
+    credentialVault.get(credentialKey('integration', profileId)))
+  // An OAuth flow inside Core cannot open a browser, so it hands the URL over.
+  // Validation stays with the shared `ExternalOpenUrlSchema` allowlist applied
+  // in `CoreRpcClient` before this callback runs.
+  coreClient.setExternalOpener((url) => { void shell.openExternal(url) })
 
   removeRpcHandler = registerRpcHandler({
     client: coreClient,

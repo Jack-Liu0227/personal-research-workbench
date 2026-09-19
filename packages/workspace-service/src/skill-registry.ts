@@ -129,6 +129,11 @@ export type AgentSkillDiagnosticCode =
   | 'SKILL_PYTHON_MISSING'
   | 'SKILL_PYTHON_TOO_OLD'
   | 'SKILL_PROBE_FAILED'
+  /** The skill's engine is a local process that used to be launched through the
+   * spawned CLI's shell. The embedded Agent has no shell tool, so the engine has
+   * no execution channel yet: the run is blocked instead of emitting prose where
+   * engine evidence belongs. */
+  | 'SKILL_ENGINE_UNAVAILABLE_INPROCESS'
   | 'SKILL_PROBE_NETWORK_UNREACHABLE'
   | 'SKILL_PROBE_PERMISSION_DENIED'
   | 'SKILL_SOURCES_UNAVAILABLE'

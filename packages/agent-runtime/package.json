@@ -1,6 +1,6 @@
 {
   "name": "@prw/agent-runtime",
-  "version": "0.0.3",
+  "version": "0.0.4",
   "private": true,
   "type": "module",
   "exports": {
@@ -10,7 +10,11 @@
     "typecheck": "tsc -p tsconfig.json --noEmit"
   },
   "dependencies": {
-    "@prw/contracts": "workspace:*"
+    "@earendil-works/pi-ai": "0.85.1",
+    "@earendil-works/pi-coding-agent": "0.85.1",
+    "@modelcontextprotocol/sdk": "1.30.0",
+    "@prw/contracts": "workspace:*",
+    "typebox": "1.3.7"
   },
   "devDependencies": {
     "@types/node": "24.10.14",

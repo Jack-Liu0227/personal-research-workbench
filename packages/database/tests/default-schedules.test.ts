@@ -26,6 +26,10 @@ import { WorkbenchRepository } from '../src/repository.ts'
 /** The seeding migration. Re-applying it on an already-migrated database is the
  *  only way to exercise "the rule already exists" through the real SQL. */
 const SEEDING_MIGRATION_ID = 28
+/** The migration that repoints built-in rules at the only remaining Agent
+ *  runtime. It is pure DML, so replaying it is safe and necessary: a rule
+ *  recreated by the seeding migration alone would come back as `codex`. */
+const RUNTIME_MIGRATION_ID = 30
 
 const roots: string[] = []
 const open: WorkbenchRepository[] = []
@@ -49,7 +53,7 @@ function handleOf(repository: WorkbenchRepository): BetterSqlite3.Database {
 }
 
 function reseed(handle: BetterSqlite3.Database): void {
-  handle.prepare('DELETE FROM _prw_migrations WHERE id = ?').run(SEEDING_MIGRATION_ID)
+  handle.prepare('DELETE FROM _prw_migrations WHERE id IN (?, ?)').run(SEEDING_MIGRATION_ID, RUNTIME_MIGRATION_ID)
   migrateDatabase(handle)
 }
 

@@ -97,8 +97,10 @@ import {
   type DailyPushRunOutcome
 } from './calendar-daily-push.js'
 import { normalizeAppError } from './errors.js'
+import { IntegrationRuntimeError } from '@prw/connectors'
 import type { IntegrationCoordinator } from './integration-runtime.js'
 import type { LiteratureCoordinator } from './literature-runtime.js'
+import type { AgentExternalActionContext, AgentExternalActionCoordinator } from './agent-external-actions.js'
 import type { KnowledgeEngineCoordinator } from './knowledge-engines.js'
 import { ObsidianLayoutError } from './obsidian-layout.js'
 
@@ -183,17 +185,34 @@ export interface CoreServices {
   readonly integrations: IntegrationCoordinator
   readonly literature: LiteratureCoordinator
   readonly knowledgeEngines: KnowledgeEngineCoordinator
+  /** Pending-approval store for Agent-driven external writes. Optional because
+   * the Core test harness builds a service set without one; the request methods
+   * fail closed when it is missing. */
+  readonly externalActions?: AgentExternalActionCoordinator
 }
 export interface CoreMetadata { readonly version: string }
 
-export async function dispatchRpc(services: CoreServices, metadata: CoreMetadata, input: unknown): Promise<RpcResponse> {
+/**
+ * Which Agent run a request belongs to.
+ *
+ * Core binds this, never the caller: the model can name a profile but must not
+ * be able to name the run an approval belongs to. Absent means "no Agent run",
+ * which makes every external-write request fail closed.
+ */
+export interface AgentCallContext {
+  readonly runId: string
+  /** Read one integration secret for this single in-process MCP call. */
+  readonly readIntegrationSecret?: ((profileId: string) => Promise<string | null>) | undefined
+}
+
+export async function dispatchRpc(services: CoreServices, metadata: CoreMetadata, input: unknown, context?: AgentCallContext): Promise<RpcResponse> {
   let requestId = 'invalid-request'
   let secret: string | null | undefined
   try {
     const parsed = parseDispatchInput(input)
     requestId = parsed.request.id
     secret = parsed.credential?.secret
-    const data = await execute(services, metadata, parsed.request, parsed.credential)
+    const data = await execute(services, metadata, parsed.request, parsed.credential, context)
     const resultSchema = parsed.request.method === 'zotero.authorize'
       ? ZoteroAuthorizationBridgeResultSchema
       : parsed.request.method in RpcMethodResultSchemas
@@ -206,6 +225,24 @@ export async function dispatchRpc(services: CoreServices, metadata: CoreMetadata
     const appError = error instanceof ObsidianLayoutError ? mapObsidianLayoutError(error) : normalizeAppError(error)
     return { id: requestId, ok: false, error: redactCredential(appError, secret) }
   }
+}
+
+/**
+ * Resolve the pending-approval store, or refuse the write.
+ *
+ * Both halves matter. Without the store there is nowhere to record the decision
+ * the user has not made yet, and without a bound run the approval could not be
+ * attributed or shown. Either way the honest answer is "no", not a direct write.
+ */
+function requireExternalActions(
+  services: CoreServices,
+  context: AgentCallContext | undefined
+): { readonly external: AgentExternalActionCoordinator; readonly context: AgentExternalActionContext } {
+  const external = services.externalActions
+  if (external === undefined || context === undefined) {
+    throw new IntegrationRuntimeError('UNSUPPORTED_CAPABILITY', '外部写入需要用户确认通道，当前请求没有绑定 Agent run。')
+  }
+  return { external, context }
 }
 
 function mapObsidianLayoutError(error: ObsidianLayoutError): import('@prw/contracts').AppError {
@@ -281,14 +318,14 @@ function redactCredential<T extends { message: string; details?: unknown }>(erro
   return { ...error, message: redactedMessage, details: redactSecretValue(error.details, secret) }
 }
 
-function redactSecretValue(value: unknown, secret: string): unknown {
+export function redactSecretValue(value: unknown, secret: string): unknown {
   if (typeof value === 'string') return value.split(secret).join('[redacted]')
   if (Array.isArray(value)) return value.map((entry) => redactSecretValue(entry, secret))
   if (isRecord(value)) return Object.fromEntries(Object.entries(value).map(([key, entry]) => [key, redactSecretValue(entry, secret)]))
   return value
 }
 
-async function execute(services: CoreServices, metadata: CoreMetadata, request: RpcRequest, credential?: CredentialContext): Promise<unknown> {
+async function execute(services: CoreServices, metadata: CoreMetadata, request: RpcRequest, credential?: CredentialContext, context?: AgentCallContext): Promise<unknown> {
   const repository = services.repository
   switch (request.method) {
     case 'projects.list': z.null().parse(request.payload); return repository.listProjects()
@@ -373,7 +410,10 @@ async function execute(services: CoreServices, metadata: CoreMetadata, request: 
     case 'literature.staging.save': return services.literature.saveStaging(LiteratureStagingSaveInputSchema.parse(request.payload))
     case 'literature.staging.delete': return services.literature.deleteStaging(LiteratureStagingDeleteInputSchema.parse(request.payload))
     case 'literature.staging.bulkDelete': return services.literature.bulkDeleteStaging(LiteratureStagingBulkDeleteInputSchema.parse(request.payload))
-    case 'literature.stagingToZotero.preview': return services.literature.previewStagingToZotero(LiteratureStagingToZoteroPreviewInputSchema.parse(request.payload), services.integrations, credential?.secret ?? null)
+    case 'literature.stagingToZotero.preview': {
+      const input = LiteratureStagingToZoteroPreviewInputSchema.parse(request.payload)
+      return services.literature.previewStagingToZotero(input, services.integrations, credential?.secret ?? await context?.readIntegrationSecret?.(input.profileId) ?? null)
+    }
     case 'literature.stagingToZotero.execute': return services.literature.executeStagingToZotero(LiteratureStagingToZoteroExecuteInputSchema.parse(request.payload), services.integrations, credential?.secret ?? null, credential?.profileId)
     case 'literature.batch.preview': return services.literature.previewBatch(LiteratureBatchPreviewInputSchema.parse(request.payload))
     case 'literature.batch.execute': return services.literature.executeBatch(LiteratureBatchExecuteInputSchema.parse(request.payload))
@@ -396,6 +436,17 @@ async function execute(services: CoreServices, metadata: CoreMetadata, request: 
     case 'obsidian.vaultLayout.initialize': return services.integrations.initializeObsidianVaultLayout(ObsidianVaultLayoutInitializeInputSchema.parse(request.payload))
     case 'notes.list': return services.integrations.listNotes(NoteListInputSchema.parse(request.payload))
     case 'notes.read': return services.integrations.readNote(ReadNoteInputSchema.parse(request.payload))
+    // Agent-requested writes. The preview runs here, then the frozen payload
+    // waits in `agent_external_actions` for the user: `execute` is deliberately
+    // not reachable from the model, so this is as far as a tool call can go.
+    case 'notes.write.request': {
+      const bound = requireExternalActions(services, context)
+      return bound.external.requestNoteWrite(request.payload, bound.context)
+    }
+    case 'notes.metadata.request': {
+      const bound = requireExternalActions(services, context)
+      return bound.external.requestNoteMetadata(request.payload, bound.context)
+    }
     case 'notes.write': return services.integrations.writeNote(WriteNoteInputSchema.parse(request.payload))
     case 'notes.delete': return services.integrations.deleteNote(DeleteNoteInputSchema.parse(request.payload))
     case 'notes.deleteFolder': return services.integrations.deleteNoteFolder(DeleteNoteFolderInputSchema.parse(request.payload))
@@ -404,24 +455,49 @@ async function execute(services: CoreServices, metadata: CoreMetadata, request: 
     case 'notes.metadata.preview': return services.integrations.previewNoteMetadata(NoteMetadataPreviewInputSchema.parse(request.payload))
     case 'notes.metadata.apply': return services.integrations.applyNoteMetadata(ApplyNoteMetadataInputSchema.parse(request.payload))
     case 'notes.duplicates': return services.integrations.noteDuplicates(NoteDuplicateInputSchema.parse(request.payload))
-    case 'zotero.capability': return services.integrations.zoteroCapability(ZoteroCapabilityInputSchema.parse(request.payload).profileId, credential?.secret ?? null)
+    case 'zotero.capability': {
+      const input = ZoteroCapabilityInputSchema.parse(request.payload)
+      return services.integrations.zoteroCapability(input.profileId, credential?.secret ?? await context?.readIntegrationSecret?.(input.profileId) ?? null)
+    }
     case 'zotero.authorize': return services.integrations.authorizeZotero(ZoteroAuthorizeInputSchema.parse(request.payload).profileId, credential?.secret ?? null)
-    case 'zotero.collectionsPage': return services.integrations.listZoteroCollectionPage({ ...ZoteroCollectionPageInputSchema.parse(request.payload), secret: credential?.secret ?? null })
+    case 'zotero.collectionsPage': {
+      const input = ZoteroCollectionPageInputSchema.parse(request.payload)
+      return services.integrations.listZoteroCollectionPage({ ...input, secret: credential?.secret ?? await context?.readIntegrationSecret?.(input.profileId) ?? null })
+    }
     case 'zotero.collections': {
-      const page = await services.integrations.listZoteroCollectionPage({ ...ZoteroCollectionPageInputSchema.parse(request.payload), secret: credential?.secret ?? null })
+      const input = ZoteroCollectionPageInputSchema.parse(request.payload)
+      const page = await services.integrations.listZoteroCollectionPage({ ...input, secret: credential?.secret ?? await context?.readIntegrationSecret?.(input.profileId) ?? null })
       return page.items
     }
-    case 'zotero.itemsPage': return services.integrations.listZoteroItemPage({ ...ZoteroItemPageInputSchema.parse(request.payload), secret: credential?.secret ?? null })
-    case 'zotero.bibtexExport': return services.integrations.exportZoteroBibtex({ ...ZoteroBibtexExportInputSchema.parse(request.payload), secret: credential?.secret ?? null })
+    case 'zotero.itemsPage': {
+      const input = ZoteroItemPageInputSchema.parse(request.payload)
+      return services.integrations.listZoteroItemPage({ ...input, secret: credential?.secret ?? await context?.readIntegrationSecret?.(input.profileId) ?? null })
+    }
+    case 'zotero.bibtexExport': {
+      const input = ZoteroBibtexExportInputSchema.parse(request.payload)
+      return services.integrations.exportZoteroBibtex({ ...input, secret: credential?.secret ?? await context?.readIntegrationSecret?.(input.profileId) ?? null })
+    }
     case 'zotero.items': {
-      const page = await services.integrations.listZoteroItemPage({ ...ZoteroItemPageInputSchema.parse(request.payload), secret: credential?.secret ?? null })
+      const input = ZoteroItemPageInputSchema.parse(request.payload)
+      const page = await services.integrations.listZoteroItemPage({ ...input, secret: credential?.secret ?? await context?.readIntegrationSecret?.(input.profileId) ?? null })
       return page.items
     }
     case 'zotero.import': { const p = ZoteroImportInputSchema.parse(request.payload); return services.integrations.importZoteroItem({ ...p, secret: credential?.secret ?? null }) }
     case 'zotero.importSelected.preview': return services.integrations.previewZoteroImport({ ...ZoteroImportPreviewInputSchema.parse(request.payload), secret: credential?.secret ?? null })
     case 'zotero.importSelected.execute': return services.integrations.executeZoteroImport(ZoteroImportExecuteInputSchema.parse(request.payload), credential?.secret ?? null, credential?.profileId)
-    case 'zotero.paperToZotero.preview': return services.integrations.previewPaperToZotero({ ...PaperToZoteroPreviewInputSchema.parse(request.payload), secret: credential?.secret ?? null })
+    case 'zotero.paperToZotero.preview': {
+      const input = PaperToZoteroPreviewInputSchema.parse(request.payload)
+      return services.integrations.previewPaperToZotero({ ...input, secret: credential?.secret ?? await context?.readIntegrationSecret?.(input.profileId) ?? null })
+    }
     case 'zotero.paperToZotero.execute': return services.integrations.executePaperToZotero(PaperToZoteroExecuteInputSchema.parse(request.payload), credential?.secret ?? null, credential?.profileId)
+    case 'zotero.paperToZotero.request': {
+      const bound = requireExternalActions(services, context)
+      return bound.external.requestZoteroImport(PaperToZoteroPreviewInputSchema.parse(request.payload), bound.context)
+    }
+    case 'literature.stagingToZotero.request': {
+      const bound = requireExternalActions(services, context)
+      return bound.external.requestStagingZoteroImport(LiteratureStagingToZoteroPreviewInputSchema.parse(request.payload), bound.context)
+    }
     // 两侧删除：preview 冻结远端 revision（只读），execute 在确认后先删 Zotero
     // 远端条目，只有远端确认删除（或 404）时才删除本地投影；凭据只在此处注入。
     case 'zotero.deleteRemote.preview': return services.integrations.previewZoteroRemoteDelete(ZoteroRemoteDeletePreviewInputSchema.parse(request.payload), credential?.secret ?? null)

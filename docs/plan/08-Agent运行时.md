@@ -1,6 +1,58 @@
 # Agent 运行时与自动化计划
 
-## 2026-09-08 最新需求与验收（以本节为准）
+## 2026 · 进程内 Pi Agent（取代 CLI 运行时，以本节为准）
+
+Agent 不再 spawn 任何外部 CLI。运行时是**在 Core utility process 内嵌入 `@earendil-works/pi-coding-agent@0.85.1` 的 `AgentSession`**；Codex 的代码、契约、适配器、探测与凭据目录已全部删除，历史行由一次性迁移清理（见 `docs/implementation/24-pi-inprocess-agent-backend.md`）。
+
+### 运行时表（收敛为单行）
+
+| Runtime | Transport | 结构化输出 | MCP 接线 | 默认工具策略 | 当前事实 |
+| --- | --- | --- | --- | --- | --- |
+| Pi | in-process（`createAgentSessionServices` + `createAgentSessionFromServices`） | `AgentSessionEvent` → `PiLedgerNormalizer` → `AgentRunRecordDraft` | 进程内 linked pair 连 `workspace-mcp` 的 `McpServer`（不用 stdio） | `excludeTools` 永久剔除 `bash`/`powershell`/`edit`/`write`/`read`/`grep`/`find`/`ls`；workbench 工具按 permission mode 注册 | 无二进制探测；`capabilities()` 由 SDK 事实直接给出 |
+
+本节以下的 CLI 运行时（子进程、`--version` 探测、MCP config 文件、CLI auth、`--sandbox`/`--tools` 开关）描述的是历史实现，仅作演进记录保留；实现以本计划和文档 24/25 为准。
+
+### MCP 接线
+
+打包版关闭了 `runAsNode` 且不带 node 可执行文件，`fork`/`spawn(process.execPath)` 在打包态不可用，因此 Agent 的工具通路走 `@modelcontextprotocol/sdk` 的 `InMemoryTransport.createLinkedPair()`：`workspace-mcp` 的 `McpServer` 与 `Client` 同进程对接，工具调用最终落到 host 的 `dispatchMessage`（与 stdio 路径同一套严格校验）。工具面含研究读取/外部写入预览与本地写工具（`literature.search/sessions/results`、`papers.list`、`notes.list/read`、`notes.metadata.preview`、`zotero.capability/collections/items`、`zotero.paperToZotero.preview`、`literature.stagingToZotero.preview`，以及 `tasks.create/update/move`、`todos.capture`、`calendar.create/update`、`calendar.markers.create/update`）；hard-delete、archive、裸外部写入和文件系统工具不暴露。本地写入即时生效、无审批对话框；外部预览不会自动执行。
+
+### 凭据与 profile
+
+- Main 独占 `safeStorage`（vault key `v2:provider:<providerId>`），只向渲染层回传 `{ provider, label, credentialPresent, authType, updatedAt }`，**永不回传 secret**。
+- Core 只做整轮 run 的内存缓存与回写；`AppCredentialStore.modify` 是唯一写路径，按 provider 串行，写后 await `credential-ack`（10 s 超时→诊断并中止该 run）。
+- `PI_CODING_AGENT_DIR` 固定为 `<userData>/data/agent-runtime/pi`；`~/.pi`、`~/.codex` 永不读、写、转发。
+- 认证支持 API Key 与 OAuth（`ModelRuntime.login` + 宿主实现的 `AuthInteraction`）；OAuth 回调 http server 由 pi-ai 在 Core 内自建（loopback），需要用户访问的页面由 **Core 发 `open-external` → Main `shell.openExternal`** 用系统浏览器打开（渲染层保留同一地址作为可点回退）。
+- pi 的 session JSONL 与 `agentDir` 属工作态缓存；SQLite 始终是权威投影。
+
+### Provider 发现与本地命令
+
+设置页的自定义 Provider 行同时维护 safeStorage API Key 和 Pi `models.json` 草稿。`agent.models.custom.discover` 是按 provider 单 Key 注入的 credential-bearing RPC：OpenAI Completions/Responses 使用 Bearer，Anthropic 使用 `x-api-key` + `anthropic-version`，Gemini 使用 `x-goog-api-key`。发现结果只作为候选，用户选择并保存后才写入 models.json。
+
+Agent Composer 在模型 run 前解析 `/provider`、`/model`、`/key`、`/login`、`/logout` 和 `/agent settings` 本地命令；`/key` 只打开 Settings 安全输入，不接受或记录密钥。
+
+### 研究上下文工具
+
+嵌入式 MCP 额外开放 `literature.search/sessions/results`、`papers.list`、`notes.list/read` 与 `zotero.capability/collections/items` 只读工具；LiteratureCoordinator/IntegrationCoordinator 仍是唯一业务入口。外部写入和删除不因这些只读工具而开放。
+
+### 当前 Agent 业务交互补充（2026-09）
+
+- 外部写入通过 `zotero.paperToZotero.request`、`literature.stagingToZotero.request`、`notes.write.request`、`notes.metadata.request` 创建 pending action；用户确认卡片后才执行，模型无法调用 `agent.externalActions.decide`。
+- Web Zotero 的 `capability/collections/items/preview` 在 Agent MCP 调用中按 profile 通过 Core→Main 回读集成 secret；secret 不进入 MCP payload、模型结果、ledger 或 SQLite。
+- Agent 可读取 `automation.rules.list`、`automation.runs.list` 和 `agent.settings.get`，用于解释定时任务 cron、时区、skill、topic、sources、lookbackDays、outputFolder、权限和非秘密默认参数；规则修改仍留在定时任务页面，避免模型悄然改变后续无人值守范围。
+- Pi ResourceLoader 只接收开发态 `PRW_PROJECT_ROOT/.agents/skills` / `.pi/extensions` 或打包态 `resources/skills` / `resources/extensions`；不读取个人 `~/.pi`。builtin shell/file tools 继续关闭。
+- 定时任务只在应用进程存活期间执行；启动每日 catch-up 最多一次。Skill、OAuth、Zotero/Obsidian 真实外部流程仍需对应环境验证，不能用模拟结果宣称完成。
+
+内嵌 SDK 未内置的模型服务写进 **pi 自己的 `models.json`**（`<userData>/data/agent-runtime/pi/models.json`，即 `<agentDir>/models.json`），不发明应用私有格式：界面添加与手改文件等价，文件也能被其它 pi 客户端使用。
+
+- 路径不放在安装目录：`Program Files` 对普通用户只读且升级/卸载会清空；设置页直接显示绝对路径，偏离一目了然。
+- 每次保存先重读磁盘，**不认识**的条目（`headers`/`compat`/`modelOverrides`、非受支持 `api`、非本机 `http://`）按原顺序原内容保留并列为 `unmanaged`（只读）；顶层未知键同样保留。
+- pi 的读取器容忍 `//`、`/* */` 注释与 BOM，应用读取器实现同一套 `stripJsonComments`；**一条坏条目会让 pi 丢弃整份文件**，因此写入前逐条校验，且拒绍覆盖无法解析的文件。
+- 密钥永不进入该文件（只存端点与模型 id）；已保存的 provider id 在界面上只读（它同时是 safeStorage 的凭据键）。
+- RPC：`agent.models.custom.get|save`（不携带凭据）。
+
+## 2026-09-08 需求与验收（CLI 时代的本节以下内容）
+
+> 以下条目写于 CLI 运行时阶段；其中「运行时启用/禁用按钮」「按 CLI capability probe 生成权限选项」「CLI 版本探测」已被进程内嵌入取代（无外部二进制，故无版本探测；模型与权限默认值改为设置页的单一来源）。文献上下文、last30days skill 与代理 profile/binding 的结论仍然有效。
 
 - Runtime 增加显式启用/禁用按钮；禁用后任务、调度和文献上下文不得调用该 Agent。
 - 权限选项由对应 CLI 的真实 capability probe 生成，显示来源、版本、命令和探测失败原因。

@@ -1,3 +1,4 @@
+import { copyFileSync, existsSync } from 'node:fs'
 import type BetterSqlite3 from 'better-sqlite3'
 
 interface Migration {
@@ -6,8 +7,17 @@ interface Migration {
   readonly sql: string
   /** SQLite requires foreign-key enforcement to be disabled while rebuilding a
    * table that is referenced by other tables. The migration itself still runs
-   * inside the same transaction and the pragma is restored immediately after. */
+   * inside the same transaction and the pragma is restored immediately after.
+   * A data migration must NOT set this: keeping FKs enabled lets
+   * `ON DELETE CASCADE` / `SET NULL` clean up dependent rows itself. */
   readonly disableForeignKeys?: boolean
+  /** When set and `requiresBackup` reports real data loss, the database file
+   * is copied to `${databasePath}${backupSuffix}` before this migration runs.
+   * The suffix is a fixed literal so the user can find the copy by name. */
+  readonly backupSuffix?: string
+  /** Cheap read-only probe deciding whether the backup is worth taking. It
+   * must only depend on tables that already exist. */
+  readonly requiresBackup?: (sqlite: BetterSqlite3.Database) => boolean
 }
 
 const migrations: readonly Migration[] = [
@@ -1451,10 +1461,185 @@ const migrations: readonly Migration[] = [
       ALTER TABLE agent_runs ADD COLUMN archived_at TEXT;
       ALTER TABLE agent_runs ADD COLUMN revision INTEGER NOT NULL DEFAULT 0 CHECK (revision >= 0);
     `
+  },
+  {
+    id: 30,
+    name: 'remove_codex_agent_runtime',
+    backupSuffix: '.pre-v30-codex.bak',
+    requiresBackup: (sqlite) => countCodexRows(sqlite) > 0,
+    sql: `
+      -- The Agent runtime is now a single in-process Pi session. Codex shared
+      -- these tables with Pi, so its history is *removed* rather than migrated:
+      -- a Codex run cannot be replayed once the executable is gone, and the
+      -- agent_runs/agent_run_records CHECK constraints still accept the old
+      -- literals only because SQLite cannot narrow a CHECK in place.
+      --
+      -- Deleting the parent rows is enough: agent_run_records,
+      -- agent_run_events and agent_approvals cascade, while agent_inbox_items
+      -- and schedule_occurrences null out their run_id. Foreign keys stay
+      -- ENABLED here so those cascades actually run; the runner's
+      -- foreign_key_check then proves nothing was left dangling.
+      DELETE FROM agent_runs WHERE runtime = 'codex';
+      DELETE FROM agent_conversations WHERE runtime = 'codex';
+      DELETE FROM agent_connectors WHERE runtime = 'codex';
+      DELETE FROM agent_bindings WHERE runtime = 'codex' OR fallback_runtime = 'codex';
+      DELETE FROM agent_proxy_bindings WHERE runtime = 'codex';
+      -- Schedules are user-authored, not runtime history: repoint them at the
+      -- only remaining runtime instead of deleting a recurring task.
+      UPDATE schedules SET runtime = 'pi' WHERE runtime = 'codex';
+    `
+  },
+  {
+    id: 31,
+    name: 'agent_settings_and_runtime_session',
+    sql: `
+      -- App-wide Agent defaults. Exactly one row (id = 'global') so a new
+      -- conversation or schedule always inherits a complete, non-null policy
+      -- instead of each caller inventing its own fallback.
+      CREATE TABLE agent_settings (
+        id TEXT PRIMARY KEY NOT NULL CHECK (id = 'global'),
+        provider TEXT,
+        model TEXT,
+        thinking TEXT,
+        permission_mode TEXT NOT NULL DEFAULT 'auto'
+          CHECK (permission_mode IN ('read-only', 'auto', 'full-access')),
+        tool_profile TEXT NOT NULL DEFAULT 'approved-write'
+          CHECK (tool_profile IN ('read-only', 'approved-write')),
+        approval_policy TEXT NOT NULL DEFAULT 'never'
+          CHECK (approval_policy IN ('on-request', 'never')),
+        response_language TEXT NOT NULL DEFAULT 'zh-CN',
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL,
+        revision INTEGER NOT NULL DEFAULT 0 CHECK (revision >= 0)
+      ) STRICT;
+
+      INSERT INTO agent_settings (
+        id, provider, model, thinking, permission_mode, tool_profile,
+        approval_policy, response_language, created_at, updated_at, revision
+      ) VALUES (
+        'global', NULL, NULL, NULL, 'auto', 'approved-write',
+        'never', 'zh-CN',
+        strftime('%Y-%m-%dT%H:%M:%fZ', 'now'),
+        strftime('%Y-%m-%dT%H:%M:%fZ', 'now'), 0
+      );
+
+      -- Pi's session JSONL is working state; the path is stored so a
+      -- conversation continues the same SDK session across app restarts.
+      ALTER TABLE agent_conversations ADD COLUMN runtime_session_id TEXT;
+    `
+  },
+  {
+    id: 32,
+    name: 'agent_external_actions',
+    sql: `
+      -- External writes the Agent prepared but may not perform alone.
+      --
+      -- The Agent reads Zotero and the Vault and builds previews; changing
+      -- another application's data stays a user decision. One row per requested
+      -- write, holding the frozen execute payload so approving replays exactly
+      -- what the user was shown. Rows cascade with their run: a deleted
+      -- conversation must not leave an approvable write behind.
+      CREATE TABLE agent_external_actions (
+        id TEXT PRIMARY KEY NOT NULL,
+        run_id TEXT NOT NULL REFERENCES agent_runs(id) ON DELETE CASCADE,
+        conversation_id TEXT,
+        kind TEXT NOT NULL
+          CHECK (kind IN ('zotero-import', 'obsidian-note', 'obsidian-metadata')),
+        profile_id TEXT NOT NULL,
+        status TEXT NOT NULL
+          CHECK (status IN ('pending', 'approved', 'rejected', 'executed', 'failed', 'conflict', 'expired')),
+        summary TEXT NOT NULL DEFAULT '',
+        preview_id TEXT,
+        payload_json TEXT NOT NULL,
+        receipt_json TEXT,
+        error TEXT NOT NULL DEFAULT '',
+        created_at TEXT NOT NULL,
+        expires_at TEXT NOT NULL,
+        decided_at TEXT,
+        revision INTEGER NOT NULL DEFAULT 0 CHECK (revision >= 0)
+      ) STRICT;
+
+      CREATE INDEX agent_external_actions_run_idx
+        ON agent_external_actions(run_id, created_at);
+      -- Serves the two hot questions: "what is waiting for me" and "what should
+      -- time out now".
+      CREATE INDEX agent_external_actions_status_expires_idx
+        ON agent_external_actions(status, expires_at);
+    `
   }
 ]
 
-export function migrateDatabase(sqlite: BetterSqlite3.Database): void {
+/** Row count of what migration 30 *deletes* and a user would miss, used to
+ * decide whether a backup is worth taking.
+ *
+ * Only genuinely deleted rows count, and only ones a user created:
+ *
+ *  - `schedules` is excluded because migration 30 *repoints* those rows at Pi
+ *    rather than deleting them, so nothing is lost.
+ *  - `agent_connectors` is excluded because an earlier migration seeds a
+ *    `builtin.agent.codex` connector row into every database ever created, so
+ *    counting it would write a rollback copy for every install — including
+ *    users who never ran Codex once. The row is regenerated configuration.
+ *
+ * Each table is probed defensively: the backup runs before the migration, so a
+ * hand-edited or partially-migrated database must not turn a missing table into
+ * a crash. */
+function countCodexRows(sqlite: BetterSqlite3.Database): number {
+  const probes: ReadonlyArray<readonly [string, string]> = [
+    ['agent_runs', "SELECT COUNT(*) AS n FROM agent_runs WHERE runtime = 'codex'"],
+    ['agent_conversations', "SELECT COUNT(*) AS n FROM agent_conversations WHERE runtime = 'codex'"],
+    ['agent_bindings', "SELECT COUNT(*) AS n FROM agent_bindings WHERE runtime = 'codex' OR fallback_runtime = 'codex'"],
+    ['agent_proxy_bindings', "SELECT COUNT(*) AS n FROM agent_proxy_bindings WHERE runtime = 'codex'"]
+  ]
+  let total = 0
+  for (const [table, statement] of probes) {
+    const exists = sqlite.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?").get(table)
+    if (!exists) continue
+    const row = sqlite.prepare(statement).get() as { n?: number } | undefined
+    total += Number(row?.n ?? 0)
+  }
+  return total
+}
+
+export interface MigrateDatabaseOptions {
+  /** Absolute SQLite path. Required for any migration that takes a backup;
+   * omitted means the migration runs without one (in-memory and test
+   * databases). */
+  readonly databasePath?: string | undefined
+  /** Called once with the path of a backup that was just written, so the caller
+   * can surface "a rollback copy exists here" instead of leaving a silent file
+   * on disk that nobody knows about. */
+  readonly onBackup?: ((backupPath: string) => void) | undefined
+}
+
+/**
+ * Copy the database file beside itself before a destructive migration.
+ *
+ * WAL means the main file alone can be incomplete, so the log is checkpointed
+ * into it first. This connection has not written anything yet at this point,
+ * which is what makes the copy a faithful pre-migration snapshot. The caller is
+ * told the path so a rollback copy is a reported fact, not an assumption.
+ */
+function backupDatabaseFile(
+  sqlite: BetterSqlite3.Database,
+  databasePath: string,
+  suffix: string,
+  onBackup: ((backupPath: string) => void) | undefined
+): string | null {
+  if (databasePath === ':memory:' || !existsSync(databasePath)) return null
+  const backupPath = `${databasePath}${suffix}`
+  try {
+    sqlite.pragma('wal_checkpoint(TRUNCATE)')
+  } catch {
+    // A non-WAL database still deserves a best-effort copy: the checkpoint is
+    // an optimization, not a precondition for copying.
+  }
+  copyFileSync(databasePath, backupPath)
+  onBackup?.(backupPath)
+  return backupPath
+}
+
+export function migrateDatabase(sqlite: BetterSqlite3.Database, options: MigrateDatabaseOptions = {}): void {
   sqlite.exec(`
     CREATE TABLE IF NOT EXISTS _prw_migrations (
       id INTEGER PRIMARY KEY NOT NULL,
@@ -1474,25 +1659,29 @@ export function migrateDatabase(sqlite: BetterSqlite3.Database): void {
   })
 
   for (const migration of migrations) {
-    if (!hasMigration.get(migration.id)) {
-      if (!migration.disableForeignKeys) {
-        apply(migration)
-        continue
-      }
+    if (hasMigration.get(migration.id)) continue
 
-      const foreignKeys = Number(sqlite.pragma('foreign_keys', { simple: true })) === 1
-      if (foreignKeys) sqlite.pragma('foreign_keys = OFF')
-      try {
-        apply(migration)
-      } finally {
-        if (foreignKeys) sqlite.pragma('foreign_keys = ON')
-      }
+    if (migration.backupSuffix && options.databasePath && migration.requiresBackup?.(sqlite)) {
+      backupDatabaseFile(sqlite, options.databasePath, migration.backupSuffix, options.onBackup)
+    }
 
-      if (foreignKeys) {
-        const violations = sqlite.prepare('PRAGMA foreign_key_check').all()
-        if (violations.length > 0) {
-          throw new Error('foreign key check failed after migration')
-        }
+    if (!migration.disableForeignKeys) {
+      apply(migration)
+      continue
+    }
+
+    const foreignKeys = Number(sqlite.pragma('foreign_keys', { simple: true })) === 1
+    if (foreignKeys) sqlite.pragma('foreign_keys = OFF')
+    try {
+      apply(migration)
+    } finally {
+      if (foreignKeys) sqlite.pragma('foreign_keys = ON')
+    }
+
+    if (foreignKeys) {
+      const violations = sqlite.prepare('PRAGMA foreign_key_check').all()
+      if (violations.length > 0) {
+        throw new Error('foreign key check failed after migration')
       }
     }
   }

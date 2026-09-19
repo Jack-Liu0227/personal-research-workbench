@@ -3,12 +3,13 @@ import { randomUUID } from 'node:crypto'
 import { createConnection, type Socket } from 'node:net'
 import type { AgentRpcRequest, AgentRpcMethod, RpcRequest, RpcResponse } from '@prw/contracts'
 import { AgentRpcRequestSchema, RpcResponseSchema } from '@prw/contracts'
+import type { WorkspaceToolBackend } from './backend.js'
 
 interface ServiceInfo { endpoint: string; token: string }
 type RpcMethod = RpcRequest['method']
 type RpcRequestFor<M extends RpcMethod> = Extract<RpcRequest, { method: M }>
 
-export class WorkspaceServiceClient {
+export class WorkspaceServiceClient implements WorkspaceToolBackend {
   private socket: Socket | null = null
   private buffer = ''
   private ready: Promise<void> | null = null

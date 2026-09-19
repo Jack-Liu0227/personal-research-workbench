@@ -41,6 +41,11 @@ extraResources:
 asarUnpack:
   - node_modules/better-sqlite3/**
   - node_modules/sqlite-vec/**
+  # The embedded Pi SDK is loaded through a real dynamic import() from the CJS
+  # Core worker and resolves its own assets (theme JSON, export templates,
+  # photon-node wasm, jiti-loaded TypeScript configs) from the file system.
+  - node_modules/@earendil-works/**
+  - node_modules/@silvia-odwyer/photon-node/**
 win:
   executableName: research-workbench
   target:

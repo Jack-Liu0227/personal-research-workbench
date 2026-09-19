@@ -1,13 +1,13 @@
 {
   "name": "@prw/workspace-mcp",
-  "version": "0.0.3",
+  "version": "0.0.4",
   "private": true,
   "type": "module",
   "bin": {
     "workspace-mcp": "out/cli.js"
   },
   "exports": {
-    ".": "./out/index.js"
+    ".": "./src/index.ts"
   },
   "scripts": {
     "typecheck": "tsc -p tsconfig.json --noEmit",

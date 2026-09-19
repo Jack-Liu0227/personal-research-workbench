@@ -46,7 +46,7 @@ afterEach(() => {
 function scheduledRun(repository: WorkbenchRepository, key: string, status: 'queued' | 'completed' = 'completed') {
   const run = repository.startManagedAgentRun({
     jobId: SCHEDULE_ID,
-    runtime: 'codex',
+    runtime: 'pi',
     transport: 'inprocess',
     workflowKey: 'daily_digest',
     projectId: null,

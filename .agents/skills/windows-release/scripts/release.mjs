@@ -350,12 +350,14 @@ function cmdVersion() {
 /**
  * pnpm is a .cmd shim: Node refuses to spawn it without a shell (EINVAL) and
  * bare `pnpm` is not on PATH as an .exe (ENOENT), so route it through cmd.exe.
- * The command string must stay space-free because cmd/argv quoting is not
- * round-trip safe; every path we pass is therefore relative to apps/desktop.
+ * Arguments must stay space-free because cmd/argv quoting is not round-trip
+ * safe; every path we pass is therefore relative to apps/desktop. The command
+ * itself necessarily contains separators between `pnpm` and its arguments.
  */
 function pnpmRun(args, cwd = REPO) {
   const line = ['pnpm', ...args].join(' ')
-  if (/\s/.test(line)) fail(`internal: refusing to run a command line containing spaces: ${line}`)
+  const unsafe = args.find((arg) => /\s/.test(arg))
+  if (unsafe) fail(`internal: refusing an argument containing spaces: ${unsafe}`)
   return run('cmd.exe', ['/d', '/s', '/c', line], { cwd })
 }
 

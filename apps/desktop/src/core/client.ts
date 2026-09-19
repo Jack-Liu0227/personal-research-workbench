@@ -1,6 +1,6 @@
 import { randomUUID } from 'node:crypto'
-import type { AgentCredentialEnvelope, AgentLedgerPush, AgentRpcMethod, AgentRpcRequest, AppError, RpcRequest, RpcResponse } from '@prw/contracts'
-import { AgentCredentialEnvelopeSchema, AgentLedgerPushSchema, AgentRpcRequestSchema, RpcRequestSchema, RpcResponseSchema } from '@prw/contracts'
+import type { AgentAuthEvent, AgentCredentialEnvelope, AgentLedgerPush, AgentRpcMethod, AgentRpcRequest, AppError, RpcRequest, RpcResponse } from '@prw/contracts'
+import { AgentAuthEventSchema, AgentCredentialEnvelopeSchema, AgentLedgerPushSchema, AgentRpcRequestSchema, ExternalOpenUrlSchema, RpcRequestSchema, RpcResponseSchema } from '@prw/contracts'
 import { utilityProcess, type UtilityProcess } from 'electron'
 import { appError } from './errors.js'
 
@@ -57,9 +57,12 @@ export interface CredentialRpcEnvelope {
 export const AGENT_CREDENTIAL_ENVELOPE_TYPE = 'prw.agent-rpc-with-credential' as const
 
 export interface AgentCredentialEnvelopeCredentials {
-  readonly runtime: 'codex' | 'pi'
+  /** Pi's provider id, for example `anthropic`. Pi looks a credential up by the
+   * provider that issued it, not by a runtime name. */
   readonly provider: string
-  readonly secret: string
+  /** Pi's credential object, kept opaque so provider-specific OAuth fields
+   * survive the round trip. It never enters a payload, a log or SQLite. */
+  readonly credential: Record<string, unknown>
 }
 
 function failedResponse(id: string, error: AppError): RpcResponse {
@@ -75,6 +78,11 @@ export class CoreRpcClient {
   private disposed = false
   private shutdownTimer: ReturnType<typeof setTimeout> | undefined
   private readonly ledgerListeners = new Set<(push: AgentLedgerPush) => void>()
+  private readonly authListeners = new Set<(event: AgentAuthEvent) => void>()
+  private credentialWriter: CredentialWriter | null = null
+  private credentialReader: ((provider: string) => Promise<Record<string, unknown> | null>) | null = null
+  private integrationSecretReader: ((profileId: string) => Promise<string | null>) | null = null
+  private externalOpener: ((url: string) => void) | null = null
 
   constructor(options: CoreRpcClientOptions) {
     this.requestTimeoutMs = options.requestTimeoutMs ?? 30_000
@@ -125,6 +133,33 @@ export class CoreRpcClient {
         for (const listener of this.ledgerListeners) listener(parsed.data)
         return
       }
+      if (isAgentAuthMessage(message)) {
+        // Login progress is likewise not an RPC response. It is validated here
+        // so a malformed event cannot reach the renderer through Main.
+        const parsed = AgentAuthEventSchema.safeParse(message.event)
+        if (!parsed.success) return
+        for (const listener of this.authListeners) listener(parsed.data)
+        return
+      }
+      if (isCredentialWriteMessage(message)) {
+        void this.handleCredentialWrite(message)
+        return
+      }
+      if (isCredentialReadMessage(message)) {
+        void this.handleCredentialRead(message)
+        return
+      }
+      if (isIntegrationCredentialReadMessage(message)) {
+        void this.handleIntegrationCredentialRead(message)
+        return
+      }
+      if (isOpenExternalMessage(message)) {
+        // The one allowlist shared by preload, Main and renderer: only absolute
+        // http/https URLs without credentials may reach the OS browser.
+        const parsed = ExternalOpenUrlSchema.safeParse(message.url)
+        if (parsed.success) this.externalOpener?.(parsed.data)
+        return
+      }
 
       const parsed = RpcResponseSchema.safeParse(message)
       if (!parsed.success) return
@@ -158,6 +193,139 @@ export class CoreRpcClient {
   onLedgerPush(listener: (push: AgentLedgerPush) => void): () => void {
     this.ledgerListeners.add(listener)
     return () => { this.ledgerListeners.delete(listener) }
+  }
+
+  /** Subscribe to login progress from Core. Unlike a request/response RPC, a
+   * login is long-lived and can outlast the dialog, so it is pushed. */
+  onAuthEvent(listener: (event: AgentAuthEvent) => void): () => void {
+    this.authListeners.add(listener)
+    return () => { this.authListeners.delete(listener) }
+  }
+
+  /**
+   * Install the single writer for credentials produced inside Core.
+   *
+   * Main owns `safeStorage`, so Core can only ask. While no writer is
+   * installed, a write is refused with an explicit ack: failing closed keeps a
+   * login from appearing to succeed while the token was never persisted.
+   */
+  setCredentialWriter(writer: CredentialWriter): void {
+    this.credentialWriter = writer
+  }
+
+  /** Install the handler for URLs Core cannot open itself. `shell.openExternal`
+   * stays in Main, next to the URL validation. */
+  setExternalOpener(opener: (url: string) => void): void {
+    this.externalOpener = opener
+  }
+
+  /**
+   * Install the reader Core uses for a run it starts on its own.
+   *
+   * The user's own runs carry Main's per-RPC credential envelope. A scheduled
+   * occurrence has no renderer behind it, so it asks for exactly one provider —
+   * the one its selected model belongs to. While no reader is installed the
+   * answer is `null`, which keeps the run fail-closed instead of letting it
+   * borrow a credential nobody authorized for it.
+   */
+  setCredentialReader(reader: (provider: string) => Promise<Record<string, unknown> | null>): void {
+    this.credentialReader = reader
+  }
+
+  /**
+   * The mirror of `setCredentialReader` for connection secrets.
+   *
+   * An Agent tool call reaches Core over the in-process MCP transport, which
+   * carries no credential envelope, so a Zotero write the Agent asks for reads
+   * its one profile's secret here. Scoped to a profile id for the same reason the
+   * provider read is scoped to a provider: no request may authenticate as a
+   * connection the user never pointed it at.
+   */
+  setIntegrationSecretReader(reader: (profileId: string) => Promise<string | null>): void {
+    this.integrationSecretReader = reader
+  }
+
+  private async handleCredentialRead(message: CredentialReadMessage): Promise<void> {
+    const reader = this.credentialReader
+    if (!reader) {
+      this.answerCredentialRead(message.requestId, { ok: false, error: '凭据读取通道尚未就绪' })
+      return
+    }
+    try {
+      const credential = await reader(message.provider)
+      // The provider id travels back with the value so Core can verify it
+      // received the credential it asked for and nothing else.
+      this.answerCredentialRead(message.requestId, credential === null
+        ? { ok: true }
+        : { ok: true, provider: message.provider, credential })
+    } catch (error) {
+      this.answerCredentialRead(message.requestId, { ok: false, error: error instanceof Error ? error.message : '凭据读取失败' })
+    }
+  }
+
+  private answerCredentialRead(
+    requestId: string,
+    result: { ok: true; provider?: string; credential?: Record<string, unknown> } | { ok: false; error?: string }
+  ): void {
+    if (this.disposed) return
+    try {
+      this.child.postMessage({ type: 'credential-result', requestId, ...result })
+    } catch {
+      // Core is gone; the requester is already failing closed on its own timer.
+    }
+  }
+
+  private async handleIntegrationCredentialRead(message: IntegrationCredentialReadMessage): Promise<void> {
+    const reader = this.integrationSecretReader
+    if (!reader) {
+      this.answerIntegrationCredentialRead(message.requestId, { ok: false, error: '集成凭据读取通道尚未就绪' })
+      return
+    }
+    try {
+      this.answerIntegrationCredentialRead(message.requestId, { ok: true, secret: await reader(message.profileId) })
+    } catch (error) {
+      this.answerIntegrationCredentialRead(message.requestId, {
+        ok: false,
+        error: error instanceof Error ? error.message : '集成凭据读取失败'
+      })
+    }
+  }
+
+  private answerIntegrationCredentialRead(
+    requestId: string,
+    result: { ok: true; secret: string | null } | { ok: false; error?: string }
+  ): void {
+    if (this.disposed) return
+    try {
+      this.child.postMessage({ type: 'integration-credential-result', requestId, ...result })
+    } catch {
+      // Core is gone; the requester is already failing closed on its own timer.
+    }
+  }
+
+  private async handleCredentialWrite(message: CredentialWriteMessage): Promise<void> {
+    const writer = this.credentialWriter
+    if (!writer) {
+      this.ackCredential(message.requestId, false, '凭据写入通道尚未就绪')
+      return
+    }
+    try {
+      await writer(message.provider, message.credential)
+      this.ackCredential(message.requestId, true)
+    } catch (error) {
+      this.ackCredential(message.requestId, false, error instanceof Error ? error.message : '凭据写入失败')
+    }
+  }
+
+  private ackCredential(requestId: string, ok: boolean, error?: string): void {
+    if (this.disposed) return
+    try {
+      this.child.postMessage(error === undefined
+        ? { type: 'credential-ack', requestId, ok }
+        : { type: 'credential-ack', requestId, ok, error })
+    } catch {
+      // Core is gone; the writer already knows the outcome it reported.
+    }
   }
 
   request(method: RpcRequest['method'], payload: unknown): Promise<RpcResponse> {
@@ -195,12 +363,17 @@ export class CoreRpcClient {
     if (!this.ready || this.disposed) return Promise.resolve(this.unavailableResponse(id))
     const parsed = AgentRpcRequestSchema.safeParse({ id, method, payload })
     if (!parsed.success) return Promise.resolve(this.invalidRequestResponse(id, parsed.error.issues))
-    const envelope = AgentCredentialEnvelopeSchema.parse({
+    const envelope = AgentCredentialEnvelopeSchema.safeParse({
       type: AGENT_CREDENTIAL_ENVELOPE_TYPE,
       request: parsed.data,
-      credentials: credentials.map((entry) => ({ runtime: entry.runtime, provider: entry.provider, secret: entry.secret }))
+      credentials: credentials.map((entry) => ({ provider: entry.provider, credential: entry.credential }))
     })
-    return this.send(parsed.data, envelope)
+    // A rejected envelope is returned as a failed response rather than thrown:
+    // this method runs inside the Main IPC handler, where an exception would
+    // surface as an opaque error string instead of the typed failure the
+    // renderer already knows how to display.
+    if (!envelope.success) return Promise.resolve(this.invalidRequestResponse(id, envelope.error.issues))
+    return this.send(parsed.data, envelope.data)
   }
 
   /**
@@ -247,6 +420,9 @@ export class CoreRpcClient {
     this.disposed = true
     this.ready = false
     this.ledgerListeners.clear()
+    this.authListeners.clear()
+    this.credentialWriter = null
+    this.externalOpener = null
     this.resolveAllWithError(
       appError('CORE_UNAVAILABLE', 'The local data service has been stopped.', true)
     )
@@ -367,4 +543,81 @@ function isAgentLedgerMessage(message: unknown): message is { type: 'agent-ledge
     && 'type' in message
     && message.type === 'agent-ledger'
     && 'push' in message
+}
+
+function isAgentAuthMessage(message: unknown): message is { type: 'agent-auth'; event: unknown } {
+  return typeof message === 'object'
+    && message !== null
+    && 'type' in message
+    && message.type === 'agent-auth'
+    && 'event' in message
+}
+
+function isCredentialWriteMessage(message: unknown): message is CredentialWriteMessage {
+  if (typeof message !== 'object' || message === null) return false
+  if (!('type' in message) || message.type !== 'credential-write') return false
+  if (!('requestId' in message) || typeof message.requestId !== 'string') return false
+  if (!('provider' in message) || typeof message.provider !== 'string' || message.provider.length === 0) return false
+  if (!('credential' in message)) return false
+  const credential = message.credential
+  // `null` is the logout signal; anything else must be a type-tagged record.
+  return credential === null
+    || (typeof credential === 'object' && !Array.isArray(credential) && typeof (credential as { type?: unknown }).type === 'string')
+}
+
+function isCredentialReadMessage(message: unknown): message is CredentialReadMessage {
+  if (typeof message !== 'object' || message === null) return false
+  if (!('type' in message) || message.type !== 'credential-read') return false
+  if (!('requestId' in message) || typeof message.requestId !== 'string') return false
+  // Provider ids are `[a-z0-9._-]` by contract; the bound exists so a malformed
+  // message cannot turn into an unbounded vault lookup key.
+  return 'provider' in message
+    && typeof message.provider === 'string'
+    && message.provider.length > 0
+    && message.provider.length <= 200
+}
+
+function isOpenExternalMessage(message: unknown): message is { type: 'open-external'; url: unknown } {
+  return typeof message === 'object'
+    && message !== null
+    && 'type' in message
+    && message.type === 'open-external'
+    && 'url' in message
+}
+
+/** Core's credential write request. `null` means logout. */
+interface CredentialWriteMessage {
+  readonly type: 'credential-write'
+  readonly requestId: string
+  readonly provider: string
+  readonly credential: Record<string, unknown> | null
+}
+
+/** Persist one credential produced inside Core, or delete it when `null`. */
+export type CredentialWriter = (provider: string, credential: Record<string, unknown> | null) => Promise<void>
+
+function isIntegrationCredentialReadMessage(message: unknown): message is IntegrationCredentialReadMessage {
+  if (typeof message !== 'object' || message === null) return false
+  if (!('type' in message) || message.type !== 'integration-credential-read') return false
+  if (!('requestId' in message) || typeof message.requestId !== 'string') return false
+  // Bounded for the same reason as a provider id: a malformed message must not
+  // become an unbounded vault lookup key.
+  return 'profileId' in message
+    && typeof message.profileId === 'string'
+    && message.profileId.length > 0
+    && message.profileId.length <= 200
+}
+
+/** Core's integration-secret read request, used by an Agent tool call. */
+interface IntegrationCredentialReadMessage {
+  readonly type: 'integration-credential-read'
+  readonly requestId: string
+  readonly profileId: string
+}
+
+/** Core's credential read request, used by a run that has no RPC envelope. */
+interface CredentialReadMessage {
+  readonly type: 'credential-read'
+  readonly requestId: string
+  readonly provider: string
 }

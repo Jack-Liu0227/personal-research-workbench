@@ -370,6 +370,38 @@ select {
   stroke-width: 1.8;
 }
 
+/* Collapsible group of secondary surfaces. The group header keeps the same
+   metrics as a nav item so the rail reads as one column instead of a nested
+   menu, and the children are inset by the icon column. */
+.sidebar-nav-group {
+  margin-top: 14px;
+  padding-top: 12px;
+  border-top: 1px solid var(--sidebar-border);
+}
+
+.sidebar-nav-group > div {
+  margin-top: 2px;
+  padding-left: 12px;
+}
+
+.nav-item-group-active {
+  color: var(--sidebar-foreground);
+}
+
+.sidebar-nav-chevron {
+  width: 14px;
+  height: 14px;
+  transition: transform 150ms ease;
+}
+
+.sidebar-nav-chevron-open {
+  transform: rotate(180deg);
+}
+
+.sidebar-collapsed .sidebar-nav-chevron {
+  display: none;
+}
+
 .topbar {
   display: flex;
   height: 64px;
@@ -623,48 +655,6 @@ select {
   letter-spacing: -0.02em;
 }
 
-.agent-runtime-bar {
-  display: flex;
-  width: max-content;
-  max-width: 100%;
-  min-height: 46px;
-  align-items: center;
-  justify-content: center;
-  gap: 4px;
-  margin: 0 auto 16px;
-  overflow-x: auto;
-  border: 1px solid color-mix(in srgb, var(--primary) 8%, var(--border));
-  border-radius: 999px;
-  background: color-mix(in srgb, var(--primary-subtle) 75%, var(--surface));
-  padding: 5px;
-  scrollbar-width: none;
-}
-
-.agent-runtime-bar::-webkit-scrollbar { display: none; }
-
-.agent-runtime-pill {
-  display: inline-flex;
-  min-height: 34px;
-  flex: none;
-  cursor: pointer;
-  align-items: center;
-  gap: 7px;
-  border: 1px solid transparent;
-  border-radius: 999px;
-  background: transparent;
-  padding: 0 13px;
-  color: var(--muted-foreground);
-  font-size: 13px;
-  font-weight: 600;
-  outline: none;
-  transition: background-color 150ms ease, border-color 150ms ease, color 150ms ease;
-}
-
-.agent-runtime-pill:hover,
-.agent-runtime-pill:focus-visible { color: var(--foreground); background: color-mix(in srgb, var(--surface) 72%, var(--primary-subtle)); }
-.agent-runtime-pill:focus-visible { box-shadow: 0 0 0 2px var(--ring); }
-.agent-runtime-pill-active { border-color: color-mix(in srgb, var(--primary) 18%, var(--border)); background: var(--surface); color: var(--foreground); box-shadow: 0 2px 8px rgb(15 23 42 / 0.08); }
-
 .agent-runtime-dot,
 .agent-schedule-status {
   width: 7px;
@@ -675,21 +665,7 @@ select {
 
 .agent-runtime-dot-online { background: var(--success); }
 .agent-runtime-dot-muted { background: var(--muted-foreground); opacity: 0.55; }
-.agent-runtime-divider { width: 1px; height: 18px; margin: 0 5px; background: var(--border); }
-.agent-runtime-caption { padding: 0 9px; color: var(--muted-foreground); font-size: 11px; white-space: nowrap; }
-.agent-runtime-model { max-width: 180px; overflow: hidden; color: var(--foreground); font-size: 12px; font-weight: 600; text-overflow: ellipsis; white-space: nowrap; }
-.agent-model-select,
-.agent-thinking-select,
-.agent-permission-select { display: inline-flex; min-width: 0; align-items: center; gap: 4px; border: 1px solid var(--border); border-radius: 8px; background: var(--surface); padding: 4px 6px; color: var(--foreground); }
-.agent-model-select select,
-.agent-thinking-select select,
-.agent-permission-select select { min-width: 0; max-width: 160px; border: 0; outline: 0; appearance: none; background: transparent; color: inherit; font-size: 11px; cursor: pointer; }
-.agent-model-select:focus-within,
-.agent-thinking-select:focus-within,
-.agent-permission-select:focus-within { border-color: var(--primary); box-shadow: 0 0 0 2px color-mix(in srgb, var(--primary) 18%, transparent); }
-.agent-select-chevron { width: 12px; height: 12px; flex: none; color: var(--muted-foreground); pointer-events: none; }
 .agent-runtime-thinking { color: var(--muted-foreground); font-size: 10px; white-space: nowrap; }
-.agent-runtime-permission { border: 1px solid color-mix(in srgb, var(--success) 22%, var(--border)); border-radius: 999px; background: var(--success-subtle); padding: 3px 8px; color: var(--success); font-size: 10px; font-weight: 700; white-space: nowrap; }
 
 .agent-composer {
   overflow: hidden;
@@ -702,7 +678,7 @@ select {
 
 .agent-composer:focus-within { border-color: var(--primary); box-shadow: 0 0 0 3px color-mix(in srgb, var(--ring) 16%, transparent), 0 8px 24px rgb(15 23 42 / 0.08); }
 .agent-composer-busy { opacity: 0.82; }
-.agent-composer-input { min-height: 96px; resize: none; border: 0; border-radius: 0; background: transparent; padding: 18px 20px 8px; font-size: 14px; line-height: 1.65; box-shadow: none; }
+.agent-composer-input { min-height: 24px; max-height: 200px; resize: none; overflow-y: hidden; border: 0; border-radius: 0; background: transparent; padding: 14px 16px 7px; font-size: 14px; line-height: 1.6; box-shadow: none; }
 .agent-composer-input:focus { border: 0; box-shadow: none; }
 .agent-composer-toolbar { display: flex; min-height: 48px; align-items: center; justify-content: space-between; gap: 12px; padding: 0 12px 10px 12px; }
 .agent-composer-tools,
@@ -725,6 +701,71 @@ select {
 .agent-send-button { width: 34px; height: 34px; flex: none; border-radius: 999px; }
 .agent-composer-hint { margin: 9px 4px 0; color: var(--muted-foreground); font-size: 11px; text-align: center; }
 .agent-composer-hint strong { color: var(--foreground); font-weight: 700; }
+.agent-composer-hint code { border-radius: 4px; background: var(--muted); padding: 0 4px; color: var(--foreground); font-family: "IBM Plex Mono", "Cascadia Mono", Consolas, monospace; font-size: 10px; }
+
+/* `/` command palette. Like pi-web, it overlays the composer instead of
+   pushing the input down by the height of the command list. */
+.agent-composer-zone { position: relative; min-width: 0; }
+.agent-command-palette { position: absolute; z-index: 20; right: 0; bottom: calc(100% + 8px); left: 0; display: grid; gap: 2px; max-height: min(44vh, 360px); overflow-y: auto; border: 1px solid var(--border); border-radius: 10px; background: var(--surface); padding: 6px; box-shadow: 0 -6px 20px rgb(15 23 42 / 0.12); }
+.agent-command-palette-item { display: flex; min-height: 32px; cursor: pointer; align-items: center; gap: 10px; border: 0; border-radius: 7px; background: transparent; padding: 6px 9px; color: var(--muted-foreground); font-size: 12px; text-align: left; outline: none; }
+.agent-command-palette-item:hover { background: var(--muted); }
+.agent-command-palette-item-active { background: var(--primary-subtle); }
+.agent-command-palette-item:focus-visible { box-shadow: 0 0 0 2px var(--ring); }
+.agent-command-palette-item code { flex: none; color: var(--foreground); font-family: "IBM Plex Mono", "Cascadia Mono", Consolas, monospace; font-size: 11px; font-weight: 700; }
+.agent-command-palette-item span { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.agent-command-palette-hint { margin: 4px 4px 0; border-top: 1px solid var(--border); padding-top: 5px; color: var(--muted-foreground); font-size: 10px; }
+
+/* Local command answers. Deliberately not shaped like a message bubble: a card
+   with a monospace command line reads as tooling output, not as model prose. */
+.agent-command-results { display: grid; width: min(100%, 860px); gap: 8px; }
+.agent-command-result { display: grid; gap: 5px; border: 1px solid var(--border); border-left: 2px solid var(--primary); border-radius: 10px; background: color-mix(in srgb, var(--surface) 88%, var(--muted)); padding: 9px 12px; }
+.agent-command-result-error { border-left-color: var(--danger); }
+.agent-command-result-head { display: flex; min-width: 0; align-items: center; gap: 7px; margin: 0; color: var(--muted-foreground); font-size: 10px; }
+.agent-command-result-head code { min-width: 0; overflow: hidden; color: var(--foreground); font-family: "IBM Plex Mono", "Cascadia Mono", Consolas, monospace; font-size: 11px; font-weight: 700; text-overflow: ellipsis; white-space: nowrap; }
+.agent-command-result-text { margin: 0; color: var(--foreground); font-size: 12px; line-height: 1.7; overflow-wrap: anywhere; white-space: pre-wrap; }
+.agent-command-result-error .agent-command-result-text { color: var(--danger); }
+
+/* Agent-requested external writes. The card is the decision surface, so it gets
+   the full summary, the target and the remaining window instead of a bare
+   yes/no; the confirm action stays the only emphasized control. */
+.agent-external-actions { display: grid; width: min(100%, 860px); gap: 10px; }
+.agent-external-action { display: grid; gap: 8px; border: 1px solid var(--border); border-left: 3px solid var(--muted-foreground); border-radius: 10px; background: color-mix(in srgb, var(--surface) 92%, var(--muted)); padding: 11px 13px; }
+.agent-external-action-wait { border-left-color: var(--primary); }
+.agent-external-action-ok { border-left-color: var(--success); }
+.agent-external-action-warn { border-left-color: var(--danger); background: color-mix(in srgb, var(--danger-subtle) 55%, var(--surface)); }
+.agent-external-action-head { display: flex; align-items: flex-start; gap: 9px; }
+.agent-external-action-icon { display: inline-flex; flex: none; align-items: center; justify-content: center; width: 24px; height: 24px; border-radius: 7px; background: var(--muted); color: var(--muted-foreground); }
+.agent-external-action-wait .agent-external-action-icon { background: color-mix(in srgb, var(--primary) 16%, transparent); color: var(--primary); }
+.agent-external-action-warn .agent-external-action-icon { background: var(--danger-subtle); color: var(--danger); }
+.agent-external-action-title { margin: 0; color: var(--foreground); font-size: 13px; font-weight: 700; }
+.agent-external-action-meta { display: flex; flex-wrap: wrap; align-items: center; gap: 5px; margin: 2px 0 0; color: var(--muted-foreground); font-size: 10px; }
+.agent-external-action-status { border-radius: 5px; background: var(--muted); padding: 1px 6px; font-weight: 700; }
+.agent-external-action-status-wait { background: color-mix(in srgb, var(--primary) 15%, transparent); color: var(--primary); }
+.agent-external-action-status-ok { background: color-mix(in srgb, var(--success) 16%, transparent); color: var(--success); }
+.agent-external-action-status-warn { background: var(--danger-subtle); color: var(--danger); }
+.agent-external-action-summary { margin: 0; color: var(--foreground); font-size: 12px; line-height: 1.7; overflow-wrap: anywhere; }
+.agent-external-action-fields { display: flex; flex-wrap: wrap; gap: 6px 18px; margin: 0; }
+.agent-external-action-fields div { display: flex; min-width: 0; align-items: baseline; gap: 6px; }
+.agent-external-action-fields dt { color: var(--muted-foreground); font-size: 10px; }
+.agent-external-action-fields dd { margin: 0; max-width: 100%; overflow: hidden; color: var(--foreground); font-size: 11px; text-overflow: ellipsis; white-space: nowrap; }
+.agent-external-action-receipt { border-top: 1px dashed var(--border); padding-top: 6px; }
+.agent-external-action-receipt summary { cursor: pointer; color: var(--muted-foreground); font-size: 11px; }
+.agent-external-action-receipt pre { max-height: 220px; margin: 6px 0 0; overflow: auto; border-radius: 7px; background: var(--muted); padding: 8px 10px; color: var(--foreground); font-family: "IBM Plex Mono", "Cascadia Mono", Consolas, monospace; font-size: 10px; line-height: 1.6; white-space: pre-wrap; overflow-wrap: anywhere; }
+.agent-external-action-error { margin: 0; color: var(--danger); font-size: 11px; line-height: 1.7; overflow-wrap: anywhere; }
+.agent-external-action-hint { margin: 0; color: var(--muted-foreground); font-size: 11px; line-height: 1.7; }
+.agent-external-action-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+.agent-external-action-note { color: var(--muted-foreground); font-size: 10px; }
+
+/* Chat markdown. The editor preview ships editor geometry (padding, its own
+   scroll box, large gaps); inside a message that geometry fights the message
+   column, so the chat keeps only the typography. */
+.agent-markdown { gap: 9px; overflow: visible; padding: 0; font-size: 13px; line-height: 1.72; }
+.agent-markdown > :first-child { margin-top: 0; }
+.agent-markdown > :last-child { margin-bottom: 0; }
+.agent-markdown p { margin: 0; overflow-wrap: anywhere; }
+.agent-markdown code { border-radius: 4px; background: var(--muted); padding: 1px 4px; color: var(--foreground); font-family: "IBM Plex Mono", "Cascadia Mono", Consolas, monospace; font-size: 0.9em; }
+.agent-markdown pre code { background: transparent; padding: 0; }
+.agent-markdown ul, .agent-markdown ol { margin: 0; padding-left: 2px; list-style: none; }
 
 .agent-prompts { width: min(680px, 100%); margin: 28px auto 0; }
 .agent-prompts p { margin: 0 0 8px; color: var(--muted-foreground); font-size: 12px; }
@@ -854,10 +895,15 @@ select {
 .agent-thread-heading > svg { margin-top: 3px; flex: none; }
 .agent-thread-heading h1 { max-width: min(560px, 45vw); margin: 0; overflow: hidden; color: var(--foreground); font-size: 16px; font-weight: 750; text-overflow: ellipsis; white-space: nowrap; }
 .agent-thread-heading p { margin: 4px 0 0; color: var(--muted-foreground); font-size: 10px; }
-.agent-thread-header .agent-runtime-bar { max-width: 52%; margin: 0; }
-.agent-thread-header .agent-runtime-pill { min-height: 30px; padding: 0 9px; font-size: 11px; }
-.agent-thread-header .agent-runtime-model { max-width: 140px; font-size: 10px; }
-.agent-thread-header .agent-runtime-model { display: none; }
+/* Read-only run configuration in the thread header, linking to Settings. The
+   whole row is one button, so the value is reachable by keyboard without
+   turning the header into a second control panel. */
+.agent-run-profile-link { display: inline-flex; min-width: 0; max-width: 44%; align-items: center; gap: 7px; border: 1px solid var(--border); border-radius: 999px; background: var(--surface); padding: 5px 11px; color: var(--muted-foreground); font-size: 11px; cursor: pointer; outline: none; transition: border-color 150ms ease, color 150ms ease; }
+.agent-run-profile-link:hover, .agent-run-profile-link:focus-visible { border-color: color-mix(in srgb, var(--primary) 40%, var(--border)); color: var(--foreground); }
+.agent-run-profile-link:focus-visible { box-shadow: 0 0 0 2px var(--ring); }
+.agent-run-profile-value { min-width: 0; overflow: hidden; color: var(--foreground); font-family: "IBM Plex Mono", "Cascadia Mono", Consolas, monospace; font-size: 11px; text-overflow: ellipsis; white-space: nowrap; }
+.agent-run-profile-hint { flex: none; border-radius: 999px; background: var(--muted); padding: 1px 7px; color: var(--muted-foreground); font-size: 10px; }
+.agent-hint-link { border: 0; background: transparent; padding: 0; color: var(--primary); font: inherit; text-decoration: underline; cursor: pointer; }
 .agent-thread-messages { display: flex; min-height: 0; flex: 1; flex-direction: column; gap: 16px; overflow-y: auto; padding: clamp(20px, 4vh, 42px) clamp(16px, 8vw, 112px) 30px; scroll-behavior: smooth; }
 .agent-thread-empty { display: grid; max-width: 520px; margin: auto; justify-items: center; text-align: center; }
 .agent-thread-empty-icon { display: grid; width: 42px; height: 42px; margin-bottom: 12px; place-items: center; border: 1px solid color-mix(in srgb, var(--primary) 28%, var(--border)); border-radius: 12px; background: var(--primary-subtle); color: var(--primary); }
@@ -901,6 +947,10 @@ select {
 .agent-live-storage-note-success { color: var(--success); }
 .agent-live-storage-note-warning { color: var(--warning); }
 .agent-stream-cursor { display: inline-block; width: 6px; height: 1.1em; margin-left: 3px; vertical-align: -0.2em; background: var(--primary); animation: agent-cursor 900ms steps(1) infinite; }
+/* Streaming body: the markdown block takes the width and the cursor trails it on
+   the same line box instead of starting a new grid row. */
+.agent-stream-body { display: flex; min-width: 0; align-items: flex-end; }
+.agent-stream-body > :first-child { min-width: 0; flex: 1; }
 @keyframes agent-pulse { 50% { opacity: .35; } }
 @keyframes agent-cursor { 50% { opacity: 0; } }
 
@@ -909,7 +959,16 @@ select {
 .agent-thread-tabs { display: flex; min-height: 42px; flex: none; align-items: center; gap: 10px; border-bottom: 1px solid var(--border); background: color-mix(in srgb, var(--surface) 60%, var(--background)); padding: 0 clamp(16px, 3vw, 34px); }
 .agent-thread-tabs .research-tab { min-height: 30px; }
 .agent-thread-messages-records { gap: 0; overflow: hidden; padding: 0; }
-.agent-ledger-stream { display: flex; width: 100%; min-width: 0; flex-direction: column; gap: 14px; }
+.agent-ledger-stream { display: flex; width: 100%; min-width: 0; flex-direction: column; gap: 18px; }
+/* One agent run: a user message plus every turn it produced. Content inside a
+   run is spaced tighter than the gap between runs, so each question reads as
+   one block with its own answer instead of blending into the next. */
+.agent-run { display: grid; min-width: 0; gap: 12px; }
+.agent-run + .agent-run { border-top: 1px solid var(--border); padding-top: 18px; }
+.agent-run-heading { display: flex; min-width: 0; align-items: center; gap: 9px; }
+.agent-run-label { color: var(--muted-foreground); font-family: "IBM Plex Mono", "Cascadia Mono", Consolas, monospace; font-size: 10px; font-weight: 700; letter-spacing: 0.1em; text-transform: uppercase; }
+.agent-run-metric { color: var(--muted-foreground); font-family: "IBM Plex Mono", "Cascadia Mono", Consolas, monospace; font-size: 10px; }
+.agent-run-metric + .agent-run-metric::before { margin-right: 9px; color: var(--border-strong); content: "·"; }
 .agent-turn { display: grid; min-width: 0; gap: 12px; }
 .agent-turn-divider { display: flex; min-width: 0; align-items: center; gap: 9px; border-top: 1px solid var(--border-strong); padding-top: 9px; margin-top: 6px; }
 .agent-turn-label { color: var(--foreground); font-family: "IBM Plex Mono", "Cascadia Mono", Consolas, monospace; font-size: 10px; font-weight: 700; letter-spacing: 0.1em; text-transform: uppercase; }
@@ -928,6 +987,12 @@ select {
 .agent-status-dot-idle { background: var(--muted-foreground); opacity: .5; }
 .agent-ledger-note { margin: 0; color: var(--muted-foreground); font-size: 11px; line-height: 1.65; }
 .agent-ledger-note strong { color: var(--foreground); font-weight: 700; }
+/* Context lifecycle line: compaction, system message or new context item.
+   Deliberately quieter than a tool card — it is not a step the agent took. */
+.agent-ledger-lifecycle { display: flex; min-width: 0; margin: 0; align-items: baseline; gap: 7px; border-left: 2px solid var(--border-strong); padding: 2px 0 2px 9px; color: var(--muted-foreground); font-size: 11px; line-height: 1.65; }
+.agent-ledger-lifecycle svg { flex: none; align-self: center; }
+.agent-ledger-lifecycle strong { color: var(--foreground); font-weight: 700; }
+.agent-ledger-lifecycle time { margin-left: auto; flex: none; font-family: "IBM Plex Mono", "Cascadia Mono", Consolas, monospace; font-size: 10px; }
 .agent-ledger-placeholder { margin: 0; color: var(--muted-foreground); font-size: 12px; }
 .agent-ledger-pre { max-height: 260px; overflow: auto; margin: 6px 0 0; border: 1px solid var(--border); border-radius: 7px; background: color-mix(in srgb, var(--surface) 75%, var(--muted)); padding: 8px 9px; color: var(--muted-foreground); font: 10px/1.6 "IBM Plex Mono", "Cascadia Mono", Consolas, monospace; white-space: pre-wrap; }
 .agent-ledger-pre-raw { color: var(--muted-foreground); opacity: .85; }
@@ -1032,16 +1097,6 @@ select {
 .agent-delivery-actions { display: flex; flex: none; gap: 4px; }
 .agent-delivery-actions button { display: inline-flex; align-items: center; gap: 4px; padding: 2px 7px; border: 1px solid var(--border); border-radius: 6px; background: var(--surface); color: var(--foreground); font-size: 11px; cursor: pointer; }
 .agent-delivery-actions button:hover { border-color: color-mix(in srgb, var(--primary) 45%, var(--border)); color: var(--primary); }
-.agent-runtime-profile { margin: 0 0 10px; border: 1px solid var(--border); border-radius: 8px; background: color-mix(in srgb, var(--muted) 45%, var(--surface)); font-size: 11px; }
-.agent-runtime-profile-summary { display: flex; cursor: pointer; align-items: center; justify-content: space-between; gap: 8px; padding: 7px 10px; color: var(--foreground); font-weight: 600; outline: none; }
-.agent-runtime-profile-summary:focus-visible { box-shadow: 0 0 0 2px var(--ring); border-radius: 8px; }
-.agent-runtime-profile-hint { color: var(--muted-foreground); font-family: "IBM Plex Mono", Consolas, monospace; font-size: 10px; font-weight: 400; }
-.agent-runtime-profile-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 4px 14px; margin: 0; border-top: 1px solid var(--border); padding: 8px 10px; }
-.agent-runtime-profile-grid > div { display: grid; grid-template-columns: 74px minmax(0, 1fr); gap: 6px; min-width: 0; }
-.agent-runtime-profile-grid dt { color: var(--muted-foreground); }
-.agent-runtime-profile-grid dd { min-width: 0; margin: 0; overflow-wrap: anywhere; color: var(--foreground); }
-.agent-runtime-profile-path { font-family: "IBM Plex Mono", Consolas, monospace; font-size: 10px; }
-.agent-runtime-profile-warning { margin: 0 10px 8px; border-radius: 6px; background: var(--danger-subtle); padding: 5px 8px; color: var(--danger); }
 .agent-credential-form { display: grid; gap: 8px; border-top: 1px solid var(--border); padding: 8px 10px 10px; }
 .agent-credential-lead { margin: 0; color: var(--muted-foreground); line-height: 1.5; }
 .agent-credential-row { display: flex; flex-wrap: wrap; align-items: flex-end; gap: 8px; }
@@ -1049,9 +1104,6 @@ select {
 .agent-credential-field select,
 .agent-credential-field input { min-width: 150px; font-size: 11px; }
 .agent-credential-status { margin: 0; color: var(--muted-foreground); line-height: 1.5; }
-@media (prefers-reduced-motion: reduce) {
-  .agent-runtime-profile-summary { transition: none; }
-}
 .agent-composer-dock .agent-prompts { width: 100%; margin: 0 0 12px; padding-top: 12px; }
 .agent-composer-dock .agent-prompts button { min-height: 27px; padding-top: 3px; padding-bottom: 3px; }
 .agent-composer-dock .agent-composer-hint { margin-bottom: 0; }
@@ -1554,10 +1606,38 @@ select {
 .settings-row {
   display: flex;
   min-height: 74px;
+  flex-wrap: wrap;
   align-items: center;
   gap: 12px;
   padding: 12px 14px;
 }
+
+/* The inline API-key editor of one provider row. It takes a full line of its own
+   so the password field and its buttons stay readable at every width instead of
+   squeezing the provider name and status chips. */
+.settings-row-key {
+  display: flex;
+  flex: 1 0 100%;
+  align-items: center;
+  gap: 8px;
+  border-top: 1px dashed var(--border);
+  padding-top: 10px;
+}
+
+.settings-row-key > input { min-width: 0; flex: 1; }
+
+/* Marks the provider the credential form above is currently editing. */
+.settings-row-active { border-color: color-mix(in srgb, var(--primary) 40%, var(--border)); }
+
+/* Interactive login (OAuth / API-key prompt) lives in Settings, so it needs its
+   own surface: it stays open across several pushed events and holds focus. */
+.agent-provider-auth-flow { display: grid; gap: 8px; flex-basis: 100%; margin-top: 10px; border-top: 1px solid color-mix(in srgb, var(--primary) 24%, var(--border)); border-radius: 8px; background: color-mix(in srgb, var(--primary-subtle) 70%, var(--surface)); padding: 10px 12px; }
+.agent-provider-auth-heading { display: flex; min-width: 0; flex-wrap: wrap; align-items: center; gap: 7px; color: var(--foreground); font-size: 12px; }
+.agent-provider-auth-copy { margin: 0; color: var(--muted-foreground); font-size: 11px; line-height: 1.55; overflow-wrap: anywhere; }
+.agent-provider-auth-copy code { color: var(--foreground); font-family: "IBM Plex Mono", "Cascadia Mono", Consolas, monospace; font-weight: 700; }
+.agent-provider-auth-form { display: grid; gap: 8px; }
+.agent-provider-auth-form label { display: grid; gap: 5px; color: var(--muted-foreground); font-size: 11px; font-weight: 600; }
+.agent-provider-auth-actions { display: flex; flex-wrap: wrap; gap: 7px; }
 
 .agent-runtime-table-wrap { overflow-x: auto; border: 1px solid var(--border); border-radius: 8px; background: var(--surface); }
 .agent-runtime-table { width: 100%; min-width: 860px; border-collapse: collapse; font-size: 11px; }
@@ -1622,7 +1702,6 @@ select {
 .panel-skeleton-line:nth-child(2n) { width: 78%; }
 .panel-skeleton-line:nth-child(3n) { width: 58%; }
 .workspace-warmup { padding: 8px 0; }
-.agent-runtime-probe-error { color: var(--danger); font-size: 10px; white-space: nowrap; }
 
 .loading-bar {
   animation: loading-slide 1.15s ease-in-out infinite alternate;
@@ -2752,21 +2831,27 @@ select#batch-action option[value="import_zotero"] { display: none; }
 
 .dark {
   --background: #09151a;
-  --foreground: #e8f2f0;
-  --surface: #10232a;
-  --muted: #172f37;
-  --muted-foreground: #9bb6b5;
-  --border: #29454d;
-  --border-strong: #51747b;
-  --input: #42656b;
-  --primary: #53c5b7;
-  --primary-strong: #7bddcf;
+  --foreground: #eef8f6;
+  --surface: #10252c;
+  --muted: #19343c;
+  --muted-foreground: #b5cdca;
+  --border: #31545c;
+  --border-strong: #628892;
+  --input: #527980;
+  --primary: #6adfd0;
+  --primary-strong: #98efe2;
   --primary-foreground: #06201f;
-  --primary-subtle: #123d3e;
-  --accent: #e2a172;
-  --accent-subtle: #3d2a24;
-  --ring: #53c5b7;
+  --primary-subtle: #164445;
+  --accent: #e8aa7d;
+  --accent-subtle: #432d25;
+  --ring: #6adfd0;
+  --sidebar-muted: #aac3c1;
+  --sidebar-border: #254a50;
+  --online: #78e0c5;
 }
+
+:root { color-scheme: light; }
+.dark { color-scheme: dark; }
 
 body {
   font-family: "Geist", "Segoe UI Variable", "Noto Sans SC", "Microsoft YaHei UI", sans-serif;
@@ -2846,6 +2931,28 @@ select:focus-visible,
 textarea:focus-visible {
   outline: 2px solid var(--ring);
   outline-offset: 2px;
+}
+
+/* Windows native select popups can otherwise keep a light surface while
+ * inheriting the dark text token (or the inverse), which makes model choices
+ * unreadable in the screenshot's dark theme. */
+select,
+select option,
+select optgroup {
+  background-color: var(--surface);
+  color: var(--foreground);
+}
+
+select:disabled,
+option:disabled {
+  color: var(--muted-foreground);
+  opacity: 0.9;
+}
+
+.dark select,
+.dark select option,
+.dark select optgroup {
+  color-scheme: dark;
 }
 
 .research-tabs {

@@ -17,8 +17,8 @@ import { cn } from '../lib/utils'
 import { getWorkbenchAgentApi } from '../lib/workbench'
 import { useAutomationRunHistoryQuery } from './queries'
 
-const runtimeLabels: Record<AgentRuntimeKind, string> = { codex: 'Codex', pi: 'Pi' }
-const runtimeDefaults: Record<AgentRuntimeKind, string> = { codex: '', pi: '' }
+const runtimeLabels: Record<AgentRuntimeKind, string> = { pi: 'Pi' }
+const runtimeDefaults: Record<AgentRuntimeKind, string> = { pi: '' }
 const frequencyLabels = { manual: '手动', hourly: '每小时', daily: '每天', weekdays: '工作日', weekly: '每周', custom: '自定义 Cron' } as const
 
 /** One scheduled run's terminal status; the schedule card only needs a compact label. */
@@ -91,8 +91,8 @@ export function AutomationPage({ projects }: { projects: Project[] }): React.JSX
   const [name, setName] = useState('每日科研摘要')
   const [cron, setCron] = useState('0 9 * * *')
   const [frequency, setFrequency] = useState<Frequency>('daily')
-  const [runtime, setRuntime] = useState<AgentRuntimeKind>('codex')
-  const [model, setModel] = useState(runtimeDefaults.codex)
+  const [runtime, setRuntime] = useState<AgentRuntimeKind>('pi')
+  const [model, setModel] = useState(runtimeDefaults.pi)
   const [assistantKey, setAssistantKey] = useState('researcher')
   const [prompt, setPrompt] = useState('请根据项目中的最新文献生成一份可核验的研究摘要。')
   const [workspacePath, setWorkspacePath] = useState('')
@@ -169,7 +169,7 @@ export function AutomationPage({ projects }: { projects: Project[] }): React.JSX
   if (selectedSkill && !selectedSkill.runnable) saveBlockedReasons.push(selectedSkill.blockedReason)
   if (!folderInspection.ok) saveBlockedReasons.push(folderInspection.message)
   if (selectedSkill && selectedSkill.requiredInputs.includes('topic') && topic.trim().length === 0) saveBlockedReasons.push(`所选 skill（${selectedSkill.key}）把研究主题列为必填输入；请填写主题后再保存。`)
-  if (!permissionSupported) saveBlockedReasons.push('请先探测 CLI 并选择支持的权限模式。')
+  if (!permissionSupported) saveBlockedReasons.push('请先读取内嵌 Pi 的能力并选择支持的权限模式。')
   const saveBlockedReason = saveBlockedReasons[0] ?? ''
 
   const saveMutation = useMutation({
@@ -200,7 +200,7 @@ export function AutomationPage({ projects }: { projects: Project[] }): React.JSX
   }
   const resetForm = () => {
     seedPushDefaults(); setPermissionMode('read-only')
-    setEditing(null); setName('每日科研摘要'); setCron('0 9 * * *'); setFrequency('daily'); setRuntime('codex'); setModel(modelForRuntime('codex')); setAssistantKey('researcher'); setPrompt('请根据项目中的最新文献生成一份可核验的研究摘要。'); setWorkspacePath(''); setProjectId(''); setMode('new_conversation'); setConversationId(null); setShowForm(true)
+    setEditing(null); setName('每日科研摘要'); setCron('0 9 * * *'); setFrequency('daily'); setRuntime('pi'); setModel(modelForRuntime('pi')); setAssistantKey('researcher'); setPrompt('请根据项目中的最新文献生成一份可核验的研究摘要。'); setWorkspacePath(''); setProjectId(''); setMode('new_conversation'); setConversationId(null); setShowForm(true)
   }
   const closeForm = () => { setShowForm(false); setEditing(null) }
   const editRule = (rule: AutomationRule) => {
@@ -212,7 +212,7 @@ export function AutomationPage({ projects }: { projects: Project[] }): React.JSX
     // select can never silently rewrite it to a different directory.
     setCustomFolder(!AGENT_SCHEDULE_OUTPUT_FOLDER_OPTIONS.includes(storedFolder))
     setPermissionMode(rule.permissionMode ?? 'read-only')
-    setEditing(rule); setName(rule.name); setCron(rule.cron); setFrequency(rule.frequency); setRuntime(rule.runtime ?? 'codex'); setModel(rule.model ?? runtimeDefaults[rule.runtime ?? 'codex']); setAssistantKey(rule.assistantKey ?? 'researcher'); setPrompt(rule.prompt); setWorkspacePath(rule.workspacePath ?? ''); setProjectId(rule.projectId ?? ''); setMode(rule.executionMode); setConversationId(rule.conversationId); setShowForm(true)
+    setEditing(rule); setName(rule.name); setCron(rule.cron); setFrequency(rule.frequency); setRuntime(rule.runtime ?? 'pi'); setModel(rule.model ?? runtimeDefaults[rule.runtime ?? 'pi']); setAssistantKey(rule.assistantKey ?? 'researcher'); setPrompt(rule.prompt); setWorkspacePath(rule.workspacePath ?? ''); setProjectId(rule.projectId ?? ''); setMode(rule.executionMode); setConversationId(rule.conversationId); setShowForm(true)
   }
   const updateFrequency = (value: Frequency) => { setFrequency(value); if (value === 'hourly') setCron('0 * * * *'); else if (value === 'daily') setCron('0 9 * * *'); else if (value === 'weekdays') setCron('0 9 * * 1-5'); else if (value === 'weekly') setCron('0 9 * * 1') }
   const archive = (rule: AutomationRule) => {
@@ -283,10 +283,10 @@ export function AutomationPage({ projects }: { projects: Project[] }): React.JSX
   }
 
   return <div className="page-scroll">
-    <PageHeader actions={<Button onClick={resetForm} size="sm" variant="primary"><Plus aria-hidden="true" className="size-3.5" />新建定时任务</Button>} description="管理由 Codex 或 Pi 执行的定时研究任务。任务仅在应用运行时调度，权限依据所选 CLI 的能力配置。" eyebrow="AUTOMATION / SCHEDULES" title="定时任务" />
+    <PageHeader actions={<Button onClick={resetForm} size="sm" variant="primary"><Plus aria-hidden="true" className="size-3.5" />新建定时任务</Button>} description="管理由内嵌 Pi Agent 执行的定时研究任务。任务仅在应用运行时调度，写入范围遵循设置中的本地工具策略。" eyebrow="AUTOMATION / SCHEDULES" title="定时任务" />
     {feedback ? <p aria-live="polite" className="form-feedback form-feedback-success mt-3" role="status">{feedback}</p> : null}
-    {showForm ? <ScheduleEditor assistantKey={assistantKey} blockedReason={saveBlockedReason} conversations={conversations.data ?? []} conversationId={conversationId} cron={cron} customFolder={customFolder} editing={editing} frequency={frequency} lookbackDays={lookbackDays} mode={mode} model={model} name={name} onCancel={closeForm} onChangeAssistant={setAssistantKey} onChangeConversation={setConversationId} onChangeCron={setCron} onChangeCustomFolder={setCustomFolder} onChangeFrequency={updateFrequency} onChangeLookbackDays={setLookbackDays} onChangeMode={setMode} onChangeModel={setModel} onChangeName={setName} onChangeOutputFolder={setOutputFolder} onChangePermissionMode={setPermissionMode} onChangeProject={setProjectId} onChangePrompt={setPrompt} onChangeResponseLanguage={setResponseLanguage} onChangeRuntime={(value) => { setRuntime(value); setModel(modelForRuntime(value)) }} onChangeSkill={setSkillKey} onChangeSources={setSourcesText} onChangeTopic={setTopic} onChangeWorkspace={setWorkspacePath} onSave={() => { if (saveBlockedReason) { setFeedback(saveBlockedReason); return }; saveMutation.mutate() }} outputFolder={outputFolder} permissionMode={permissionMode} permissionOptions={connectors.data?.find((connector) => connector.runtime === runtime)?.permissionOptions ?? []} projectId={projectId} projects={projects} prompt={prompt} responseLanguage={responseLanguage} runtime={runtime} saving={saveMutation.isPending} skillKey={skillKey} skillOptions={skillOptions} sourcesText={sourcesText} topic={topic} workspacePath={workspacePath} /> : null}
-    <section className="research-panel mt-4" aria-labelledby="schedule-list-title"><div className="research-panel-header"><div><p className="instrument-label">RUNTIME SCHEDULE</p><h2 id="schedule-list-title" className="text-base font-bold text-foreground">已配置任务</h2></div><span className="research-tag">{(rules.data ?? []).length} 个任务</span></div>{rules.isLoading ? <LoadingState label="正在读取定时任务…" /> : rules.error ? <ErrorState error={rules.error} onRetry={() => void rules.refetch()} /> : (rules.data ?? []).length === 0 ? <EmptyState title="还没有定时任务" description="创建每日摘要、文献检索或项目进度提醒，选择 Codex 或 Pi 作为执行 runtime。" action={<Button onClick={resetForm} size="sm" variant="secondary"><Plus aria-hidden="true" className="size-3.5" />新建任务</Button>} /> : <div className="schedule-list">{(rules.data ?? []).map(rule => <ScheduleCard key={rule.id} onArchive={() => archive(rule)} onEdit={() => editRule(rule)} onRunNow={() => runNow(rule)} onToggle={() => toggleMutation.mutate(rule)} rule={rule} />)}</div>}</section>
+    {showForm ? <ScheduleEditor assistantKey={assistantKey} blockedReason={saveBlockedReason} conversations={conversations.data ?? []} conversationId={conversationId} cron={cron} customFolder={customFolder} editing={editing} frequency={frequency} lookbackDays={lookbackDays} mode={mode} model={model} name={name} onCancel={closeForm} onChangeAssistant={setAssistantKey} onChangeConversation={setConversationId} onChangeCron={setCron} onChangeCustomFolder={setCustomFolder} onChangeFrequency={updateFrequency} onChangeLookbackDays={setLookbackDays} onChangeMode={setMode} onChangeModel={setModel} onChangeName={setName} onChangeOutputFolder={setOutputFolder} onChangePermissionMode={setPermissionMode} onChangeProject={setProjectId} onChangePrompt={setPrompt} onChangeResponseLanguage={setResponseLanguage} onChangeSkill={setSkillKey} onChangeSources={setSourcesText} onChangeTopic={setTopic} onChangeWorkspace={setWorkspacePath} onSave={() => { if (saveBlockedReason) { setFeedback(saveBlockedReason); return }; saveMutation.mutate() }} outputFolder={outputFolder} permissionMode={permissionMode} permissionOptions={connectors.data?.find((connector) => connector.runtime === runtime)?.permissionOptions ?? []} projectId={projectId} projects={projects} prompt={prompt} responseLanguage={responseLanguage} runtime={runtime} saving={saveMutation.isPending} skillKey={skillKey} skillOptions={skillOptions} sourcesText={sourcesText} topic={topic} workspacePath={workspacePath} /> : null}
+    <section className="research-panel mt-4" aria-labelledby="schedule-list-title"><div className="research-panel-header"><div><p className="instrument-label">RUNTIME SCHEDULE</p><h2 id="schedule-list-title" className="text-base font-bold text-foreground">已配置任务</h2></div><span className="research-tag">{(rules.data ?? []).length} 个任务</span></div>{rules.isLoading ? <LoadingState label="正在读取定时任务…" /> : rules.error ? <ErrorState error={rules.error} onRetry={() => void rules.refetch()} /> : (rules.data ?? []).length === 0 ? <EmptyState title="还没有定时任务" description="创建每日摘要、文献检索或项目进度提醒，由内嵌 Pi Agent 在应用运行时执行。" action={<Button onClick={resetForm} size="sm" variant="secondary"><Plus aria-hidden="true" className="size-3.5" />新建任务</Button>} /> : <div className="schedule-list">{(rules.data ?? []).map(rule => <ScheduleCard key={rule.id} onArchive={() => archive(rule)} onEdit={() => editRule(rule)} onRunNow={() => runNow(rule)} onToggle={() => toggleMutation.mutate(rule)} rule={rule} />)}</div>}</section>
     <div className="agent-rail-note mt-3"><CalendarClock aria-hidden="true" className="size-3.5" /><span>调度依赖应用进程；关闭应用期间不会后台执行。重新打开时每日任务最多补跑一次错过的时间点，其余等待下一个 09:00（可随时暂停/启用）。</span></div>
     <section className="research-panel mt-4" aria-labelledby="schedule-history-title">
       <div className="research-panel-header"><div><p className="instrument-label">RUN HISTORY</p><h2 className="text-base font-bold text-foreground" id="schedule-history-title">最近运行</h2></div><span className="research-tag">{historyEntries.length} 条</span></div>
@@ -343,7 +343,7 @@ export function AutomationPage({ projects }: { projects: Project[] }): React.JSX
 /** One selectable skill as the editor sees it (see `skillSelectOptions`). */
 type SkillSelectOption = ReturnType<typeof skillSelectOptions>[number]
 
-function ScheduleEditor({ projects, conversations, editing, skillOptions, name, runtime, model, assistantKey, workspacePath, frequency, cron, mode, prompt, projectId, conversationId, saving, skillKey, topic, sourcesText, lookbackDays, responseLanguage, outputFolder, customFolder, permissionMode, permissionOptions, blockedReason, onCancel, onSave, onChangeName, onChangeRuntime, onChangeModel, onChangeAssistant, onChangeWorkspace, onChangeFrequency, onChangeCron, onChangeMode, onChangePrompt, onChangeProject, onChangeConversation, onChangeSkill, onChangeTopic, onChangeSources, onChangeLookbackDays, onChangeResponseLanguage, onChangeOutputFolder, onChangeCustomFolder, onChangePermissionMode }: {
+function ScheduleEditor({ projects, conversations, editing, skillOptions, name, runtime, model, assistantKey, workspacePath, frequency, cron, mode, prompt, projectId, conversationId, saving, skillKey, topic, sourcesText, lookbackDays, responseLanguage, outputFolder, customFolder, permissionMode, permissionOptions, blockedReason, onCancel, onSave, onChangeName, onChangeModel, onChangeAssistant, onChangeWorkspace, onChangeFrequency, onChangeCron, onChangeMode, onChangePrompt, onChangeProject, onChangeConversation, onChangeSkill, onChangeTopic, onChangeSources, onChangeLookbackDays, onChangeResponseLanguage, onChangeOutputFolder, onChangeCustomFolder, onChangePermissionMode }: {
   projects: Project[]
   conversations: AgentConversation[]
   editing: AutomationRule | null
@@ -374,7 +374,6 @@ function ScheduleEditor({ projects, conversations, editing, skillOptions, name, 
   onCancel: () => void
   onSave: () => void
   onChangeName: (value: string) => void
-  onChangeRuntime: (value: AgentRuntimeKind) => void
   onChangeModel: (value: string) => void
   onChangeAssistant: (value: string) => void
   onChangeWorkspace: (value: string) => void
@@ -411,7 +410,6 @@ function ScheduleEditor({ projects, conversations, editing, skillOptions, name, 
     </div>
     <div className="settings-form-grid">
       <label>任务名称<Input onChange={(event) => onChangeName(event.target.value)} value={name} /></label>
-      <label>Agent runtime<select className="select-control" onChange={(event) => onChangeRuntime(event.target.value as AgentRuntimeKind)} value={runtime}><option value="codex">Codex</option><option value="pi">Pi</option></select></label>
       <label>模型<Input onChange={(event) => onChangeModel(event.target.value)} placeholder={runtimeDefaults[runtime]} value={model} /></label>
       <label>助手<Input onChange={(event) => onChangeAssistant(event.target.value)} value={assistantKey} /></label>
       <label>频率<select className="select-control" onChange={(event) => onChangeFrequency(event.target.value as Frequency)} value={frequency}>{Object.entries(frequencyLabels).map(([key, label]) => <option key={key} value={key}>{label}</option>)}</select></label>
@@ -449,7 +447,7 @@ function ScheduleEditor({ projects, conversations, editing, skillOptions, name, 
       {customFolderMode ? <Field htmlFor="schedule-custom-output-folder" label="自定义相对目录"><Input id="schedule-custom-output-folder" onChange={(event) => onChangeOutputFolder(event.target.value)} placeholder="例如：每日资讯推送/AI" value={outputFolder} /></Field> : null}
       <Field htmlFor="schedule-permission-mode" label="权限模式">
         <select className="select-control" disabled={permissionOptions.length === 0} id="schedule-permission-mode" onChange={(event) => onChangePermissionMode(event.target.value as AgentPermissionMode)} value={permissionSupported ? permissionMode : ''}>
-          <option disabled value="">{permissionOptions.length ? '请选择 CLI 支持的权限' : '正在探测 CLI 能力…'}</option>
+          <option disabled value="">{permissionOptions.length ? '请选择内嵌 Pi 支持的权限' : '正在读取 Agent 能力…'}</option>
           {permissionOptions.map((option) => <option key={option} value={option}>{option}</option>)}
         </select>
       </Field>
@@ -457,7 +455,7 @@ function ScheduleEditor({ projects, conversations, editing, skillOptions, name, 
     {mode === 'existing' ? <label className="mt-3 block">依赖会话<select className="select-control" onChange={(event) => onChangeConversation(event.target.value || null)} value={conversationId ?? ''}><option value="">选择会话</option>{conversations.map((conversation) => <option key={conversation.id} value={conversation.id}>{conversation.title}</option>)}</select></label> : null}
     <label className="mt-3 block">Prompt<Textarea className="min-h-24" onChange={(event) => onChangePrompt(event.target.value)} value={prompt} /></label>
     <label className="mt-3 block">工作区路径<Input onChange={(event) => onChangeWorkspace(event.target.value)} placeholder="可选，仅保存为项目元数据" value={workspacePath} /></label>
-    <div className="agent-composer-hint mt-3">执行权限：<strong>{permissionSupported ? permissionMode : '尚未选择有效权限'}</strong> · 可选项来自所选 CLI 的能力探测。输出目录为 Vault 内相对目录，写入前由同一安全谓词再校验一次；越界/绝对路径或 <span className="font-mono">.obsidian</span> 会被拒绝而不是静默改写。</div>
+    <div className="agent-composer-hint mt-3">执行权限：<strong>{permissionSupported ? permissionMode : '尚未选择有效权限'}</strong> · 可选项来自内嵌 Pi Agent 的能力探测。输出目录为 Vault 内相对目录，写入前由同一安全谓词再校验一次；越界/绝对路径或 <span className="font-mono">.obsidian</span> 会被拒绝而不是静默改写。</div>
     <p className="agent-composer-hint mt-3">每日推送正文使用简体中文；来源名、原文标题、必要引语和 URL 保留原样以便核验。运行前会先对 runtime/skill/Python/来源做能力预检；预检不通过时本次推送直接标记为阻断，不会生成成功产物。完全访问的定时执行需要主进程安全开关；未完成安全审查时不会静默降级。</p>
     {blockedReason ? <p className="form-feedback form-feedback-error mx-4 mt-3" role="alert">{blockedReason}</p> : null}
     <div className="form-actions mt-4"><Button onClick={onCancel} size="sm" type="button" variant="ghost">取消</Button><Button loading={saving} size="sm" type="submit" variant="primary"><Workflow aria-hidden="true" className="size-3.5" />{editing ? '更新任务' : '保存任务'}</Button></div>
@@ -465,7 +463,7 @@ function ScheduleEditor({ projects, conversations, editing, skillOptions, name, 
 }
 
 function ScheduleCard({ rule, onEdit, onToggle, onRunNow, onArchive }: { rule: AutomationRule; onEdit: () => void; onToggle: () => void; onRunNow: () => void; onArchive: () => void }): React.JSX.Element {
-  const runtime = rule.runtime ?? 'codex'
+  const runtime = rule.runtime ?? 'pi'
   const nextRun = rule.nextRunAt ? new Date(rule.nextRunAt).toLocaleString('zh-CN', { dateStyle: 'short', timeStyle: 'short' }) : '未排期'
   const lastRun = rule.lastRunAt ? new Date(rule.lastRunAt).toLocaleString('zh-CN', { dateStyle: 'short', timeStyle: 'short' }) : '尚未运行'
   return <article className={cn('schedule-card', !rule.enabled && 'schedule-card-disabled')}><div className="schedule-card-main"><div className="schedule-card-icon"><CalendarClock aria-hidden="true" className="size-4" /></div><div className="min-w-0 flex-1"><div className="flex flex-wrap items-center gap-2"><h3 className="truncate text-sm font-bold text-foreground">{rule.name}</h3><span className={cn('research-status', rule.enabled ? 'research-status-positive' : 'research-status-warning')}>{rule.enabled ? '已启用' : '已暂停'}</span></div><p className="mt-1 truncate text-xs text-muted-foreground">技能 {rule.skillKey ?? '内置工作流'} · 主题 {rule.topic || '未设置'} · {responseLanguageLabels[rule.responseLanguage]}</p><p className="mt-1 truncate text-xs text-muted-foreground">{frequencyLabels[rule.frequency]} · {rule.cron} · {runtimeLabels[runtime]} · {rule.model ?? runtimeDefaults[runtime]}</p><p className="mt-1 truncate text-xs text-muted-foreground">{rule.projectId ? '已绑定项目' : '全部项目'} · {rule.permissionMode} · {rule.timezone}</p><p className="mt-1 truncate text-xs text-muted-foreground">{rule.sources.length > 0 ? `来源 ${rule.sources.join('/')}` : '来源 全部可用'} · 近 {rule.lookbackDays} 天 · {rule.outputFolder}</p><p className="mt-1 truncate text-[11px] text-muted-foreground">下次 {nextRun} · 最近 {lastRun}</p></div></div><div className="schedule-card-actions"><Button aria-label={`立即运行 ${rule.name}`} onClick={onRunNow} size="icon" variant="ghost"><Play aria-hidden="true" className="size-3.5" /></Button><Button aria-label={`${rule.enabled ? '暂停' : '启用'} ${rule.name}`} onClick={onToggle} size="icon" variant="ghost">{rule.enabled ? <CirclePause aria-hidden="true" className="size-3.5" /> : <CheckCircle2 aria-hidden="true" className="size-3.5" />}</Button><Button aria-label={`编辑 ${rule.name}`} onClick={onEdit} size="icon" variant="ghost"><Pencil aria-hidden="true" className="size-3.5" /></Button><Button aria-label={`归档 ${rule.name}`} onClick={onArchive} size="icon" variant="ghost"><Trash2 aria-hidden="true" className="size-3.5" /></Button></div></article>

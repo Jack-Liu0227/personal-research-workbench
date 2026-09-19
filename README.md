@@ -8,8 +8,8 @@ Windows 本地优先的个人科研工作台。Electron + React 19 桌面端，T
 | --- | --- |
 | 平台 | Windows 10/11 x64（NSIS 安装包） |
 | 技术栈 | Electron 43.4.1、React 19.2.8、electron-vite 5.0.0、TypeScript |
-| 数据 | SQLite（`better-sqlite3` 13.0.3 + Drizzle 0.45.2），29 个版本化 migration |
-| AI | 固定 `@earendil-works/pi-ai` 0.84.1（MIT），凭据走应用自有 `safeStorage` |
+| 数据 | SQLite（`better-sqlite3` 13.0.3 + Drizzle 0.45.2），32 个版本化 migration |
+| AI | 固定 `@earendil-works/pi-ai` 0.85.1 与 `pi-coding-agent` 0.85.1（MIT），凭据走应用自有 `safeStorage` |
 | 构建 | Node.js ≥ 24、pnpm 11.5.2 |
 
 > 截图说明：下方所有界面截图由 `node scripts/capture-readme-shots.cjs` 在**隔离的临时用户目录**中自动生成，业务数据是通过真实 `window.workbench.v2` 命令面写入的**合成示例数据**（虚构项目、任务、日历与文献），不是任何真实用户的资料。文献检索页为一次真实 Crossref 查询的公开书目结果；Zotero 页展示的是**未连接本机服务时的状态**。证据见 [`docs/assets/screenshots/CAPTURE-REPORT.md`](docs/assets/screenshots/CAPTURE-REPORT.md)。
@@ -74,13 +74,13 @@ Windows 本地优先的个人科研工作台。Electron + React 19 桌面端，T
 
 ![Agent](docs/assets/screenshots/08-agent.png)
 
-内置 Codex / Pi 两种 CLI runtime，可切换模型、思考深度和权限模式（截图中为 `read-only` 策略）。一次运行会产生一份**归一化 run ledger**：写入阶段就把 CLI 的原始 JSON 映射成 provider-neutral 记录（含 token 用量、工具调用、reasoning、耗时），因此「对话」和「轨迹」两个视图只是同一份 ledger 的两种投影，而不是各自解析 CLI 输出。运行历史保存在本地工作区，每个对话一个 session 文件。
+内置**进程内 Pi Agent**（`@earendil-works/pi-coding-agent`，不 spawn 外部 CLI），可在「设置 → 模型与 Agent」维护 API Key / OAuth、默认模型、Thinking、权限和工具范围，并编辑 Pi 格式的自定义 `models.json`。Agent 通过进程内 MCP 与任务、Todo、日历、文献检索、Obsidian、Zotero、定时任务和非秘密参数交互；外部写入只能生成 `.request` 待确认动作，用户确认后才由 IntegrationCoordinator 执行。一次运行产生归一化 run ledger，包含回答、reasoning、工具调用、token 用量和耗时；「对话」与「轨迹」是同一份 ledger 的两个投影。Skills 从仓库 `.agents/skills` 或打包 `resources/skills` 受控加载，extensions 不读取用户 `~/.pi`。
 
 ### 定时任务
 
 ![定时任务](docs/assets/screenshots/09-automation.png)
 
-用 cron 表达式管理由 Codex 或 Pi 执行的定时研究任务，可绑定项目、权限模式和时区，随时暂停／启用。**调度只在应用进程存活期间运行**；关闭应用期间不会后台执行，重新打开时每日任务最多补跑一次错过的时间点。
+用 cron 表达式管理由内嵌 Pi Agent 执行的定时研究任务，可绑定项目、权限模式和时区，随时暂停／启用。**调度只在应用进程存活期间运行**；关闭应用期间不会后台执行，重新打开时每日任务最多补跑一次错过的时间点。
 
 每个到点时间点先写一条 occurrence 记录再推进游标（同一事务），因此重复的 30 秒 tick、重复点击「立即运行」和启动补跑都只会产生一次执行；应用在时间点执行期间被关闭的遗留记录会结算为「错过」并保留原因。页面底部「最近运行」列出每次运行的状态、时间点来源、阻断/失败原因、Artifact 与 Obsidian 投递结果（已写入路径或跳过原因）；失败/阻断的时间点可以按该规则记录的权限与审批策略重试，不会以更高权限重放旧运行。远程通知渠道（Telegram/Email/Webhook）本阶段不启用。
 
@@ -88,7 +88,7 @@ Windows 本地优先的个人科研工作台。Electron + React 19 桌面端，T
 
 ![设置](docs/assets/screenshots/10-settings.png)
 
-九个分组：通用、工作区与数据、文献检索、代理、工具连接、Agent 运行时、知识引擎、MCP Server、安全与审计。页面只显示后端真实状态；工具连接、授权与探测结果统一在这里管理。
+十个分组：通用、工作区与数据、文献检索、代理、工具连接、模型与 Agent、知识引擎、MCP Server、安全与审计、关于与更新。页面只显示后端真实状态；Provider、OAuth、工具连接、skill 状态和探测结果统一在这里管理。
 
 ## 核心能力
 
@@ -96,7 +96,7 @@ Windows 本地优先的个人科研工作台。Electron + React 19 桌面端，T
 - **乐观并发**：所有写命令带 `expectedRevision`，冲突会被拒绝而不是静默覆盖；批量操作返回逐条结果。
 - **统一信任边界**：Renderer 没有 Node、SQLite、credential 或泛化 IPC 权限，Preload 只暴露 `window.workbench.v2` 和窄化的 `window.workbench.agent`。
 - **共享契约**：所有跨进程 DTO 由 `packages/contracts` 的 Zod schema 定义，在进程边界统一校验。
-- **本机 MCP**：内置 stdio Server，通过 token 握手的 named pipe 连接到同一个 Workspace Service，首期提供项目／任务 Resources 和受控工具。
+- **本机 MCP**：外部 stdio Server 通过 token 握手的 named pipe 连接到同一个 Workspace Service；嵌入 Agent 使用同一套服务但走进程内 transport。工具 allowlist 明确区分本地写、外部 request、只读查询和永久阻断操作。
 - **服务状态自检**：状态栏实时显示 Workspace Service、SQLite、Obsidian、Zotero 的健康状态。
 
 ## 架构
@@ -114,7 +114,7 @@ Core process ── Workspace Service ── SQLite (workspace.sqlite3)
    ├── packages/database       schema / migrations / repository
    ├── packages/connectors     Obsidian、Zotero、Notion 适配器
    ├── packages/ai-runtime     pi-ai Provider 与 Cron 调度
-   ├── packages/agent-runtime  Codex / Pi 运行与归一化 ledger
+   ├── packages/agent-runtime  进程内 Pi Agent 适配器与归一化 ledger
    └── packages/workspace-mcp  本机 stdio MCP Server
 ```
 
@@ -127,7 +127,7 @@ Core process ── Workspace Service ── SQLite (workspace.sqlite3)
 - 密钥保存在 Main／Core，用 `safeStorage` 加密，且从日志和测试输出中脱敏；不使用 Pi CLI 或 `~/.pi` 的登录态。
 - 外部写回经过 `IntegrationCoordinator` 与适配器 revision 检查，使用稳定 external ID、managed block／field；附件只保留链接。
 - 永不写入 `zotero.sqlite` 和 Obsidian `.obsidian/`；永不静默覆盖外部用户文本。
-- Agent 的定时与外部写回默认不安全无人值守执行。
+- Agent 的定时与外部写回默认不安全无人值守执行：定时任务可被 Agent 读取，但配置修改仍在定时任务页面完成；Zotero/Obsidian 必须用户确认。
 
 ## 尚未实现
 
@@ -142,7 +142,7 @@ AnythingLLM／AgentScope／LLMWiki／MOSAIC 的 RAG 与索引执行、Headless �
 ```powershell
 pnpm install
 pnpm dev            # 启动开发模式
-pnpm typecheck      # 全仓库类型检查
+pnpm -r typecheck    # 全仓库类型检查
 pnpm build          # 构建 main / preload / renderer
 pnpm package:win    # 构建并用 electron-builder 打出 NSIS x64 安装包
 pnpm test:e2e       # 类打包形态的 Electron 端到端 smoke（隔离用户目录）
@@ -154,10 +154,10 @@ last30days skill 的验证脚本（`--network` / `:app` / `:cli` 会真实联网
 pnpm test:last30days           # 解析/诊断/引擎契约（离线，无 --mock）
 pnpm test:last30days:network   # 追加一次真实无 key 联网运行
 pnpm test:last30days:app       # 启动 Electron 验证 skillKey→run/ledger 路径（blocked 诊断，不调用模型）
-pnpm test:last30days:cli       # 真实 Codex/Pi 运行一次 skill（消耗 token，opt-in）
+pnpm test:last30days:cli       # 真实内嵌 Pi Agent 运行一次 skill（消耗 token，opt-in）
 ```
 
-测试源码已按用户要求删除，`pnpm test` 不再是验收门禁；当前门禁是 `pnpm typecheck` 与 `pnpm build`。`pnpm test:e2e` 用 Playwright 驱动真实 Renderer／Preload／Core 栈并在临时用户目录运行，但仍不是已安装 NSIS 包的安装 smoke。安装包必须在真实 Windows x64 环境完成独立安装／启动／重启／卸载 smoke，仅构建成功不等于发布就绪。
+根 `pnpm test` 是项目约定的空入口，不再作为验收门禁；当前门禁是 `pnpm -r typecheck`、`pnpm build`、命名脚本和 `pnpm test:e2e`。`pnpm test:e2e` 用 Playwright 驱动真实 Renderer／Preload／Core 栈并在临时用户目录运行，但仍不是已安装 NSIS 包的安装 smoke。安装包必须在真实 Windows x64 环境完成独立安装／启动／重启／卸载 smoke，仅构建成功不等于发布就绪。
 
 重新生成 README 截图：
 
@@ -173,6 +173,8 @@ node scripts/capture-readme-shots.cjs
 仓库当前的活跃文档在 `docs/`：
 
 - [开发文档索引](docs/README.md) — 模块状态快照与阅读路径
+- [Quick Start](docs/QUICK_START.md) — 安装、首次配置和第一条 Agent 对话
+- [Agent 使用教程](docs/AGENT_USER_GUIDE.md) — 文献、Obsidian、Zotero、定时任务、参数、skill/extension 与故障排查
 - [模块计划 00–09](docs/plan)：仪表盘、日历、任务、项目空间、文献检索、Obsidian、Zotero、设置、Agent 运行时、完整需求快照
 - [仓库协作规则](AGENTS.md) 与 [角色分工](.agents/roles/README.md)
 

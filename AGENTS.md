@@ -23,7 +23,7 @@ Documentation distinguishes implemented MVP behavior from remaining release work
 - Notion has no atomic compare-and-swap API: Core rejects `both`, and push remains a separately confirmed best-effort GET-then-PATCH operation. Never describe it as atomic or enable it unattended.
 - Never write `zotero.sqlite` or Obsidian `.obsidian/`; never silently overwrite external user text.
 - Scheduled work runs only while the app is alive; startup catches up at most one missed daily run.
-- AI generation uses pinned `@earendil-works/pi-ai` 0.84.1 (MIT). Provider identity and wire API remain separate; credentials use app-owned `safeStorage`, never Pi CLI or `~/.pi` auth.
+- AI generation uses pinned `@earendil-works/pi-ai` 0.85.1 (MIT), and the Agent is the pinned `@earendil-works/pi-coding-agent` 0.85.1 `AgentSession` embedded in the Core utility process — never a spawned CLI. Provider identity and wire API remain separate; credentials use app-owned `safeStorage`, never Pi CLI or `~/.pi` auth. User-defined providers are stored in Pi's own `<userData>/agent-runtime/pi/models.json` (endpoints and model ids only, never keys); entries the app cannot represent are preserved verbatim and never rewritten.
 - Closed-source-compatible green development: direct dependencies require license review; GPL/AGPL code is reference-only by default.
 
 ## Role ownership

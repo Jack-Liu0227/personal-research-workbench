@@ -3,19 +3,20 @@ import {
   Bot,
   CalendarDays,
   CheckCircle2,
+  ChevronDown,
   Clock3,
   CircleGauge,
+  FlaskConical,
   FolderKanban,
   LibraryBig,
   Moon,
   NotebookPen,
-  Plus,
   Search,
   Settings2,
   Sun
 } from 'lucide-react'
 import { useEffect, useMemo, useRef, useState, type KeyboardEvent as ReactKeyboardEvent, type MouseEvent as ReactMouseEvent, type ReactNode } from 'react'
-import { ProjectIdSchema, ResourceRefSchema, type ContextMenuTarget, type Project, type ResourceRef, type WorkspaceRoute, type WorkspaceTab } from '@prw/contracts'
+import { ProjectIdSchema, ResourceRefSchema, type ContextMenuTarget, type ResourceRef, type WorkspaceRoute, type WorkspaceTab } from '@prw/contracts'
 import { useQuery } from '@tanstack/react-query'
 import { Button } from './components/ui'
 import { ErrorState, InlineLoadingState } from './components/states'
@@ -64,24 +65,40 @@ function routeForView(view: ViewId): WorkspaceRoute {
   return view
 }
 
-function viewTitle(view: ViewId): string {
-  return primaryNavigation.find((item) => item.id === view)?.label ?? '工作区'
-}
-
 interface NavigationItem { id: ViewId; label: string; icon: ReactNode }
-
-const primaryNavigation: NavigationItem[] = [
+/**
+ * Third-level navigation is the research workbench itself: five surfaces that
+ * are entered deliberately and then worked in for a while.
+ */
+const researchNavigation: NavigationItem[] = [
   { id: 'dashboard', label: '仪表盘', icon: <CircleGauge aria-hidden="true" /> },
-  { id: 'calendar', label: '日历', icon: <CalendarDays aria-hidden="true" /> },
-  { id: 'tasks', label: '任务', icon: <CheckCircle2 aria-hidden="true" /> },
   { id: 'project', label: '项目空间', icon: <FolderKanban aria-hidden="true" /> },
   { id: 'literature', label: '文献检索', icon: <Search aria-hidden="true" /> },
   { id: 'obsidian', label: 'Obsidian', icon: <NotebookPen aria-hidden="true" /> },
   { id: 'zotero', label: 'Zotero', icon: <BookOpenText aria-hidden="true" /> },
-  { id: 'agent', label: 'Agent', icon: <Bot aria-hidden="true" /> },
-  { id: 'automation', label: '定时任务', icon: <Clock3 aria-hidden="true" /> },
-  { id: 'settings', label: '设置', icon: <Settings2 aria-hidden="true" /> }
+  { id: 'automation', label: '定时任务', icon: <Clock3 aria-hidden="true" /> }
 ]
+
+/**
+ * Primary navigation is the daily loop, and deliberately only three items: the
+ * Agent that records work, the calendar that places it, and the task list that
+ * tracks it. Everything else is a place you visit, not a place you live, so it
+ * folds into one collapsed group instead of competing for the same attention.
+ * No surface is removed: every `ViewId` stays reachable and routable.
+ */
+const primaryNavigation: NavigationItem[] = [
+  { id: 'agent', label: 'Agent', icon: <Bot aria-hidden="true" /> },
+  { id: 'calendar', label: '日历', icon: <CalendarDays aria-hidden="true" /> },
+  { id: 'tasks', label: '任务', icon: <CheckCircle2 aria-hidden="true" /> }
+]
+
+const settingsNavigation: NavigationItem = { id: 'settings', label: '设置', icon: <Settings2 aria-hidden="true" /> }
+
+/** Every navigable surface, so a tab title is never an untranslated route. */
+function viewTitle(view: ViewId): string {
+  const items = [...primaryNavigation, ...researchNavigation, settingsNavigation]
+  return items.find((item) => item.id === view)?.label ?? '工作区'
+}
 
 function readInitialTheme(): Theme {
   const saved = localStorage.getItem('workbench-theme')
@@ -100,6 +117,19 @@ function readInitialFontScale(): FontScale {
 function readInitialSidebarCollapsed(): boolean {
   try {
     return localStorage.getItem('workbench-sidebar-collapsed') === 'true'
+  } catch {
+    return false
+  }
+}
+
+/**
+ * The research group starts collapsed on purpose: collapsing it is the whole
+ * point of the reduction, so "no stored preference" must mean "closed" rather
+ * than "open until the user closes it".
+ */
+function readInitialResearchOpen(): boolean {
+  try {
+    return localStorage.getItem('workbench-nav-research-open') === 'true'
   } catch {
     return false
   }
@@ -128,11 +158,29 @@ function NavigationButton({ item, active, onClick }: { item: NavigationItem; act
 
 function Sidebar({ view, onNavigate, theme, onToggleTheme, collapsed, narrowOpen, onToggleCollapsed }: { view: ViewId; onNavigate: (view: ViewId, openInNewTab: boolean) => void; theme: Theme; onToggleTheme: () => void; collapsed: boolean; narrowOpen: boolean; onToggleCollapsed: () => void }): React.JSX.Element {
   const navigateFromClick = (item: NavigationItem, event: ReactMouseEvent<HTMLButtonElement>) => onNavigate(item.id, event.ctrlKey || event.metaKey)
-  return <aside aria-label="主导航" className={cn('sidebar', collapsed && 'sidebar-collapsed', narrowOpen && 'sidebar-narrow-open')}><div className="sidebar-brand"><div aria-hidden="true" className="workbench-mark"><span /><span /><span /></div><div className="sidebar-label min-w-0"><p className="truncate text-sm font-bold text-sidebar-foreground">科研工作台</p><p className="mt-0.5 truncate text-[10px] uppercase tracking-[0.18em] text-sidebar-muted">Research workspace</p></div><button aria-expanded={!collapsed} aria-label={collapsed ? '展开侧栏' : '折叠侧栏'} aria-pressed={collapsed} className="sidebar-collapse-button" onClick={onToggleCollapsed} title={collapsed ? '展开侧栏' : '折叠侧栏'} type="button">{collapsed ? '›' : '‹'}</button></div><nav className="sidebar-scroll min-h-0 flex-1 overflow-y-auto px-2 py-3"><div className="grid gap-0.5">{primaryNavigation.map((item) => <NavigationButton active={view === item.id} item={item} key={item.id} onClick={(event) => navigateFromClick(item, event)} />)}</div></nav><div className="border-t border-sidebar-border p-2"><button className="nav-item" onClick={onToggleTheme} type="button"><span className="nav-icon">{theme === 'dark' ? <Sun aria-hidden="true" /> : <Moon aria-hidden="true" />}</span><span className="sidebar-label flex-1 text-left">{theme === 'dark' ? '浅色主题' : '深色主题'}</span></button><div className="sidebar-label sidebar-online"><span aria-hidden="true" className="size-1.5 rounded-full bg-online" />Workspace Service 已连接</div></div></aside>
-}
+  const [researchOpen, setResearchOpen] = useState(readInitialResearchOpen)
+  useEffect(() => {
+    try { localStorage.setItem('workbench-nav-research-open', String(researchOpen)) } catch { /* optional renderer storage */ }
+  }, [researchOpen])
+  // A route inside the collapsed group must not hide the current location: the
+  // group is force-opened while it contains the active view, without writing
+  // that forced state back to the stored preference.
+  const researchActive = researchNavigation.some((item) => item.id === view)
+  const researchExpanded = researchOpen || researchActive
 
-function AgentSidebar({ projects, view, onNavigate, onOpenProject, theme, onToggleTheme }: { projects: Project[]; view: ViewId; onNavigate: (view: ViewId, openInNewTab: boolean) => void; onOpenProject: (projectId: string, openInNewTab: boolean) => void; theme: Theme; onToggleTheme: () => void }): React.JSX.Element {
-  return <aside aria-label="Agent 导航" className="sidebar agent-sidebar"><div className="sidebar-brand"><div aria-hidden="true" className="agent-brand-mark"><Bot className="size-5" /></div><div className="sidebar-label min-w-0"><p className="truncate text-sm font-bold text-sidebar-foreground">AionUi</p><p className="mt-0.5 truncate text-[10px] uppercase tracking-[0.18em] text-sidebar-muted">Agent workspace</p></div></div><nav className="sidebar-scroll min-h-0 flex-1 overflow-y-auto px-2 py-3"><div className="grid gap-1"><button className={cn('nav-item', view === 'agent' && 'nav-item-active')} onClick={() => onNavigate('agent', false)} type="button"><span className="nav-icon"><Plus aria-hidden="true" /></span><span className="sidebar-label flex-1 text-left">新会话</span></button><button className={cn('nav-item', view === 'agent' && 'nav-item-active')} onClick={() => onNavigate('agent', false)} type="button"><span className="nav-icon"><Bot aria-hidden="true" /></span><span className="sidebar-label flex-1 text-left">助手</span></button><button className={cn('nav-item', view === 'automation' && 'nav-item-active')} onClick={() => onNavigate('automation', false)} type="button"><span className="nav-icon"><Clock3 aria-hidden="true" /></span><span className="sidebar-label flex-1 text-left">定时任务</span></button></div><div className="agent-sidebar-section"><p className="sidebar-heading">项目</p><div className="grid gap-0.5"><button className="nav-item" onClick={() => onNavigate('project', false)} type="button"><span className="nav-icon"><FolderKanban aria-hidden="true" /></span><span className="sidebar-label flex-1 truncate">全部项目</span></button>{projects.slice(0, 8).map((project) => <button className="nav-item" key={project.id} onClick={() => onOpenProject(project.id, false)} title={project.name} type="button"><span className="nav-icon"><span aria-hidden="true" className="size-2 rounded-full bg-online" /></span><span className="sidebar-label flex-1 truncate text-left">{project.name}</span></button>)}</div></div></nav><div className="border-t border-sidebar-border p-2"><button className="nav-item" onClick={() => onNavigate('settings', false)} type="button"><span className="nav-icon"><Settings2 aria-hidden="true" /></span><span className="sidebar-label flex-1 text-left">设置</span></button><button className="nav-item" onClick={onToggleTheme} type="button"><span className="nav-icon">{theme === 'dark' ? <Sun aria-hidden="true" /> : <Moon aria-hidden="true" />}</span><span className="sidebar-label flex-1 text-left">{theme === 'dark' ? '浅色主题' : '深色主题'}</span></button><div className="sidebar-label sidebar-online"><span aria-hidden="true" className="size-1.5 rounded-full bg-online" />Workspace Service 已连接</div></div></aside>
+  return <aside aria-label="主导航" className={cn('sidebar', collapsed && 'sidebar-collapsed', narrowOpen && 'sidebar-narrow-open')}><div className="sidebar-brand"><div aria-hidden="true" className="workbench-mark"><span /><span /><span /></div><div className="sidebar-label min-w-0"><p className="truncate text-sm font-bold text-sidebar-foreground">科研工作台</p><p className="mt-0.5 truncate text-[10px] uppercase tracking-[0.18em] text-sidebar-muted">Research workspace</p></div><button aria-expanded={!collapsed} aria-label={collapsed ? '展开侧栏' : '折叠侧栏'} aria-pressed={collapsed} className="sidebar-collapse-button" onClick={onToggleCollapsed} title={collapsed ? '展开侧栏' : '折叠侧栏'} type="button">{collapsed ? '›' : '‹'}</button></div><nav className="sidebar-scroll min-h-0 flex-1 overflow-y-auto px-2 py-3">
+    <div className="grid gap-0.5">{primaryNavigation.map((item) => <NavigationButton active={view === item.id} item={item} key={item.id} onClick={(event) => navigateFromClick(item, event)} />)}</div>
+    <div className="sidebar-nav-group">
+      <button aria-controls="sidebar-research-nav" aria-expanded={researchExpanded} className={cn('nav-item', researchActive && 'nav-item-group-active')} onClick={() => setResearchOpen((current) => !current)} type="button">
+        <span className="nav-icon"><FlaskConical aria-hidden="true" /></span>
+        <span className="sidebar-label min-w-0 flex-1 truncate text-left">研究</span>
+        <span className="sidebar-label"><ChevronDown aria-hidden="true" className={cn('sidebar-nav-chevron', researchExpanded && 'sidebar-nav-chevron-open')} /></span>
+      </button>
+      <div className="grid gap-0.5" hidden={!researchExpanded} id="sidebar-research-nav">
+        {researchNavigation.map((item) => <NavigationButton active={view === item.id} item={item} key={item.id} onClick={(event) => navigateFromClick(item, event)} />)}
+      </div>
+    </div>
+  </nav><div className="border-t border-sidebar-border p-2"><NavigationButton active={view === settingsNavigation.id} item={settingsNavigation} onClick={(event) => navigateFromClick(settingsNavigation, event)} /><button className="nav-item" onClick={onToggleTheme} type="button"><span className="nav-icon">{theme === 'dark' ? <Sun aria-hidden="true" /> : <Moon aria-hidden="true" />}</span><span className="sidebar-label flex-1 text-left">{theme === 'dark' ? '浅色主题' : '深色主题'}</span></button><div className="sidebar-label sidebar-online"><span aria-hidden="true" className="size-1.5 rounded-full bg-online" />Workspace Service 已连接</div></div></aside>
 }
 
 function Topbar({ projects, selectedProjectId, onSelectProject, onNavigate, onOpenProject }: { projects: Array<{ id: string; name: string }>; selectedProjectId: string | null; onSelectProject: (id: string | null) => void; onNavigate: (view: ViewId, openInNewTab?: boolean) => void; onOpenProject: (projectId: string, openInNewTab: boolean) => void }): React.JSX.Element {

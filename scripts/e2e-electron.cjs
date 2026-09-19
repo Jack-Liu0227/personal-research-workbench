@@ -41,7 +41,21 @@ function assert(condition, message) {
   if (!condition) throw new Error(message)
 }
 
+/** Labels that live inside the collapsed “研究” group of the sidebar. They are
+ * reachable but not mounted-visible until the group is expanded, so navigation
+ * has to open the group first instead of assuming every surface is a top-level
+ * item. */
+const researchNavLabels = ['仪表盘', '项目空间', '文献检索', 'Obsidian', 'Zotero', '定时任务']
+
 async function clickNav(page, label) {
+  if (researchNavLabels.includes(label)) {
+    // `aria-expanded` is the group's own state, so this is idempotent: an
+    // already-open group (for example because its route is active) is not
+    // toggled shut by navigating to one of its children.
+    const group = page.locator('button[aria-controls="sidebar-research-nav"]')
+    if (await group.count() === 0) throw new Error('sidebar research group missing')
+    if (await group.getAttribute('aria-expanded') !== 'true') await group.click()
+  }
   const target = page.getByText(label, { exact: true }).first()
   await target.waitFor({ state: 'visible', timeout: 20_000 })
   await target.click()
@@ -96,7 +110,10 @@ async function main() {
     assert(page.url().startsWith('workbench://app/'), `Unexpected renderer origin: ${page.url()}`)
     console.log('shell: ok', await page.title())
 
-    const labels = ['仪表盘', '日历', '任务', '项目空间', '文献检索', 'Obsidian', 'Zotero', 'Agent', '定时任务', '设置']
+    // The rail is the daily loop plus one deliberately collapsed group. Every
+    // surface stays reachable, so the smoke walks the primary items first and
+    // then the group, exactly like a user would.
+    const labels = ['Agent', '日历', '任务', '设置', ...researchNavLabels]
     for (const label of labels) {
       await clickNav(page, label)
       console.log(`nav ${label}: ok`)
@@ -186,28 +203,26 @@ async function main() {
     assert(unmatchedRows === 0 ? unmatchedNoteCount <= 1 : unmatchedNoteCount === 1, `Dashboard unmatched explanation does not match ${unmatchedRows} unmatched rows`)
     console.log(`dashboard truthfulness: ok (${matchedRows} ledger-backed / ${unmatchedRows} unmatched rows)`)
 
-    // Agent controls: one runtime bar, selectable model/thinking/permission,
-    // and no conversations created merely by opening the app. The header and
-    // composer must not wait for the CLI capability probe.
+    // Agent workspace: the page owns the conversation and nothing else. Run
+    // configuration (model, thinking, permission, tool scope) moved to
+    // Settings, so the workspace must not render a second control panel and the
+    // composer must point at Settings instead of duplicating it.
     const agentNavigationStarted = Date.now()
     await clickNav(page, 'Agent')
-    await page.waitForSelector('select[aria-label="模型"]', { timeout: 30_000 })
+    await page.locator('textarea').first().waitFor({ state: 'visible', timeout: 30_000 })
     console.log(`timing Agent shell: ${Date.now() - agentNavigationStarted}ms`)
-    assert(await page.locator('select[aria-label="模型"]').count() === 1, 'Agent has duplicate model selectors')
-    assert(await page.locator('select[aria-label="思考深度"]').count() === 1, 'Agent thinking selector missing/duplicated')
-    assert(await page.locator('select[aria-label="权限模式"]').count() === 1, 'Agent permission selector missing/duplicated')
-    assert(await page.getByRole('button', { name: 'Codex' }).count() >= 1, 'Codex runtime control missing')
-    assert(await page.getByRole('button', { name: 'Pi' }).count() >= 1, 'Pi runtime control missing')
-    const codexModels = await page.locator('select[aria-label="模型"] option').count()
-    await page.getByRole('button', { name: 'Pi' }).first().click()
-    // Pi model discovery is delegated to the installed CLI and can take a
-    // few seconds on a cold catalog refresh. Give it time to expose the full
-    // provider-qualified list, while retaining a safe one-option fallback on
-    // machines where Pi is not installed.
-    await page.waitForFunction(() => document.querySelectorAll('select[aria-label="模型"] option').length > 2, null, { timeout: 15_000 }).catch(() => undefined)
-    const piModels = await page.locator('select[aria-label="模型"] option').count()
-    assert(codexModels >= 1 && piModels >= 1, 'Runtime model selectors have no fallback option')
-    await page.getByRole('button', { name: 'Codex' }).first().click()
+    for (const label of ['模型', '思考深度', '权限模式']) {
+      assert(await page.locator(`select[aria-label="${label}"]`).count() === 0, `Agent workspace still renders the ${label} selector`)
+    }
+    // The runtime bar and its Codex/Pi pill selector are gone; the only runtime
+    // mention left is the read-only profile link in the thread header. Matching
+    // on the container rather than on a button *name* keeps this assertion from
+    // failing on an assistant record that legitimately says “Pi”.
+    assert(await page.locator('.agent-runtime-bar, .agent-runtime-pill').count() === 0, 'Agent workspace still renders the runtime bar')
+    assert((await bodyText(page)).includes('Codex') === false, 'Agent workspace still mentions the removed Codex runtime')
+    assert(await page.locator('.agent-run-profile-link').count() >= 1, 'Agent run profile readout missing')
+    assert((await page.locator('.agent-run-profile-link').innerText()).includes('Pi'), 'Agent run profile readout does not name the in-process runtime')
+    await page.locator('.agent-hint-link').first().waitFor({ state: 'visible', timeout: 20_000 })
     await page.screenshot({ path: path.join(userData, 'agent-smoke.png'), fullPage: true })
     const conversationItems = page.locator('button[aria-label^="删除对话："]')
     assert(await conversationItems.count() === 0, 'Opening the app created an unexpected conversation')
@@ -221,7 +236,128 @@ async function main() {
     await page.waitForTimeout(200)
     assert(await agentProjectSelect.inputValue() === firstProjectId, 'Agent composer did not keep the chosen project')
     assert(await agentProjectSelect.locator('option[value=""]').count() === 1, 'Agent composer lost its explicit 未分类 option')
-    console.log(`agent selectors: ok (Codex options=${codexModels}, Pi options=${piModels})`)
+
+    // The composer owns provider/model selection for the next run, gated to
+    // providers that actually hold a credential. In a fresh profile that is
+    // none, so the provider select must say so rather than offering a list of
+    // providers whose runs could only fail.
+    const composerProvider = page.locator('select[aria-label="Agent Provider"]')
+    const composerModel = page.locator('select[aria-label="Agent 模型"]')
+    assert(await composerProvider.count() === 1, 'Agent composer provider select missing')
+    assert(await composerModel.count() === 1, 'Agent composer model select missing')
+    assert(await composerModel.isDisabled(), 'Agent composer model select must stay disabled until a provider is chosen')
+    const providerFirstOption = await composerProvider.locator('option').first().textContent()
+    assert((providerFirstOption ?? '').includes('未配置凭据'), 'Agent composer provider select must state that no credential is configured')
+
+    // `/` opens the local command palette, and a command is answered locally: it
+    // must produce a command result card in the stream, never a run, a
+    // conversation or a model call.
+    const composerInput = page.locator('.agent-composer-input')
+    await composerInput.fill('/')
+    const paletteItems = page.locator('.agent-command-palette-item')
+    await paletteItems.first().waitFor({ state: 'visible', timeout: 10_000 })
+    assert(await paletteItems.count() >= 5, 'the `/` palette did not list the local commands')
+    const paletteLayout = await page.locator('.agent-command-palette').evaluate((node) => {
+      const palette = node.getBoundingClientRect()
+      const composer = node.parentElement?.querySelector('.agent-composer')?.getBoundingClientRect()
+      const input = node.parentElement?.querySelector('.agent-composer-input')
+      return { position: getComputedStyle(node).position, paletteBottom: palette.bottom, composerTop: composer?.top ?? null, inputHeight: input?.getBoundingClientRect().height ?? null }
+    })
+    assert(paletteLayout.position === 'absolute', 'the command palette must overlay the composer instead of pushing it down')
+    assert(paletteLayout.composerTop !== null && paletteLayout.paletteBottom <= paletteLayout.composerTop + 1, 'the command palette is not anchored above the composer')
+    assert((paletteLayout.inputHeight ?? 999) < 90, 'an empty composer is still rendering as a tall fixed textarea')
+    await paletteItems.filter({ hasText: '/help' }).first().click()
+    assert(await composerInput.inputValue() === '/help', 'accepting a palette completion did not fill the composer')
+    await composerInput.press('Enter')
+    const helpCard = page.locator('.agent-command-result').first()
+    await helpCard.waitFor({ state: 'visible', timeout: 20_000 })
+    assert((await helpCard.textContent() ?? '').includes('/model use'), 'the /help command result is missing from the stream')
+    assert(await conversationItems.count() === 0, 'a local command created a conversation')
+    await composerInput.fill('')
+    console.log('agent composer: ok (gated provider/model select, `/` palette, local command result)')
+    console.log('agent workspace: ok (no run-config controls, no runtime bar)')
+
+    // The moved configuration must be reachable from the agent page: the
+    // composer links into Settings → 模型与 Agent, where the provider catalog
+    // and the real selectors live.
+    await page.locator('.agent-hint-link').first().click()
+    // The hint deep-links into the section instead of dropping the user on the
+    // first Settings tab, so the provider list is already on screen.
+    await page.getByText('SETTINGS / MODELS', { exact: true }).waitFor({ state: 'visible', timeout: 60_000 })
+    // The panel is only fully rendered once the credential status, the model
+    // catalog and the stored defaults have all answered; the embedded SDK is
+    // warmed at Core boot, so this is a real response wait, not a retry loop.
+    for (const label of ['默认模型', 'Thinking 深度', '默认权限模式', '本地工具范围']) {
+      await page.getByText(label, { exact: false }).first().waitFor({ state: 'visible', timeout: 30_000 })
+      assert(await page.getByText(label, { exact: false }).count() >= 1, `Settings is missing the ${label} control`)
+    }
+    // The embedded Pi SDK catalog is the only provider source; a codex-era
+    // runtime selector must not survive the cutover.
+    const providerRows = page.locator('.settings-row')
+    assert(await providerRows.count() >= 1, 'Settings did not render any model provider')
+    // The panel must state the credential boundary it actually enforces, and it
+    // must not resurrect a per-runtime selector: the in-process Pi SDK is the
+    // only runtime, so a “runtime” dropdown would be a control with one option.
+    const settingsText = await bodyText(page)
+    assert(settingsText.includes('safeStorage'), 'Settings does not state where model credentials are stored')
+    assert(settingsText.includes('不启动外部 CLI 进程'), 'Settings does not state that the runtime is in-process')
+    // The runtime-isolation callout and the detached “Provider + API Key” pair
+    // were removed as redundant: the credential boundary is stated once, and a
+    // key is entered in its own provider row.
+    assert(!settingsText.includes('运行时隔离'), 'Settings still renders the removed runtime-isolation callout')
+    const keyButtons = page.getByRole('button', { name: '设置 API Key' })
+    assert(await keyButtons.count() >= 1, 'Settings renders no per-provider API key action')
+    await keyButtons.first().click()
+    const keyInput = page.locator('input[aria-label$="的 API Key"]').first()
+    await keyInput.waitFor({ state: 'visible', timeout: 10_000 })
+    assert(await keyInput.getAttribute('type') === 'password', 'the per-provider API key editor is not a password field')
+    // The reported "cannot save the API key" failure: a key must round-trip
+    // through Main's vault, flip the row to 已配置, and never be echoed back into
+    // the page. Clearing it must return the row to its unconfigured state.
+    const probeKey = 'e2e-probe-key-not-a-credential'
+    await keyInput.fill(probeKey)
+    await providerRows.first().getByRole('button', { name: '保存' }).click()
+    const clearButton = page.getByRole('button', { name: '清除凭据' }).first()
+    await clearButton.waitFor({ state: 'visible', timeout: 30_000 })
+    assert(await page.locator('input[aria-label$="的 API Key"]').count() === 0, 'saving the API key left the editor open')
+    assert(!(await bodyText(page)).includes(probeKey), 'the saved API key was echoed back into the page')
+    await clearButton.click()
+    await page.getByRole('button', { name: '设置 API Key' }).first().waitFor({ state: 'visible', timeout: 30_000 })
+    for (const label of ['Agent 运行时', '运行时', 'runtime']) {
+      assert(await page.locator(`select[aria-label="${label}"]`).count() === 0, `Settings still renders a ${label} selector`)
+    }
+    console.log(`settings model section: ok (${await providerRows.count()} providers, per-provider key round-trip)`)
+    await page.screenshot({ path: path.join(userData, 'settings-model-section-smoke.png'), fullPage: true })
+
+    // A custom endpoint Pi does not ship must be configurable without leaving
+    // the app, and it must land in Pi's own models.json rather than in a private
+    // format. The file is read back from the isolated profile to prove the write
+    // reached disk (not just renderer state).
+    await page.getByText('自定义 Provider（models.json）', { exact: true }).waitFor({ state: 'visible', timeout: 30_000 })
+    const providersBefore = await providerRows.count()
+    await page.getByRole('button', { name: 'OpenAI（Responses API）', exact: true }).click()
+    const customModelId = page.locator('#custom-provider-0-model-0')
+    await customModelId.waitFor({ state: 'visible', timeout: 10_000 })
+    await customModelId.fill('gpt-5.1')
+    await page.getByRole('button', { name: '保存 models.json' }).click()
+    await page.getByText('自定义 Provider 已写入 models.json。', { exact: false }).waitFor({ state: 'visible', timeout: 60_000 })
+    const modelsFilePath = path.join(userData, 'data', 'agent-runtime', 'pi', 'models.json')
+    const modelsFile = JSON.parse(fs.readFileSync(modelsFilePath, 'utf8'))
+    assert(modelsFile.providers !== null && typeof modelsFile.providers === 'object', 'models.json has no providers object')
+    const customProviderEntry = modelsFile.providers['openai-responses']
+    assert(Boolean(customProviderEntry), 'the saved custom provider is missing from models.json')
+    assert(customProviderEntry.api === 'openai-responses', 'models.json lost the selected wire api')
+    assert(customProviderEntry.models.some((model) => model.id === 'gpt-5.1'), 'the custom model id was not written')
+    assert(!('apiKey' in customProviderEntry), 'models.json must never receive the credential')
+    // The catalog is the only provider source in the panel, so the new provider
+    // has to appear there (one more row) without a restart.
+    await page.waitForFunction(
+      (before) => document.querySelectorAll('.settings-row').length === before + 1,
+      providersBefore,
+      { timeout: 30_000 }
+    )
+    console.log(`settings custom provider: ok (models.json persisted, ${providersBefore} → ${await providerRows.count()} providers)`)
+    await clickNav(page, 'Agent')
 
     // The Agent page exposes two projections of the normalized ledger. The
     // trajectory tab must render its empty state without a run, and switching
@@ -233,7 +369,7 @@ async function main() {
     await page.screenshot({ path: path.join(userData, 'agent-trajectory-empty-smoke.png'), fullPage: true })
     await page.getByRole('button', { name: '对话', exact: true }).first().click()
     await page.getByRole('heading', { name: '准备好开始了吗？' }).waitFor({ state: 'visible', timeout: 20_000 })
-    assert(await page.locator('select[aria-label="模型"]').count() === 1, 'Agent tabs duplicated the model selector')
+    await page.locator('textarea').first().waitFor({ state: 'visible', timeout: 20_000 })
     assert(await conversationItems.count() === 0, 'Switching Agent tabs created an unexpected conversation')
     console.log('agent conversation/trajectory tabs: ok')
 
@@ -734,7 +870,7 @@ async function main() {
         offenders
       }
     })
-    const responsiveLabels = ['仪表盘', '日历', '任务', '项目空间', '文献检索', 'Obsidian', 'Zotero', 'Agent', '定时任务', '设置']
+    const responsiveLabels = ['Agent', '日历', '任务', '设置', ...researchNavLabels]
     for (const width of [1440, 1080, 720, 320]) {
       await setWindowWidth(width)
       for (const label of responsiveLabels) {

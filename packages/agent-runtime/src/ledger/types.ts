@@ -243,8 +243,8 @@ export function ledgerText(value: unknown, depth = 0): string {
 
 /**
  * An explicit delta is appended; anything else is an authoritative snapshot.
- * Pi sends `text_end`/`message_end` snapshots after its deltas and Codex sends
- * the full item text, so a snapshot may never be treated as an increment.
+ * The embedded Pi session sends `text_end`/`message_end` snapshots after its
+ * deltas, so a snapshot may never be treated as an increment.
  */
 export function applyStreamText(current: string, chunk: string, isDelta: boolean): string {
   if (!chunk) return current

@@ -1,6 +1,6 @@
 {
   "name": "personal-research-workbench",
-  "version": "0.0.3",
+  "version": "0.0.4",
   "private": true,
   "type": "module",
   "description": "Local-first personal research workbench for tasks, literature and AI-assisted writing.",
@@ -24,6 +24,14 @@
     "test:daily-literature": "jiti scripts/daily-literature-push-check.ts",
     "test:calendar-daily-push": "node --import jiti/register --test packages/workspace-service/tests/calendar-daily-push.test.ts",
     "test:agent-credentials": "node --import jiti/register --test apps/desktop/test/agent-credentials.test.ts",
+    "test:agent-runtime-pi": "node --import jiti/register --test packages/agent-runtime/tests/pi-credential-store-and-tools.test.ts packages/agent-runtime/tests/pi-ledger-normalizer.test.ts packages/agent-runtime/tests/pi-models-file.test.ts packages/agent-runtime/tests/pi-auth-flow.test.ts packages/agent-runtime/tests/pi-tool-names.test.ts packages/agent-runtime/tests/pi-resources.test.ts",
+    "test:agent-custom-providers": "node --import jiti/register --test packages/agent-runtime/tests/pi-custom-providers.test.ts",
+    "test:agent-discovery": "node --import jiti/register --test packages/agent-runtime/tests/pi-discovery.test.ts",
+    "test:agent-model-discovery-ui": "node --import jiti/register --test apps/desktop/test/model-discovery.test.ts",
+    "test:agent-login": "node --import jiti/register --test --test-force-exit packages/agent-runtime/tests/pi-login-oauth.test.ts",
+    "test:agent-magic-commands": "node --import jiti/register --test apps/desktop/test/agent-magic-commands.test.ts",
+    "test:workspace-mcp-agent-surface": "node --import jiti/register --test packages/workspace-mcp/tests/agent-tool-surface.test.ts",
+    "test:agent-ledger-grouping": "node --import jiti/register --test apps/desktop/tests/agent-ledger-grouping.test.ts",
     "test:zotero-write": "node --import jiti/register --test apps/desktop/test/zotero-write.test.ts",
     "test:zotero-connector": "node --import jiti/register --test packages/connectors/test/zotero.test.ts",
     "test:zotero-delete": "node --import jiti/register --test packages/workspace-service/tests/zotero-delete.test.ts",
@@ -37,7 +45,11 @@
     "test:agent-history-delete": "node --import jiti/register --test packages/database/tests/agent-conversation-remove.test.ts",
     "test:literature-zotero": "node --import jiti/register --test packages/workspace-service/tests/literature-runtime.test.ts",
     "check": "pnpm typecheck && pnpm build",
-    "test:last30days:digest": "jiti scripts/last30days-ai-digest-check.ts"
+    "test:last30days:digest": "jiti scripts/last30days-ai-digest-check.ts",
+    "test:agent-settings": "node --import jiti/register --test packages/database/tests/agent-settings-and-codex-removal.test.ts",
+    "test:agent-external-actions": "node --import jiti/register --test packages/database/tests/agent-external-actions.test.ts packages/workspace-service/tests/agent-external-actions.test.ts",
+    "test:agent-scheduled-credentials": "node --import jiti/register --test packages/workspace-service/tests/agent-scheduled-credentials.test.ts",
+    "test:agent-live": "node scripts/agent-live-check.cjs"
   },
   "devDependencies": {
     "@types/node": "24.10.14",

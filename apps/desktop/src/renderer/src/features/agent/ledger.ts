@@ -117,6 +117,25 @@ export interface LedgerTurn {
   readonly durationMs: number | null
 }
 
+/**
+ * One run of the agent inside one conversation.
+ *
+ * A conversation is a sequence of runs (one per user prompt), and each run has
+ * its own turn numbering starting at 0. Grouping by `turn` alone therefore
+ * merged every user prompt in a conversation into a single leading block and
+ * every reply into one trailing block, which read as "all your questions, then
+ * all the answers". A run is the unit that actually has an order, so it is the
+ * unit rendered here.
+ */
+export interface LedgerRun {
+  readonly runId: string
+  readonly turns: LedgerTurn[]
+  readonly records: AgentRunRecordEntry[]
+  readonly startedAt: string
+  readonly usage: AgentUsage | null
+  readonly durationMs: number | null
+}
+
 export function groupRecordsByTurn(records: readonly AgentRunRecordEntry[]): LedgerTurn[] {
   const groups = new Map<number, AgentRunRecordEntry[]>()
   for (const record of records) {
@@ -126,15 +145,52 @@ export function groupRecordsByTurn(records: readonly AgentRunRecordEntry[]): Led
   }
   return [...groups.entries()]
     .sort(([left], [right]) => left - right)
-    .map(([turn, items]) => {
-      const end = items.find((item) => item.kind === 'turn_end')
+    .map(([turn, items]) => ({
+      turn,
+      records: items,
+      usage: turnUsage(items),
+      durationMs: turnDuration(items)
+    }))
+}
+
+function turnUsage(items: readonly AgentRunRecordEntry[]): AgentUsage | null {
+  return items.find((item) => item.kind === 'turn_end')?.usage ?? sumUsage(items.map((item) => item.usage))
+}
+
+function turnDuration(items: readonly AgentRunRecordEntry[]): number | null {
+  return items.find((item) => item.kind === 'turn_end')?.durationMs ?? spanDuration(items)
+}
+
+/**
+ * Group the conversation ledger into runs, preserving ledger order.
+ *
+ * Runs are ordered by their first record rather than by `runId`, because a
+ * retry can produce a run whose id sorts before the run it replaces while its
+ * records are strictly newer. Within a run, turns are ordered numerically and
+ * records keep their `seq` order, so the renderer never has to re-sort
+ * heuristically and a live push lands in the right place.
+ */
+export function groupRecordsByRun(records: readonly AgentRunRecordEntry[]): LedgerRun[] {
+  const groups = new Map<string, AgentRunRecordEntry[]>()
+  for (const record of records) {
+    const bucket = groups.get(record.runId)
+    if (bucket) bucket.push(record)
+    else groups.set(record.runId, [record])
+  }
+  return [...groups.entries()]
+    .map(([runId, items]) => {
+      const ordered = [...items].sort((left, right) => left.seq - right.seq)
       return {
-        turn,
-        records: items,
-        usage: end?.usage ?? sumUsage(items.map((item) => item.usage)),
-        durationMs: end?.durationMs ?? spanDuration(items)
+        runId,
+        turns: groupRecordsByTurn(ordered),
+        records: ordered,
+        startedAt: ordered[0]?.createdAt ?? new Date(0).toISOString(),
+        usage: runStats(ordered).usage,
+        durationMs: runStats(ordered).durationMs
       }
     })
+    .sort((left, right) =>
+      Date.parse(left.startedAt) - Date.parse(right.startedAt) || left.runId.localeCompare(right.runId))
 }
 
 export interface LedgerStats {
@@ -219,9 +275,9 @@ function timestamp(value: string | null): number | null {
 export function safeDisplayContent(content: string): string {
   const normalized = content.trim()
   if (/return exactly acceptance_redaction_restart_ok/i.test(normalized)) return '这条运行记录已被安全过滤。请重新发送任务以继续。'
-  if (/no api key found|missing bearer|401 unauthorized|authentication required|not authenticated|login required|logged out/i.test(normalized)) return '运行未完成：本机 Agent CLI 尚未完成登录，请在设置中点击“探测”确认登录状态后重试。'
-  if (/reconnecting|request timed out|connection failed|falling back from websockets|waiting for network/i.test(normalized)) return '运行未完成：Agent runtime 连接超时或网络不可用，请检查凭据与网络后重试。'
-  if (/not inside a trusted directory|invalidargument|cannot process argument|codex\.ps1/i.test(normalized)) return '运行未完成：当前工作目录尚未被 runtime 信任，请在设置中检查工作目录后重试。'
+  if (/no api key found|missing bearer|401 unauthorized|authentication required|not authenticated|login required|logged out/i.test(normalized)) return '运行未完成：模型凭据缺失或已失效，请在「设置 → 模型与 Agent」保存 API Key 或重新登录后重试。'
+  if (/reconnecting|request timed out|connection failed|falling back from websockets|waiting for network/i.test(normalized)) return '运行未完成：模型连接超时或网络不可用，请检查凭据与网络后重试。'
+  if (/not inside a trusted directory|invalidargument|cannot process argument/i.test(normalized)) return '运行未完成：当前工作目录未被运行时信任，请检查工作区设置后重试。'
   return content
 }
 

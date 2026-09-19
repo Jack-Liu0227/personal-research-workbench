@@ -1,5 +1,6 @@
 import { z } from 'zod'
 import { ExternalOpenUrlSchema } from './external-url.js'
+import { AgentExternalActionRequestResultSchema } from './agent.js'
 
 type JsonValue = string | number | boolean | null | JsonValue[] | { [key: string]: JsonValue }
 const JsonValueSchema: z.ZodType<JsonValue> = z.lazy(() => z.union([
@@ -543,6 +544,16 @@ export const RpcMethodPayloadSchemas = {
   'literature.staging.bulkDelete': strictPayload(LiteratureStagingBulkDeleteInputSchema),
   'literature.stagingToZotero.preview': strictPayload(LiteratureStagingToZoteroPreviewInputSchema),
   'literature.stagingToZotero.execute': strictPayload(LiteratureStagingToZoteroExecuteInputSchema),
+  /** Preview *and* open a user decision.
+   *
+   * These four are the only external writes an Agent tool may reach. They run the
+   * same preview as the read-only pair above and then freeze it in an
+   * `agent_external_actions` row: the Agent prepares a write, a person approves
+   * it, and `execute` is never reachable from the model. */
+  'literature.stagingToZotero.request': strictPayload(LiteratureStagingToZoteroPreviewInputSchema),
+  'zotero.paperToZotero.request': strictPayload(PaperToZoteroPreviewInputSchema),
+  'notes.write.request': strictPayload(WriteNoteInputSchema),
+  'notes.metadata.request': strictPayload(NoteMetadataPreviewInputSchema),
   /** @deprecated Compatibility-only array route; use literature.resultsPage. */
   'literature.results': LiteratureResultsCompatibilityInputSchema,
   'literature.batch.preview': strictPayload(LiteratureBatchPreviewInputSchema),
@@ -661,6 +672,10 @@ export const RpcMethodResultSchemas = {
   'zotero.importSelected.preview': ZoteroImportPreviewSchema,
   'zotero.importSelected.execute': ZoteroImportResultSchema,
   'zotero.paperToZotero.preview': PaperToZoteroPreviewSchema,
+  'zotero.paperToZotero.request': AgentExternalActionRequestResultSchema,
+  'literature.stagingToZotero.request': AgentExternalActionRequestResultSchema,
+  'notes.write.request': AgentExternalActionRequestResultSchema,
+  'notes.metadata.request': AgentExternalActionRequestResultSchema,
   'zotero.paperToZotero.execute': ZoteroImportResultSchema,
   'zotero.deleteRemote.preview': ZoteroRemoteDeletePreviewSchema,
   'zotero.deleteRemote.execute': ZoteroRemoteDeleteReceiptSchema,
@@ -759,6 +774,8 @@ const RpcRequestVariants = [
   rpc('notes.move', RpcMethodPayloadSchemas['notes.move']),
   rpc('notes.metadata.preview', RpcMethodPayloadSchemas['notes.metadata.preview']),
   rpc('notes.metadata.apply', RpcMethodPayloadSchemas['notes.metadata.apply']),
+  rpc('notes.write.request', RpcMethodPayloadSchemas['notes.write.request']),
+  rpc('notes.metadata.request', RpcMethodPayloadSchemas['notes.metadata.request']),
   rpc('notes.duplicates', RpcMethodPayloadSchemas['notes.duplicates']),
   rpc('zotero.capability', RpcMethodPayloadSchemas['zotero.capability']),
   rpc('zotero.authorize', RpcMethodPayloadSchemas['zotero.authorize']),
@@ -774,6 +791,8 @@ const RpcRequestVariants = [
   rpc('zotero.importSelected.execute', RpcMethodPayloadSchemas['zotero.importSelected.execute']),
   rpc('zotero.paperToZotero.preview', RpcMethodPayloadSchemas['zotero.paperToZotero.preview']),
   rpc('zotero.paperToZotero.execute', RpcMethodPayloadSchemas['zotero.paperToZotero.execute']),
+  rpc('zotero.paperToZotero.request', RpcMethodPayloadSchemas['zotero.paperToZotero.request']),
+  rpc('literature.stagingToZotero.request', RpcMethodPayloadSchemas['literature.stagingToZotero.request']),
   rpc('zotero.deleteRemote.preview', RpcMethodPayloadSchemas['zotero.deleteRemote.preview']),
   rpc('zotero.deleteRemote.execute', RpcMethodPayloadSchemas['zotero.deleteRemote.execute']),
   rpc('papers.importFromZotero', RpcMethodPayloadSchemas['papers.importFromZotero']),

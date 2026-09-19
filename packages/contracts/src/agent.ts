@@ -5,17 +5,33 @@ import { IdSchema, IsoInstantSchema, PageInputSchema, ProjectIdSchema } from './
 
 const IsoDateSchema = IsoInstantSchema
 
-export const AgentRuntimeKindSchema = z.enum(['codex', 'pi'])
+export const AgentRuntimeKindSchema = z.enum(['pi'])
 export type AgentRuntimeKind = z.infer<typeof AgentRuntimeKindSchema>
 
-export const AgentRuntimeTransportSchema = z.enum(['cli', 'inprocess'])
+/** Every supported runtime is embedded in the Core utility process. The
+ * `cli` transport existed for spawned Codex/Pi binaries and no longer has an
+ * implementation; keeping the literal union narrow makes that structural. */
+export const AgentRuntimeTransportSchema = z.enum(['inprocess'])
 export type AgentRuntimeTransport = z.infer<typeof AgentRuntimeTransportSchema>
+
+/** Transport of a *stored* run record.
+ *
+ * Deliberately wider than `AgentRuntimeTransportSchema`, which selects a
+ * runtime and must stay narrow. `agent_runs.transport` still holds `cli` for
+ * runs written by the removed spawned-CLI transport, and its SQLite CHECK
+ * cannot be narrowed in place; a stored record that this schema rejects makes
+ * every run listing fail to parse. The history therefore stays honest instead
+ * of being rewritten — no code path can *start* a `cli` run. */
+export const AgentRunRecordTransportSchema = z.enum(['inprocess', 'cli'])
+export type AgentRunRecordTransport = z.infer<typeof AgentRunRecordTransportSchema>
 
 export const AgentToolProfileSchema = z.enum(['read-only', 'approved-write'])
 export type AgentToolProfile = z.infer<typeof AgentToolProfileSchema>
 
-/** User-facing permission modes aligned with Codex/Pi CLI semantics. The
- * legacy toolProfile remains on the wire for backwards compatibility. */
+/** User-facing permission modes. `read-only` keeps every write tool out of
+ * the session, `auto` allows workbench record writes without prompting, and
+ * `full-access` is reserved: it never enables shell/file-system tools.
+ * The legacy toolProfile remains on the wire for backwards compatibility. */
 export const AgentPermissionModeSchema = z.enum(['read-only', 'auto', 'full-access'])
 export type AgentPermissionMode = z.infer<typeof AgentPermissionModeSchema>
 export const AgentApprovalPolicySchema = z.enum(['on-request', 'never'])
@@ -25,70 +41,352 @@ export type AgentApprovalPolicy = z.infer<typeof AgentApprovalPolicySchema>
  * Runtime credentials are owned by Electron Main's `safeStorage` vault.
  *
  * The workbench never reads, copies or reuses the login state a user may have
- * created for `~/.codex` or `~/.pi`: every CLI child process runs against an
- * app-owned profile directory and receives exactly one provider credential,
- * injected for the lifetime of that single process. A provider that is not in
- * this catalog is rejected instead of being guessed into an environment
- * variable name.
+ * created for `~/.pi`: the embedded Pi agent runs against an app-owned
+ * `agentDir`, and credentials reach it only through an app-owned
+ * `CredentialStore` whose writes are persisted by Main. Provider identifiers
+ * are Pi's own provider ids, so the catalog is generated from the installed
+ * SDK instead of being re-listed here (where it would silently drift).
  */
-export const AgentCredentialProviderSchema = z.enum([
-  'openai',
-  'anthropic',
-  'gemini',
-  'xai',
-  'openrouter',
-  'deepseek',
-  'groq',
-  'mistral',
-  'moonshot'
-])
+export const AgentCredentialProviderSchema = z.string().trim().min(1).max(100)
 export type AgentCredentialProvider = z.infer<typeof AgentCredentialProviderSchema>
 
-/** Provider → documented CLI environment variable. Codex only accepts an
- * OpenAI credential; Pi documents one variable per provider. */
-const credentialProviders: Record<AgentRuntimeKind, ReadonlyArray<{ readonly provider: AgentCredentialProvider; readonly envVar: string; readonly label: string }>> = {
-  codex: [{ provider: 'openai', envVar: 'OPENAI_API_KEY', label: 'OpenAI' }],
-  pi: [
-    { provider: 'openai', envVar: 'OPENAI_API_KEY', label: 'OpenAI' },
-    { provider: 'anthropic', envVar: 'ANTHROPIC_API_KEY', label: 'Anthropic Claude' },
-    { provider: 'gemini', envVar: 'GEMINI_API_KEY', label: 'Google Gemini' },
-    { provider: 'xai', envVar: 'XAI_API_KEY', label: 'xAI Grok' },
-    { provider: 'openrouter', envVar: 'OPENROUTER_API_KEY', label: 'OpenRouter' },
-    { provider: 'deepseek', envVar: 'DEEPSEEK_API_KEY', label: 'DeepSeek' },
-    { provider: 'groq', envVar: 'GROQ_API_KEY', label: 'Groq' },
-    { provider: 'mistral', envVar: 'MISTRAL_API_KEY', label: 'Mistral' },
-    { provider: 'moonshot', envVar: 'MOONSHOT_API_KEY', label: 'Moonshot' }
-  ]
-}
+/** How a provider authenticates. `api_key` is a pasted secret, `oauth` is an
+ * interactive browser/device-code login orchestrated by this app. */
+export const AgentAuthTypeSchema = z.enum(['api_key', 'oauth'])
+export type AgentAuthType = z.infer<typeof AgentAuthTypeSchema>
 
-export function agentCredentialProviders(runtime: AgentRuntimeKind): ReadonlyArray<{ readonly provider: AgentCredentialProvider; readonly envVar: string; readonly label: string }> {
-  return credentialProviders[runtime]
-}
-
-/** `null` means "this runtime/provider has no documented variable", so the
- * caller must fail closed rather than invent one. */
-export function agentCredentialEnvVar(runtime: AgentRuntimeKind, provider: string): string | null {
-  return credentialProviders[runtime].find((entry) => entry.provider === provider)?.envVar ?? null
-}
-
-/** Non-secret status. The secret itself never leaves Main. */
+/** Non-secret credential status. The secret itself never leaves Main. */
 export const AgentCredentialStatusSchema = z.strictObject({
-  runtime: AgentRuntimeKindSchema,
-  provider: AgentCredentialProviderSchema.nullable(),
+  provider: AgentCredentialProviderSchema,
+  /** Display name resolved from the Pi provider catalog. */
+  label: z.string().max(200),
   credentialPresent: z.boolean(),
-  /** Documented environment variable the credential is injected as. */
-  envVar: z.string().max(100).nullable(),
+  authType: AgentAuthTypeSchema.nullable(),
   updatedAt: IsoDateSchema.nullable()
 })
 export type AgentCredentialStatus = z.infer<typeof AgentCredentialStatusSchema>
 
 /** Main-only write. An empty `apiKey` clears the stored credential. */
 export const AgentCredentialSaveInputSchema = z.strictObject({
-  runtime: AgentRuntimeKindSchema,
   provider: AgentCredentialProviderSchema,
   apiKey: z.string().max(20_000).nullable().default(null)
 })
 export type AgentCredentialSaveInput = z.infer<typeof AgentCredentialSaveInputSchema>
+
+/** One model offered by a configured-or-configurable provider. */
+export const AgentModelOptionSchema = z.strictObject({
+  id: z.string().min(1).max(300),
+  name: z.string().max(300),
+  reasoning: z.boolean(),
+  /** Thinking levels the SDK reports for this model; empty means the UI hides
+   * the thinking selector instead of offering a level the model rejects. */
+  thinkingLevels: z.array(z.string().max(50)).max(20).default([]),
+  /** Wire protocol this model is called with, when the provider declares one.
+   * A provider can offer several (`openai-completions` next to
+   * `openai-responses`), so the UI labels each model instead of assuming the
+   * provider has exactly one. `null` means the SDK does not report one. */
+  api: z.string().max(64).nullable().default(null)
+})
+export type AgentModelOption = z.infer<typeof AgentModelOptionSchema>
+
+/**
+ * Provider catalog entry generated from the embedded Pi SDK at request time.
+ * It carries no credential material: presence/updatedAt come from the
+ * Main-owned vault and are merged by the renderer, so a credentials-change
+ * never invalidates this cache.
+ */
+export const AgentModelCatalogEntrySchema = z.strictObject({
+  provider: AgentCredentialProviderSchema,
+  name: z.string().max(200),
+  authTypes: z.array(AgentAuthTypeSchema).max(2).default([]),
+  models: z.array(AgentModelOptionSchema).max(500).default([]),
+  /** `builtin` comes from the embedded SDK, `custom` from the app-owned
+   * `models.json`. The renderer only uses this to group the list, never to
+   * decide whether a provider works. */
+  source: z.enum(['builtin', 'custom']).default('builtin')
+})
+export type AgentModelCatalogEntry = z.infer<typeof AgentModelCatalogEntrySchema>
+
+/**
+ * Wire protocols a user-added provider may speak.
+ *
+ * Deliberately a subset of Pi's `Api`: these are the protocols a local server,
+ * a gateway or a self-hosted model actually implements. Vendor-cloud-only APIs
+ * (Bedrock SigV4, Vertex ADC, Copilot, Codex, …) are excluded because they need
+ * that vendor's own account machinery, which this app does not manage.
+ */
+export const AgentCustomProviderApiSchema = z.enum([
+  'openai-completions',
+  'openai-responses',
+  'anthropic-messages',
+  'google-generative-ai'
+])
+export type AgentCustomProviderApi = z.infer<typeof AgentCustomProviderApiSchema>
+export const AGENT_CUSTOM_PROVIDER_APIS: readonly AgentCustomProviderApi[] = AgentCustomProviderApiSchema.options
+
+/** Provider ids double as Pi provider ids and as credential-vault keys, so the
+ * character set stays narrow enough for both a JSON key and a vault key. */
+export const AGENT_CUSTOM_PROVIDER_ID_PATTERN = /^[a-z0-9][a-z0-9._-]*$/u
+
+/** Dependency-free id check shared by the RPC schema, the renderer form and the
+ * agent-runtime file reader, so all three agree on what an editable provider is
+ * instead of one of them silently reclassifying the others' output. */
+export function customProviderIdIssue(value: string): string | null {
+  if (!value.trim()) return 'Provider id 不能为空。'
+  if (value.length > 100) return 'Provider id 不能超过 100 个字符。'
+  if (!AGENT_CUSTOM_PROVIDER_ID_PATTERN.test(value)) return 'Provider id 只能包含小写字母、数字、点、下划线和短横线，且必须以字母或数字开头。'
+  return null
+}
+
+/**
+ * Dependency-free endpoint check, shared for the same reason as the id check.
+ *
+ * HTTP is accepted only for loopback: an API key sent to a remote host over
+ * plain HTTP would be readable on the wire. A plain-HTTP LAN endpoint can still
+ * be added by hand-editing the file — such an entry is preserved verbatim and
+ * listed as read-only instead of being rejected or rewritten.
+ */
+export function customProviderUrlIssue(value: string): string | null {
+  const trimmed = value.trim()
+  if (!trimmed) return '模型地址不能为空。'
+  if (trimmed.length > 2_048) return '模型地址过长。'
+  let parsed: URL
+  try {
+    parsed = new URL(trimmed)
+  } catch {
+    return '模型地址必须是有效的绝对 URL。'
+  }
+  if (parsed.username || parsed.password) return '模型地址不能包含用户名或密码；密钥请保存在凭据中。'
+  if (parsed.search || parsed.hash) return '模型地址不能包含查询参数或锚点。'
+  const loopback = ['localhost', '127.0.0.1', '[::1]', '::1'].includes(parsed.hostname.toLocaleLowerCase('en-US'))
+  const allowed = loopback ? ['http:', 'https:'] : ['https:']
+  if (!allowed.includes(parsed.protocol)) return '远程模型地址必须使用 HTTPS；HTTP 仅允许 localhost/127.0.0.1。'
+  return null
+}
+
+/** Endpoint of one user-added provider. */
+export const AgentCustomProviderUrlSchema = z.string().trim().min(1).max(2_048).superRefine((value, context) => {
+  const issue = customProviderUrlIssue(value)
+  if (issue) context.addIssue({ code: 'custom', message: issue })
+})
+
+/** One model under a user-added provider. Pi fills `contextWindow` and
+ * `maxTokens` with its own defaults when they are omitted, so `null` means
+ * "use Pi's default" rather than zero. */
+export const AgentCustomProviderModelSchema = z.strictObject({
+  id: z.string().trim().min(1).max(200),
+  name: z.string().trim().max(200).default(''),
+  reasoning: z.boolean().default(false),
+  contextWindow: z.int().positive().max(10_000_000).nullable().default(null),
+  maxTokens: z.int().positive().max(10_000_000).nullable().default(null)
+})
+export type AgentCustomProviderModel = z.infer<typeof AgentCustomProviderModelSchema>
+
+/**
+ * Provider id of a managed custom provider.
+ *
+ * The id doubles as the Pi provider id and as the `safeStorage` vault key, so
+ * one schema is shared by the file entry, the discovery request and the
+ * credential write instead of three near-identical rules that could drift.
+ */
+export const AgentCustomProviderIdSchema = z.string().trim().min(1).max(100).refine((value) => customProviderIdIssue(value) === null, { message: 'Provider id 只能包含小写字母、数字、点、下划线和短横线。' })
+export type AgentCustomProviderId = z.infer<typeof AgentCustomProviderIdSchema>
+
+/** One provider entry of the app-owned `models.json`. */
+export const AgentCustomProviderSchema = z.strictObject({
+  id: AgentCustomProviderIdSchema,
+  name: z.string().trim().max(200).default(''),
+  baseUrl: AgentCustomProviderUrlSchema,
+  api: AgentCustomProviderApiSchema,
+  models: z.array(AgentCustomProviderModelSchema).max(200).default([])
+})
+export type AgentCustomProvider = z.infer<typeof AgentCustomProviderSchema>
+
+/**
+ * Snapshot of the app-owned model configuration file.
+ *
+ * `unmanaged` lists provider ids that the Settings editor will not rewrite:
+ * entries carrying fields this app does not model (`headers`, `compat`,
+ * `modelOverrides`, a plain-HTTP LAN endpoint, …) or a file that is not valid
+ * JSON. They are shown read-only and preserved byte-for-byte on save, so hand
+ * edits survive an edit made from the UI.
+ */
+export const AgentCustomProvidersSchema = z.strictObject({
+  /** Absolute path of the file, shown so it can be inspected or hand-edited
+   * without guessing where it lives. */
+  path: z.string().max(1_024),
+  providers: z.array(AgentCustomProviderSchema).max(50).default([]),
+  unmanaged: z.array(z.string().max(100)).max(50).default([]),
+  /** Pi's own composition/parse error for this file, if any. A broken hand edit
+   * is reported here instead of silently yielding an empty catalog. */
+  configError: z.string().max(2_000).nullable().default(null)
+})
+export type AgentCustomProviders = z.infer<typeof AgentCustomProvidersSchema>
+
+/** The editor sends the complete managed set: providers absent from the list
+ * are removed from the file, which is what a delete in the UI has to mean. */
+export const AgentCustomProvidersSaveInputSchema = z.strictObject({
+  providers: z.array(AgentCustomProviderSchema).max(50)
+})
+export type AgentCustomProvidersSaveInput = z.infer<typeof AgentCustomProvidersSaveInputSchema>
+
+/**
+ * One model-discovery probe against a user-added provider.
+ *
+ * The payload is deliberately credential-free. Electron Main resolves the
+ * provider's stored key from `safeStorage` and attaches it to the private
+ * credential envelope for exactly one dispatch, so the key never appears in a
+ * renderer request, in `models.json`, in SQLite or in a log.
+ *
+ * `baseUrl` and `api` are carried here instead of being read from the file
+ * because the probe must be able to run against *unsaved* editor values: the
+ * point of discovery is to learn what an endpoint offers before its model list
+ * is committed to disk.
+ */
+export const AgentModelDiscoveryInputSchema = z.strictObject({
+  provider: AgentCustomProviderIdSchema,
+  baseUrl: AgentCustomProviderUrlSchema,
+  api: AgentCustomProviderApiSchema
+})
+export type AgentModelDiscoveryInput = z.infer<typeof AgentModelDiscoveryInputSchema>
+
+/**
+ * What one endpoint reported, as candidates only.
+ *
+ * Nothing here is persisted by Core: the renderer holds this list in component
+ * state, and a discovered model reaches `models.json` only after the user
+ * adopts it and saves. `models` reuses the stored model schema on purpose, so
+ * an adopted row carries exactly the fields the file is able to hold.
+ */
+export const AgentModelDiscoveryResultSchema = z.strictObject({
+  provider: AgentCustomProviderIdSchema,
+  baseUrl: AgentCustomProviderUrlSchema,
+  api: AgentCustomProviderApiSchema,
+  models: z.array(AgentCustomProviderModelSchema).max(200).default([]),
+  /** Redaction-safe, non-fatal note such as a truncated model list. Never an
+   * upstream body, and never a credential. */
+  notice: z.string().max(500).nullable().default(null),
+  discoveredAt: IsoDateSchema
+})
+export type AgentModelDiscoveryResult = z.infer<typeof AgentModelDiscoveryResultSchema>
+
+/** One interactive prompt raised while a login is in flight. `promptId` is the
+ * correlation token the renderer answers with; the app never re-derives it.
+ *
+ * A `select` never reaches the renderer while at least one option is offered:
+ * the sign-in method is picked in the auth interaction and the choice is
+ * reported as an `info` event, because a provider that asks "browser or device
+ * code" is asking a question with one answer the user wants (open the page).
+ * The renderer keeps the `select` rendering for a prompt with no options. */
+export const AgentAuthPromptKindSchema = z.enum(['text', 'secret', 'select', 'manual_code'])
+export type AgentAuthPromptKind = z.infer<typeof AgentAuthPromptKindSchema>
+
+export const AgentAuthPromptOptionSchema = z.strictObject({
+  value: z.string().max(500),
+  label: z.string().max(500),
+  description: z.string().max(1_000).nullable().default(null)
+})
+export type AgentAuthPromptOption = z.infer<typeof AgentAuthPromptOptionSchema>
+
+/**
+ * Login progress pushed Core → Main → renderer. It is a discriminated union on
+ * `kind` so an unknown future event cannot be mistaken for a prompt. `loginId`
+ * is app-generated (never Pi's) and scopes the event to one Settings dialog.
+ */
+export const AgentAuthEventSchema = z.discriminatedUnion('kind', [
+  z.strictObject({ kind: z.literal('started'), loginId: IdSchema, provider: AgentCredentialProviderSchema, authType: AgentAuthTypeSchema }),
+  z.strictObject({ kind: z.literal('info'), loginId: IdSchema, message: z.string().max(2_000) }),
+  z.strictObject({ kind: z.literal('auth_url'), loginId: IdSchema, url: z.string().max(4_000), instructions: z.string().max(2_000).nullable().default(null) }),
+  z.strictObject({ kind: z.literal('device_code'), loginId: IdSchema, userCode: z.string().max(200), verificationUri: z.string().max(4_000), expiresInSeconds: z.int().positive().nullable().default(null) }),
+  z.strictObject({ kind: z.literal('progress'), loginId: IdSchema, message: z.string().max(2_000) }),
+  z.strictObject({
+    kind: z.literal('prompt'), loginId: IdSchema, promptId: IdSchema, promptKind: AgentAuthPromptKindSchema,
+    message: z.string().max(2_000), placeholder: z.string().max(2_000).nullable().default(null), options: z.array(AgentAuthPromptOptionSchema).max(50).default([])
+  }),
+  z.strictObject({ kind: z.literal('done'), loginId: IdSchema, ok: z.boolean(), provider: AgentCredentialProviderSchema, error: z.string().max(2_000).nullable().default(null) })
+])
+export type AgentAuthEvent = z.infer<typeof AgentAuthEventSchema>
+
+export const AgentAuthLoginStartInputSchema = z.strictObject({ provider: AgentCredentialProviderSchema })
+export type AgentAuthLoginStartInput = z.infer<typeof AgentAuthLoginStartInputSchema>
+
+/** The app mints the login id, never Pi: the id scopes pushed events and must
+ * survive a Core restart without colliding with an earlier flow. */
+export const AgentAuthLoginStartResultSchema = z.strictObject({ loginId: IdSchema })
+export type AgentAuthLoginStartResult = z.infer<typeof AgentAuthLoginStartResultSchema>
+
+/** An empty `value` with `promptKind: 'text'` is a legitimate answer (a user
+ * clearing an optional field), so the value is not trimmed to a minimum. */
+export const AgentAuthLoginAnswerInputSchema = z.strictObject({
+  loginId: IdSchema,
+  promptId: IdSchema,
+  value: z.string().max(20_000)
+})
+export type AgentAuthLoginAnswerInput = z.infer<typeof AgentAuthLoginAnswerInputSchema>
+
+export const AgentAuthLoginCancelInputSchema = z.strictObject({ loginId: IdSchema })
+export type AgentAuthLoginCancelInput = z.infer<typeof AgentAuthLoginCancelInputSchema>
+
+export const AgentAuthLogoutInputSchema = z.strictObject({ provider: AgentCredentialProviderSchema })
+export type AgentAuthLogoutInput = z.infer<typeof AgentAuthLogoutInputSchema>
+
+/**
+ * The single app-wide Agent default row.
+ *
+ * These are the values a new conversation or schedule inherits when the caller
+ * does not override them, which is what lets the Agent page stop rendering its
+ * own model/thinking/permission pickers: the choice is made once, in Settings.
+ */
+export const AgentSettingsSchema = z.strictObject({
+  provider: AgentCredentialProviderSchema.nullable(),
+  model: z.string().max(300).nullable(),
+  thinking: z.string().max(50).nullable(),
+  permissionMode: AgentPermissionModeSchema,
+  toolProfile: AgentToolProfileSchema,
+  approvalPolicy: AgentApprovalPolicySchema,
+  responseLanguage: AgentResponseLanguageSchema,
+  updatedAt: IsoDateSchema,
+  revision: z.int().nonnegative()
+})
+export type AgentSettings = z.infer<typeof AgentSettingsSchema>
+
+/**
+ * Write input of the app-wide Agent defaults.
+ *
+ * The model selection is the exact pair (`provider` + `model`), never a fuzzy
+ * preference: a bare model id cannot say which endpoint serves it, so a model
+ * without a provider is rejected here instead of being resolved later to
+ * "whatever the runtime happens to have first". `agentModelSelector` composes
+ * the stored pair into the `provider/modelId` selector a runtime call uses.
+ */
+export const AgentSettingsSaveInputSchema = z.strictObject({
+  provider: AgentCredentialProviderSchema.nullable().default(null),
+  model: z.string().trim().max(300).nullable().default(null),
+  thinking: z.string().trim().max(50).nullable().default(null),
+  permissionMode: AgentPermissionModeSchema.default('auto'),
+  toolProfile: AgentToolProfileSchema.default('approved-write'),
+  approvalPolicy: AgentApprovalPolicySchema.default('never'),
+  responseLanguage: AgentResponseLanguageSchema.default('zh-CN'),
+  expectedRevision: z.int().nonnegative().nullable().default(null)
+}).refine((value) => value.model === null || value.provider !== null, {
+  message: '选择默认模型时必须同时指定 Provider：默认选择按 provider/modelId 精确保存，不会回退到其它模型。'
+})
+export type AgentSettingsSaveInput = z.infer<typeof AgentSettingsSaveInputSchema>
+
+/**
+ * The exact `provider/modelId` selector of a stored default, or `null` when the
+ * selection is incomplete (or deliberately unspecified).
+ *
+ * Dependency-free so the Settings form, the runtime dispatch and any future
+ * caller compose the selector identically, instead of each inventing its own
+ * "first available model" fallback.
+ */
+export function agentModelSelector(provider: string | null | undefined, model: string | null | undefined): string | null {
+  const trimmedProvider = (provider ?? '').trim()
+  const trimmedModel = (model ?? '').trim()
+  if (!trimmedProvider || !trimmedModel) return null
+  return `${trimmedProvider}/${trimmedModel}`
+}
 
 /** Proxy endpoints are optional, non-secret runtime metadata. Credentials in
  * proxy URLs are rejected so this configuration can safely live in SQLite. */
@@ -140,7 +438,7 @@ export type AgentEventKind = z.infer<typeof AgentEventKindSchema>
 export const AgentConnectorSchema = z.strictObject({
   id: IdSchema,
   runtime: AgentRuntimeKindSchema,
-  executablePath: z.string().max(4_000).nullable(),
+  /** SDK version of the embedded runtime. `null` before the first probe. */
   version: z.string().max(200).nullable(),
   enabled: z.boolean(),
   available: z.boolean(),
@@ -150,15 +448,15 @@ export const AgentConnectorSchema = z.strictObject({
   message: z.string().max(500),
   /** Volatile status from the installed CLI's own auth check. */
   authReady: z.boolean().optional(),
-  /** `app-isolated` means every probe and run used the workbench-owned profile
-   * directory. The renderer can therefore never show a user's personal
-   * `~/.pi`/`~/.codex` login as an app capability. */
+  /** `app-isolated` means every probe and run used the workbench-owned
+   * `agentDir`. The renderer can therefore never show a user's personal
+   * `~/.pi` login as an app capability. */
   profileSource: z.enum(['app-isolated', 'unspecified']).optional(),
   /** Redaction-safe profile directory label. */
   profileLabel: z.string().max(500).nullable().optional(),
   /** `app-safeStorage` when an app-owned runtime credential is configured. */
   authSource: z.enum(['app-safeStorage', 'cli-login', 'none']).optional(),
-  /** Interactive approval channel of this transport. Both supported CLIs run
+  /** Interactive approval channel of this transport. The embedded runtime runs
    * non-interactively, so a policy of `on-request` cannot prompt. */
   approvalChannel: z.enum(['none', 'interactive']).optional(),
   proxyEnabled: z.boolean(),
@@ -182,7 +480,6 @@ export type AgentConnector = z.infer<typeof AgentConnectorSchema>
 export const AgentConnectorSaveInputSchema = z.strictObject({
   id: IdSchema.optional(),
   runtime: AgentRuntimeKindSchema,
-  executablePath: z.string().trim().max(4_000).nullable().default(null),
   enabled: z.boolean().default(true),
   proxyEnabled: z.boolean().default(false),
   httpProxy: AgentProxyUrlSchema.default(null),
@@ -233,13 +530,13 @@ export const AgentRunRecordSchema = z.strictObject({
   conversationId: IdSchema.nullable(),
   idempotencyKey: z.string().max(512).nullable(),
   runtime: AgentRuntimeKindSchema,
-  transport: AgentRuntimeTransportSchema,
+  transport: AgentRunRecordTransportSchema,
   workflowKey: AgentWorkflowKeySchema,
   projectId: ProjectIdSchema.nullable(),
   paperIds: z.array(IdSchema),
   toolProfile: AgentToolProfileSchema,
-  permissionMode: AgentPermissionModeSchema.default('read-only'),
-  approvalPolicy: AgentApprovalPolicySchema.default('on-request'),
+  permissionMode: AgentPermissionModeSchema.default('auto'),
+  approvalPolicy: AgentApprovalPolicySchema.default('never'),
   /** Skill selected for this run. `null` means the workflow prompt only. */
   skillKey: z.string().max(100).nullable().default(null),
   /** Frozen skill identity resolved when the run started; a retry reuses it. */
@@ -271,9 +568,9 @@ export const AgentRunStartInputSchema = z.strictObject({
   projectId: ProjectIdSchema.nullable().default(null),
   paperIds: z.array(IdSchema).max(500).default([]),
   instructions: z.string().trim().min(1).max(100_000),
-  toolProfile: AgentToolProfileSchema.default('read-only'),
-  permissionMode: AgentPermissionModeSchema.default('read-only'),
-  approvalPolicy: AgentApprovalPolicySchema.default('on-request'),
+  toolProfile: AgentToolProfileSchema.default('approved-write'),
+  permissionMode: AgentPermissionModeSchema.default('auto'),
+  approvalPolicy: AgentApprovalPolicySchema.default('never'),
   idempotencyKey: z.string().trim().max(512).nullable().default(null),
   /** Set by `retry`: the run whose *stored* skill selection and snapshot this
    * run resumes from. The pinning data therefore always comes from the
@@ -295,8 +592,12 @@ export const AgentConversationSchema = z.strictObject({
   model: z.string().max(300).nullable(),
   assistantKey: z.string().max(300).nullable(),
   toolProfile: AgentToolProfileSchema,
-  permissionMode: AgentPermissionModeSchema.default('read-only'),
-  approvalPolicy: AgentApprovalPolicySchema.default('on-request'),
+  permissionMode: AgentPermissionModeSchema.default('auto'),
+  approvalPolicy: AgentApprovalPolicySchema.default('never'),
+  /** Path of the Pi session file this conversation continues. Pi's session
+   * JSONL is working state only: SQLite stays authoritative, and a missing or
+   * unreadable file degrades to a fresh session instead of failing the run. */
+  runtimeSessionId: z.string().max(4_000).nullable().default(null),
   status: AgentConversationStatusSchema,
   createdAt: IsoDateSchema,
   updatedAt: IsoDateSchema,
@@ -311,9 +612,9 @@ export const AgentConversationCreateInputSchema = z.strictObject({
   runtime: AgentRuntimeKindSchema.default('pi'),
   model: z.string().trim().max(300).nullable().default(null),
   assistantKey: z.string().trim().max(300).nullable().default('researcher'),
-  toolProfile: AgentToolProfileSchema.default('read-only'),
-  permissionMode: AgentPermissionModeSchema.default('read-only'),
-  approvalPolicy: AgentApprovalPolicySchema.default('on-request')
+  toolProfile: AgentToolProfileSchema.default('approved-write'),
+  permissionMode: AgentPermissionModeSchema.default('auto'),
+  approvalPolicy: AgentApprovalPolicySchema.default('never')
 })
 export type AgentConversationCreateInput = z.infer<typeof AgentConversationCreateInputSchema>
 
@@ -407,10 +708,11 @@ export type AgentRunEventsInput = z.infer<typeof AgentRunEventsInputSchema>
 /** The normalized run ledger.
  *
  * A run ledger entry is the provider-neutral, auditable projection of one
- * Codex/Pi CLI event (or one of its lifecycle mutations). The renderer's chat
- * view and trajectory view are both pure projections of this ledger, so the
- * mapping from raw CLI JSON to a record happens exactly once, inside
- * `@prw/agent-runtime`, instead of being guessed in the renderer. */
+ * embedded Pi `AgentSessionEvent` (or one of its lifecycle mutations). The
+ * renderer's chat view and trajectory view are both pure projections of this
+ * ledger, so the mapping from the SDK's event stream to a record happens
+ * exactly once, inside `@prw/agent-runtime`, instead of being guessed in the
+ * renderer. */
 export const AgentRecordKindSchema = z.enum([
   'user', 'assistant', 'reasoning', 'tool', 'subtool', 'system', 'context',
   'diagnostic', 'compacted', 'error', 'turn_end'
@@ -420,8 +722,8 @@ export type AgentRecordKind = z.infer<typeof AgentRecordKindSchema>
 export const AgentRecordStatusSchema = z.enum(['info', 'running', 'completed', 'failed', 'canceled'])
 export type AgentRecordStatus = z.infer<typeof AgentRecordStatusSchema>
 
-/** Token accounting as reported by the CLI. Every field stays nullable because
- * Codex and Pi report different subsets, and this value is never synthesized. */
+/** Token accounting as reported by the SDK. Every field stays nullable because
+ * providers report different subsets, and this value is never synthesized. */
 export const AgentUsageSchema = z.strictObject({
   input: z.int().nonnegative().nullable().default(null),
   output: z.int().nonnegative().nullable().default(null),
@@ -528,12 +830,12 @@ export const AgentApprovalSchema = z.strictObject({
   operation: z.string().min(1).max(200),
   summary: z.string().max(2_000),
   /** `auto-approved`/`denied` are not user decisions: they record what the
-   * non-interactive CLI transport actually did with the requested permission
-   * mode, so the ledger never shows an empty approval list as "nothing to
-   * approve" when a run silently escalated. */
+   * non-interactive embedded transport actually did with the requested
+   * permission mode, so the ledger never shows an empty approval list as
+   * "nothing to approve" when a run silently escalated. */
   status: z.enum(['pending', 'auto-approved', 'denied', 'approved', 'rejected', 'expired']),
   /** Policy that produced this row. */
-  policy: AgentApprovalPolicySchema.default('on-request'),
+  policy: AgentApprovalPolicySchema.default('never'),
   /** Machine-readable reason (`cli-non-interactive`, `security-gate`, ...). */
   reason: z.string().max(200).nullable().default(null),
   createdAt: IsoDateSchema,
@@ -547,6 +849,115 @@ export const AgentApprovalDecisionInputSchema = z.strictObject({
 })
 
 export type AgentApprovalDecisionInput = z.infer<typeof AgentApprovalDecisionInputSchema>
+
+/**
+ * Which external write an Agent run is asking the user to confirm.
+ *
+ * The Agent may read Zotero and the Obsidian Vault, and may build a preview of a
+ * write, but it can never perform the write on its own: an external user's data
+ * is not something a model gets to change without a person saying yes. Each kind
+ * names the frozen operation, so approving replays exactly the write the user
+ * was shown rather than re-deriving it from a later selection.
+ */
+export const AgentExternalActionKindSchema = z.enum([
+  /** A Zotero import, from either route: `zotero.paperToZotero.execute` for
+   * selected Papers or `literature.stagingToZotero.execute` for search-staging
+   * records. The two routes keep separate preview stores, and the frozen
+   * payload records which one produced the row. */
+  'zotero-import',
+  /** New Obsidian note through `notes.write`. */
+  'obsidian-note',
+  /** Managed frontmatter of an existing note through `notes.metadata.apply`. */
+  'obsidian-metadata'
+])
+export type AgentExternalActionKind = z.infer<typeof AgentExternalActionKindSchema>
+
+export const AgentExternalActionStatusSchema = z.enum([
+  /** Waiting on a user decision in the conversation. */
+  'pending',
+  /** Decided, write in flight. A crash here leaves a row that must be retried. */
+  'approved',
+  /** The user declined; nothing was written. */
+  'rejected',
+  /** The write completed; `receipt` describes what changed. */
+  'executed',
+  /** Transport/permission failure with no partial write. */
+  'failed',
+  /** The frozen target changed underneath the preview (external edit/revision). */
+  'conflict',
+  /** The decision window closed before anyone decided. */
+  'expired'
+])
+export type AgentExternalActionStatus = z.infer<typeof AgentExternalActionStatusSchema>
+
+/**
+ * One pending external write.
+ *
+ * `summary` is the redacted text the confirmation card shows: target, counts and
+ * collection/path. It never carries a credential, and for Obsidian never the
+ * note body. The frozen execute payload stays in the database (SQLite is the
+ * authoritative store) and is not part of this shape.
+ */
+export const AgentExternalActionSchema = z.strictObject({
+  id: IdSchema,
+  runId: IdSchema,
+  conversationId: IdSchema.nullable(),
+  kind: AgentExternalActionKindSchema,
+  /** The Zotero profile or Obsidian Vault the write targets. */
+  profileId: IdSchema,
+  status: AgentExternalActionStatusSchema,
+  summary: z.string().max(2_000),
+  /** Zotero's own preview id, so the receipt can be traced back to the preview. */
+  previewId: IdSchema.nullable(),
+  createdAt: IsoDateSchema,
+  /** After this instant the action can no longer be approved. */
+  expiresAt: IsoDateSchema,
+  decidedAt: IsoDateSchema.nullable(),
+  /** Per-item outcome of the write; `null` until it ran. */
+  receipt: z.record(z.string(), z.unknown()).nullable(),
+  /** Redacted failure reason. Never a request body or a response excerpt. */
+  error: z.string().max(2_000),
+  /** CAS lock, matching the rest of the app's revision style. */
+  revision: z.int().nonnegative()
+})
+export type AgentExternalAction = z.infer<typeof AgentExternalActionSchema>
+
+export const AgentExternalActionsInputSchema = z.strictObject({
+  runId: IdSchema.optional(),
+  conversationId: IdSchema.optional(),
+  status: AgentExternalActionStatusSchema.optional()
+})
+export type AgentExternalActionsInput = z.infer<typeof AgentExternalActionsInputSchema>
+
+/**
+ * The user's decision on one pending external write.
+ *
+ * An Agent run cannot reach this RPC: the model's only way into the workbench is
+ * the MCP tool list, the decision method is registered on the Agent RPC surface
+ * only, and no MCP tool forwards it. The decision itself is still locked three
+ * ways — pending status, expiry and `expectedRevision` — so a stale card or a
+ * double click resolves to a conflict instead of a second write.
+ */
+export const AgentExternalActionDecideInputSchema = z.strictObject({
+  id: IdSchema,
+  decision: z.enum(['approve', 'reject']),
+  expectedRevision: z.int().nonnegative()
+})
+export type AgentExternalActionDecideInput = z.infer<typeof AgentExternalActionDecideInputSchema>
+
+/**
+ * What an Agent tool gets back after requesting an external write.
+ *
+ * `message` is part of the contract on purpose: the tool result is the only
+ * thing the model is guaranteed to read, so the fact that nothing has been
+ * written yet travels with the data instead of relying on the model to infer it
+ * from an empty receipt.
+ */
+export const AgentExternalActionRequestResultSchema = z.strictObject({
+  action: AgentExternalActionSchema,
+  message: z.string().max(2_000)
+})
+export type AgentExternalActionRequestResult = z.infer<typeof AgentExternalActionRequestResultSchema>
 
 export const AutomationRuleSchema = z.strictObject({
   id: IdSchema,
@@ -568,8 +979,8 @@ export const AutomationRuleSchema = z.strictObject({
    *`AgentResponseLanguageSchema`. */
   responseLanguage: AgentResponseLanguageSchema.default('zh-CN'),
   outputFolder: z.string().trim().max(180).default(DEFAULT_DAILY_PUSH_SCHEDULE_INPUT.outputFolder),
-  permissionMode: AgentPermissionModeSchema.default('read-only'),
-  approvalPolicy: AgentApprovalPolicySchema.default('on-request'),
+  permissionMode: AgentPermissionModeSchema.default('auto'),
+  approvalPolicy: AgentApprovalPolicySchema.default('never'),
   projectId: ProjectIdSchema.nullable(),
   cron: z.string().min(1).max(200),
   timezone: z.string().min(1).max(100),
@@ -601,8 +1012,8 @@ export const AutomationRuleSaveInputSchema = z.strictObject({
    * folder never reaches the coordinator. The read-side `AutomationRuleSchema`
    * stays tolerant so a legacy row cannot make the task list unreadable. */
   outputFolder: AgentOutputFolderSchema.default(DEFAULT_DAILY_PUSH_SCHEDULE_INPUT.outputFolder),
-  permissionMode: AgentPermissionModeSchema.default('read-only'),
-  approvalPolicy: AgentApprovalPolicySchema.default('on-request'),
+  permissionMode: AgentPermissionModeSchema.default('auto'),
+  approvalPolicy: AgentApprovalPolicySchema.default('never'),
   projectId: ProjectIdSchema.nullable().default(null),
   cron: z.string().trim().min(1).max(200),
   timezone: z.string().trim().min(1).max(100),
@@ -725,6 +1136,29 @@ export const AgentRpcMethodPayloadSchemas = {
   'agent.bindings.list': z.null(),
   'agent.credentials.status': z.null(),
   'agent.credentials.save': AgentCredentialSaveInputSchema,
+  // Provider/model catalog generated from the embedded Pi SDK. It is
+  // credential-free, so it can be cached by the renderer without ever leaking a
+  // secret or going stale on a vault write.
+  'agent.models.catalog': z.null(),
+  // Interactive login (OAuth device code / browser URL / host prompts).
+  // `login.start` returns the app-generated `loginId`; every later event is
+  // pushed to the renderer and filtered by that id.
+  'agent.models.login.start': AgentAuthLoginStartInputSchema,
+  'agent.models.login.answer': AgentAuthLoginAnswerInputSchema,
+  'agent.models.login.cancel': AgentAuthLoginCancelInputSchema,
+  'agent.models.logout': AgentAuthLogoutInputSchema,
+  // User-added providers, persisted to the app-owned models.json so the
+  // configuration survives a reinstall of the database and can be hand-edited.
+  'agent.models.custom.get': z.null(),
+  'agent.models.custom.save': AgentCustomProvidersSaveInputSchema,
+  // Endpoint probe for one user-added provider. Credential-bearing on the
+  // private Main→Core envelope only: the public payload names the provider so
+  // Main can resolve its key, and never carries the key itself.
+  'agent.models.custom.discover': AgentModelDiscoveryInputSchema,
+  // App-wide Agent defaults (default provider/model/thinking, permission mode,
+  // tool profile, approval policy, response language).
+  'agent.settings.get': z.null(),
+  'agent.settings.save': AgentSettingsSaveInputSchema,
   'agent.bindings.save': AgentBindingSaveInputSchema,
   'agent.proxyProfiles.list': z.null(),
   'agent.proxyProfiles.save': AgentProxyProfileSaveInputSchema,
@@ -740,6 +1174,11 @@ export const AgentRpcMethodPayloadSchemas = {
   'agent.runs.retry': z.strictObject({ runId: IdSchema }),
   'agent.approvals.list': z.strictObject({ runId: IdSchema.optional() }),
   'agent.approvals.decide': AgentApprovalDecisionInputSchema,
+  // Pending external writes (Zotero/Obsidian). The Agent creates them by
+  // freezing a preview; only a user decision may replay that preview, and the
+  // decision is not reachable as an MCP tool.
+  'agent.externalActions.list': AgentExternalActionsInputSchema,
+  'agent.externalActions.decide': AgentExternalActionDecideInputSchema,
   'automation.rules.list': z.null(),
   'automation.skills.list': z.null(),
   'automation.rules.save': AutomationRuleSaveInputSchema,
@@ -771,23 +1210,38 @@ export const AgentRpcRequestSchema = z.discriminatedUnion('method', [
 export type AgentRpcRequest = z.infer<typeof AgentRpcRequestSchema>
 
 /**
+ * Upper bound on credentials in one Main→Core envelope.
+ *
+ * The bound exists so a malformed or hostile Main payload cannot be unbounded;
+ * it is deliberately far above any realistic number of configured providers.
+ * A tighter number is a correctness bug rather than a hardening measure: runs
+ * and logins are dispatched with every stored credential on purpose, so a user
+ * with more providers than the bound would see every model call fail with a
+ * schema error that has nothing to do with their configuration.
+ */
+export const AGENT_CREDENTIAL_ENVELOPE_MAX_ENTRIES = 64
+
+/**
  * Private Main→Core envelope for Agent RPCs that need a credential.
  *
  * Electron Main owns the `safeStorage` vault, so it resolves the credential for
- * the runtime the request targets and attaches it for exactly one dispatch.
- * The renderer never sees this envelope, Core never stores it, and the secret
- * is dropped as soon as the child process has started. An empty `credentials`
- * list is a valid, meaningful request: Core then fails closed instead of
- * reaching for the user's personal CLI login.
+ * the provider the request targets and attaches it for exactly one dispatch.
+ * The renderer never sees this envelope, Core never persists it, and the secret
+ * is handed to the app-owned `CredentialStore` only for the lifetime of the
+ * session that needs it. An empty `credentials` list is a valid, meaningful
+ * request: Core then fails closed instead of reaching for the user's personal
+ * `~/.pi` login.
  */
 export const AgentCredentialEnvelopeSchema = z.strictObject({
   type: z.literal('prw.agent-rpc-with-credential'),
   request: AgentRpcRequestSchema,
   credentials: z.array(z.strictObject({
-    runtime: AgentRuntimeKindSchema,
     provider: AgentCredentialProviderSchema,
-    secret: z.string().min(1).max(20_000)
-  })).max(4).default([])
+    /** Pi's own credential shape, validated by the SDK on read. It is passed
+     * through opaquely here because OAuth refresh material is provider-specific
+     * and re-declaring it would fork Pi's credential contract. */
+    credential: z.record(z.string(), z.unknown())
+  })).max(AGENT_CREDENTIAL_ENVELOPE_MAX_ENTRIES).default([])
 })
 export type AgentCredentialEnvelope = z.infer<typeof AgentCredentialEnvelopeSchema>
 
@@ -825,6 +1279,37 @@ export interface WorkbenchAgentApiV1 {
     status(): Promise<AgentCredentialStatus[]>
     save(input: AgentCredentialSaveInput): Promise<AgentCredentialStatus[]>
   }
+  /** Provider/model catalog and interactive login. Both are backed by the
+   * embedded Pi SDK; the renderer never sees a token, only progress events. */
+  models: {
+    catalog(): Promise<AgentModelCatalogEntry[]>
+    loginStart(input: AgentAuthLoginStartInput): Promise<AgentAuthLoginStartResult>
+    loginAnswer(input: AgentAuthLoginAnswerInput): Promise<void>
+    loginCancel(input: AgentAuthLoginCancelInput): Promise<void>
+    logout(input: AgentAuthLogoutInput): Promise<AgentCredentialStatus[]>
+    /** Custom provider entries of the app-owned models.json. Reading is safe
+     * while the file is being edited by hand: a broken file is reported, not
+     * thrown away. */
+    customProviders: {
+      get(): Promise<AgentCustomProviders>
+      save(input: AgentCustomProvidersSaveInput): Promise<AgentCustomProviders>
+      /** Ask one endpoint which models it advertises. The key travels beside
+       * the payload in Main's private credential envelope; the results are
+       * candidates only and are not written anywhere until the user adopts
+       * them and saves `models.json`. */
+      discover(input: AgentModelDiscoveryInput): Promise<AgentModelDiscoveryResult>
+    }
+    /** Login progress for every in-flight login. The listener filters by
+     * `loginId`; the app tolerates a missed early event by treating the
+     * absence of `done` as "still running". */
+    onAuthEvent(listener: (event: AgentAuthEvent) => void): () => void
+  }
+  /** App-wide Agent defaults, edited in Settings and inherited by new
+   * conversations and schedules. */
+  settings: {
+    get(): Promise<AgentSettings>
+    save(input: AgentSettingsSaveInput): Promise<AgentSettings>
+  }
   proxyProfiles: { list(): Promise<AgentProxyProfile[]>; save(input: AgentProxyProfileSaveInput): Promise<AgentProxyProfile> }
   proxyBindings: { list(): Promise<AgentProxyBinding[]>; save(input: AgentProxyBindingSaveInput): Promise<AgentProxyBinding> }
   runs: {
@@ -843,6 +1328,12 @@ export interface WorkbenchAgentApiV1 {
   approvals: {
     list(runId?: string): Promise<AgentApproval[]>
     decide(input: AgentApprovalDecisionInput): Promise<AgentApproval>
+  }
+  /** External writes the Agent prepared; the card in the conversation decides
+   * them. Nothing leaves the machine until one is approved. */
+  externalActions: {
+    list(input?: AgentExternalActionsInput): Promise<AgentExternalAction[]>
+    decide(input: AgentExternalActionDecideInput): Promise<AgentExternalAction>
   }
   automation: {
     rules(): Promise<AutomationRule[]>

@@ -1,11 +1,12 @@
 import { randomUUID } from 'node:crypto'
 import { dirname, isAbsolute, join, relative, resolve, sep } from 'node:path'
 import { mkdir, writeFile } from 'node:fs/promises'
-import type { AgentLedgerPush, AgentRpcMethod, AgentRpcRequest, RpcRequest, RpcResponse } from '@prw/contracts'
+import type { AgentAuthEvent, AgentLedgerPush, AgentRpcMethod, AgentRpcRequest, RpcRequest, RpcResponse } from '@prw/contracts'
 import {
   AgentCredentialSaveInputSchema,
   AgentLedgerPushSchema,
   AgentLedgerSubscriptionInputSchema,
+  AgentModelDiscoveryInputSchema,
   AgentRpcRequestSchema,
   // The one allowlist shared by preload, Main and renderer: only absolute
   // http/https URLs without credentials may reach `shell.openExternal`.
@@ -46,7 +47,7 @@ import { z, ZodError } from 'zod'
 import type { CredentialRpcCredential } from '../core/client.js'
 import { appError } from '../core/errors.js'
 import {
-  AgentCredentialUnsupportedError,
+  AgentCredentialInvalidError,
   listAgentCredentialStatuses,
   resolveAgentCredentials,
   saveAgentCredential
@@ -63,17 +64,40 @@ export const WORKBENCH_AGENT_RPC_CHANNEL = 'workbench:agent:v1'
  * pushes back on a separate, one-way channel. */
 export const WORKBENCH_AGENT_LEDGER_SUBSCRIBE_CHANNEL = 'workbench:agent:ledger-subscribe'
 export const WORKBENCH_AGENT_LEDGER_PUSH_CHANNEL = 'workbench:agent:ledger-push'
+/** Login progress pushed Core → Main → renderer. A login is long-lived and can
+ * outlive the dialog that started it, so it is a push rather than a response. */
+export const WORKBENCH_AGENT_AUTH_CHANNEL = 'workbench:agent:auth'
 
 /**
- * Agent methods that may run a CLI child process and therefore receive the
- * app-owned runtime credential. The set stays explicit so a credential can
- * never be attached to a local CRUD or status request by mistake.
+ * Agent methods that may need the app-owned model credential.
+ *
+ * The set stays explicit so a credential can never be attached to a local CRUD
+ * or status request by mistake. `login.answer` and `login.cancel` are absent on
+ * purpose: answering a prompt and abandoning a flow need no secret, and leaving
+ * them out keeps the vault from being opened on every keystroke of a dialog.
  */
 const AGENT_CREDENTIAL_METHODS: ReadonlySet<AgentRpcMethod> = new Set([
   'agent.connectors.list',
   'agent.connectors.test',
   'agent.runs.start',
-  'agent.runs.retry'
+  'agent.runs.retry',
+  'agent.models.login.start',
+  'agent.models.logout'
+])
+
+/**
+ * Agent methods whose credential is not the whole vault, but the one provider
+ * their payload names.
+ *
+ * A discovery probe is the reason this exists. Attaching every stored credential
+ * would be wrong twice over: a probe would carry unrelated providers' keys to
+ * the endpoint under test, and the per-request envelope would be needlessly
+ * large. Scoping the lookup by the requested provider fixes both without
+ * weakening the "Core receives no vault" rule — the vault is still read only
+ * here, in Main.
+ */
+const AGENT_PROVIDER_CREDENTIAL_METHODS: ReadonlySet<AgentRpcMethod> = new Set([
+  'agent.models.custom.discover'
 ])
 
 interface RegisterRpcOptions {
@@ -93,15 +117,17 @@ export interface CoreRpcTransport {
     method: AgentRpcMethod,
     payload: unknown,
     credentials: readonly {
-      readonly runtime: 'codex' | 'pi'
       readonly provider: string
-      readonly secret: string
+      readonly credential: Record<string, unknown>
     }[]
   ): Promise<RpcResponse>
   /** Subscribe to normalized ledger pushes originating in the Core process.
    * Main is the only subscriber; it forwards to window webContents that asked
    * for the specific run. */
   onLedgerPush?(listener: (push: AgentLedgerPush) => void): () => void
+  /** Subscribe to interactive login progress. Every window may listen; each
+   * renderer filters by the `loginId` it started. */
+  onAuthEvent?(listener: (event: AgentAuthEvent) => void): () => void
   /** Main-only credential transport.  The implementation wraps the public
    * request in a typed side-channel envelope; credentials must never be put in
    * the public payload passed to request(). */
@@ -525,32 +551,56 @@ export function registerRpcHandler(options: RegisterRpcOptions): () => void {
           error: appError('CORE_UNAVAILABLE', 'The Agent service is not available.', true)
         }
       }
-      // App-owned runtime credentials live in Main's safeStorage vault. Core
+      // App-owned model credentials live in Main's safeStorage vault. Core
       // refuses the `agent.credentials.*` methods by design, so they are
       // answered locally and the secret never enters the renderer or a payload.
       if (parsed.data.method === 'agent.credentials.status' || parsed.data.method === 'agent.credentials.save') {
         try {
+          const catalog = await providerCatalog(requestAgent)
           const statuses = parsed.data.method === 'agent.credentials.status'
-            ? await listAgentCredentialStatuses(options.credentialVault)
-            : await saveAgentCredential(options.credentialVault, AgentCredentialSaveInputSchema.parse(parsed.data.payload))
+            ? await listAgentCredentialStatuses(options.credentialVault, catalog)
+            : await saveAgentCredential(options.credentialVault, AgentCredentialSaveInputSchema.parse(parsed.data.payload), catalog)
           return { id: parsed.data.id, ok: true, data: statuses }
         } catch (error) {
           return { id: parsed.data.id, ok: false, error: normalizeMainError(error) }
         }
       }
       const requestAgentWithCredential = options.client.requestAgentWithCredential
-      if (requestAgentWithCredential !== undefined && AGENT_CREDENTIAL_METHODS.has(parsed.data.method)) {
+      if (
+        requestAgentWithCredential !== undefined &&
+        (AGENT_CREDENTIAL_METHODS.has(parsed.data.method) || AGENT_PROVIDER_CREDENTIAL_METHODS.has(parsed.data.method))
+      ) {
         try {
-          // Every configured credential is attached on purpose: Core resolves
-          // the runtime a request actually uses (a retry replays the original
-          // runtime), so Main does not have to guess it here.
-          const credentials = await resolveAgentCredentials(options.credentialVault)
-          return await requestAgentWithCredential.call(
+          // A provider-scoped method names the only provider whose key may travel.
+          // The payload is re-parsed here so a malformed request fails before the
+          // vault is opened, and the id is read from the validated value rather
+          // than from the raw payload.
+          const scopedProvider = AGENT_PROVIDER_CREDENTIAL_METHODS.has(parsed.data.method)
+            ? AgentModelDiscoveryInputSchema.parse(parsed.data.payload).provider
+            : null
+          // Runs and logins get every configured credential on purpose: Core
+          // resolves the provider a request actually uses (a retry replays the
+          // original model), so Main does not have to guess it here.
+          const all = await resolveAgentCredentials(options.credentialVault)
+          const credentials = scopedProvider === null ? all : all.filter((entry) => entry.provider === scopedProvider)
+          const response = await requestAgentWithCredential.call(
             options.client,
             parsed.data.method,
             parsed.data.payload,
             credentials
           )
+          if (!response.ok) return response
+          // Logout is answered with the post-logout status list rather than
+          // `null`, because the vault that just changed lives here: returning an
+          // empty success would make the renderer re-request what Main already
+          // knows, and a stale list would keep showing a provider as configured
+          // after its credential is gone. Core has already written the removal
+          // through the credential-write channel, so this only re-reads it.
+          if (parsed.data.method === 'agent.models.logout') {
+            const catalog = await providerCatalog(requestAgent)
+            return { id: parsed.data.id, ok: true, data: await listAgentCredentialStatuses(options.credentialVault, catalog) }
+          }
+          return response
         } catch (error) {
           return { id: parsed.data.id, ok: false, error: normalizeMainError(error) }
         }
@@ -568,6 +618,15 @@ export function registerRpcHandler(options: RegisterRpcOptions): () => void {
       if (!subscription.runIds.has(push.runId)) continue
       if (subscription.webContents.isDestroyed()) continue
       subscription.webContents.send(WORKBENCH_AGENT_LEDGER_PUSH_CHANNEL, push)
+    }
+  })
+  // Auth progress goes to every window instead of a subscription list: a login
+  // dialog may be closed and reopened while the flow keeps running, and the
+  // window that asked for it is not necessarily the only one able to show it.
+  const disposeAuthPush = options.client.onAuthEvent?.((event) => {
+    for (const window of BrowserWindow.getAllWindows()) {
+      if (window.isDestroyed()) continue
+      window.webContents.send(WORKBENCH_AGENT_AUTH_CHANNEL, event)
     }
   })
   ipcMain.handle(
@@ -605,6 +664,7 @@ export function registerRpcHandler(options: RegisterRpcOptions): () => void {
 
   return () => {
     disposeLedgerPush?.()
+    disposeAuthPush?.()
     ledgerSubscriptions.clear()
     ipcMain.removeHandler(WORKBENCH_AGENT_LEDGER_SUBSCRIBE_CHANNEL)
     ipcMain.removeHandler(WORKBENCH_RPC_CHANNEL)
@@ -707,11 +767,32 @@ async function saveTextFile(
   }
 }
 
-function normalizeMainError(error: unknown) {
-  if (error instanceof CredentialVaultError) {
+/**
+ * Provider identity and display names, as the embedded SDK sees them.
+ *
+ * The vault stores only provider ids and opaque credentials, so the human-facing
+ * name has to come from the catalog. A catalog failure is not fatal: credential
+ * status is still answerable without it, and an offline Core must not make the
+ * Settings page unable to show (or clear) a stored key. In that case stored
+ * providers fall back to their own id as the label.
+ */
+async function providerCatalog(
+  requestAgent: (method: AgentRpcMethod, payload: unknown) => Promise<RpcResponse>
+): Promise<Array<{ provider: string; name: string }>> {
+  try {
+    const response = await requestAgent('agent.models.catalog', null)
+    if (!response.ok) return []
+    const entries = z.array(z.object({ provider: z.string(), name: z.string() })).safeParse(response.data)
+    return entries.success ? entries.data : []
+  } catch {
+    return []
+  }
+}
+
+function normalizeMainError(error: unknown) {  if (error instanceof CredentialVaultError) {
     return appError(error.code, error.message)
   }
-  if (error instanceof AgentCredentialUnsupportedError) {
+  if (error instanceof AgentCredentialInvalidError) {
     return appError(error.code, error.message)
   }
   if (error instanceof ExistingIntegrationLocationError) {
