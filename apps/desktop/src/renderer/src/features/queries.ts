@@ -20,6 +20,8 @@ import type {
   Schedule,
   ZoteroCollectionPage,
   ZoteroItemPage,
+  IntelDailyConfig,
+  IntelDailyOverview,
   CalendarEvent,
   CalendarRangeInput,
   CalendarMarker,
@@ -32,6 +34,8 @@ import type {
   SearchSession,
   LiteratureStagingPage,
   AgentInboxItem
+  , RssItemsPage
+  , RssItemsQueryInput
 } from '@prw/contracts'
 import { ProjectIdSchema } from '@prw/contracts'
 import { getWorkbenchAgentApi, getWorkbenchApi } from '../lib/workbench'
@@ -69,6 +73,9 @@ export const queryKeys = {
    * part of the shared shape: change it here only. */
   automationRunHistory: ['automation-run-history'] as const,
   automationRules: ['automation-rules'] as const,
+  intelDailyConfig: ['intel-daily', 'config'] as const,
+  intelDailyOverview: ['intel-daily', 'overview'] as const,
+  rssItems: (input: RssItemsQueryInput) => ['rss-items', input] as const,
   workspaceStatus: ['workspace-status'] as const,
   /** Keys for legacy AI hooks. These queries never call a removed V2 route. */
   unavailable: (feature: 'prompt-templates' | 'ai-providers' | 'agent-runs' | 'schedules') => ['unavailable', feature] as const
@@ -295,6 +302,23 @@ export function useLiteratureStagingQuery(query = '', projectId?: string | null)
 
 export function useWorkspaceStatusQuery(): UseQueryResult<WorkspaceServiceStatus> {
   return useQuery({ queryKey: queryKeys.workspaceStatus, queryFn: () => getWorkbenchApi().workspace.status() })
+}
+
+export function useIntelDailyConfigQuery(): UseQueryResult<IntelDailyConfig> {
+  return useQuery({ queryKey: queryKeys.intelDailyConfig, queryFn: () => getWorkbenchApi().intelDaily.getConfig(), staleTime: 30_000 })
+}
+
+export function useIntelDailyOverviewQuery(): UseQueryResult<IntelDailyOverview> {
+  return useQuery({ queryKey: queryKeys.intelDailyOverview, queryFn: () => getWorkbenchApi().intelDaily.overview(), staleTime: 15_000 })
+}
+
+export function useRssItemsQuery(input: RssItemsQueryInput): UseQueryResult<RssItemsPage> {
+  return useQuery({
+    queryKey: queryKeys.rssItems(input),
+    queryFn: () => getWorkbenchApi().rss.sources.query(input),
+    staleTime: 15_000,
+    placeholderData: (previous) => previous
+  })
 }
 
 export function useResourceLinksQuery(resource?: ResourceRef | null): UseQueryResult<ResourceLink[]> {

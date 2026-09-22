@@ -1762,7 +1762,7 @@ export type ResourceLinkListInput = z.infer<typeof ResourceLinkListInputSchema>
 export const RemoveResourceLinkInputSchema = z.object({ id: IdSchema })
 export type RemoveResourceLinkInput = z.infer<typeof RemoveResourceLinkInputSchema>
 
-export const WorkspaceRouteSchema = z.enum(['dashboard', 'calendar', 'tasks', 'project', 'literature', 'obsidian', 'zotero', 'agent', 'automation', 'settings'])
+export const WorkspaceRouteSchema = z.enum(['dashboard', 'calendar', 'tasks', 'project', 'literature', 'obsidian', 'zotero', 'agent', 'automation', 'intel-daily', 'settings'])
 export type WorkspaceRoute = z.infer<typeof WorkspaceRouteSchema>
 export const WorkspaceTabContextSchema = z.object({
   projectId: ProjectIdSchema.nullable(),
@@ -2105,6 +2105,76 @@ export const SystemSaveTextFileResultSchema = z.strictObject({
 })
 export type SystemSaveTextFileResult = z.infer<typeof SystemSaveTextFileResultSchema>
 
+/** ============ 情报日报（Intel Daily）============
+ * The workbench reads the TrendRadar engine's per-day SQLite output
+ * (`output/news/<date>.db` hot-list items, `output/rss/<date>.db` RSS items)
+ * and re-applies the same keyword groups the engine uses for pushing, so the
+ * three sections mirror what is delivered to Feishu. All data stays read-only:
+ * the app never writes to the engine's database. */
+
+export const IntelDailySourceStatusSchema = z.enum(['not_configured', 'not_found', 'ready'])
+export type IntelDailySourceStatus = z.infer<typeof IntelDailySourceStatusSchema>
+
+/** 前沿瞭望 / 热点日报 / 科技周报 — matches the mobile section list the user
+ * migrated into TrendRadar. `hot` covers hot-list platforms only, `frontier`
+ * covers RSS + hot-list sources with the frontier keyword group, `tech` covers
+ * RSS (papers/science) with a 7-day window. */
+export const IntelDailySectionIdSchema = z.enum(['frontier', 'hot', 'tech'])
+export type IntelDailySectionId = z.infer<typeof IntelDailySectionIdSchema>
+
+export const IntelDailyItemSchema = z.strictObject({
+  id: z.string().min(1),
+  title: z.string().min(1),
+  kind: z.enum(['rss', 'hot']),
+  sourceId: z.string(),
+  sourceName: z.string().default(''),
+  url: z.string().default(''),
+  /** RSS 发布时间（ISO）；热榜条目没有发布时间，用首次采集时间兜底。 */
+  publishedAt: z.string().nullable(),
+  crawledAt: z.string(),
+  rank: z.number().int().nonnegative().default(0),
+  summary: z.string().default(''),
+  author: z.string().default('')
+})
+export type IntelDailyItem = z.infer<typeof IntelDailyItemSchema>
+
+export const IntelDailySectionSchema = z.strictObject({
+  id: IntelDailySectionIdSchema,
+  name: z.string().min(1),
+  windowHours: z.number().int().positive(),
+  itemCount: z.number().int().nonnegative(),
+  items: z.array(IntelDailyItemSchema)
+})
+export type IntelDailySection = z.infer<typeof IntelDailySectionSchema>
+
+export const IntelDailySourceSchema = z.strictObject({
+  status: IntelDailySourceStatusSchema,
+  rootDir: z.string().nullable(),
+  /** 窗口内实际读取到的按天数据库文件名（用于诊断数据源状态）。 */
+  newsDbDates: z.array(z.string()),
+  rssDbDates: z.array(z.string()),
+  checkedAt: z.string()
+})
+export type IntelDailySource = z.infer<typeof IntelDailySourceSchema>
+
+export const IntelDailyOverviewSchema = z.strictObject({
+  source: IntelDailySourceSchema,
+  sections: z.array(IntelDailySectionSchema)
+})
+export type IntelDailyOverview = z.infer<typeof IntelDailyOverviewSchema>
+
+export const IntelDailyConfigSchema = z.strictObject({
+  /** TrendRadar 仓库根目录（含 `output/` 与 `config/`）；null 表示未配置。 */
+  rootDir: z.string().trim().max(1024).nullable()
+})
+export type IntelDailyConfig = z.infer<typeof IntelDailyConfigSchema>
+
+export const IntelDailySetConfigInputSchema = z.strictObject({
+  /** 空字符串表示清除配置。 */
+  rootDir: z.string().trim().max(1024)
+})
+export type IntelDailySetConfigInput = z.infer<typeof IntelDailySetConfigInputSchema>
+
 /** Public V2 method allow-list. AI/provider/prompt/agent/schedule/job routes
  * are intentionally absent; their legacy tables and DTOs remain migratable. */
 export const WorkspaceApiV2Methods = [
@@ -2134,6 +2204,10 @@ export const WorkspaceApiV2Methods = [
   'zotero.paperToZotero.preview', 'zotero.paperToZotero.execute',
   'zotero.deleteRemote.preview', 'zotero.deleteRemote.execute',
   'papers.importFromZotero',
+  'intelDaily.getConfig', 'intelDaily.setConfig', 'intelDaily.overview',
+  'feishu.saveApp', 'feishu.getStatus', 'feishu.beginBind', 'feishu.unbind', 'feishu.sendTest',
+  'rss.sources.list', 'rss.sources.preview', 'rss.sources.save', 'rss.sources.remove', 'rss.sources.setEnabled',
+  'rss.sources.setDisplayEnabled', 'rss.categories.list', 'rss.categories.save', 'rss.categories.remove', 'rss.items.query', 'rss.items.refresh',
   'knowledge.engines.list', 'knowledge.engines.save', 'knowledge.engines.test',
   'workspace.status', 'system.openExternal', 'system.health', 'system.selectFolder', 'system.revealPath', 'system.saveTextFile'
 ] as const

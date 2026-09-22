@@ -1566,6 +1566,374 @@ const migrations: readonly Migration[] = [
       CREATE INDEX agent_external_actions_status_expires_idx
         ON agent_external_actions(status, expires_at);
     `
+  },
+  {
+    id: 33,
+    name: 'feishu_daily_msg_workflow',
+    disableForeignKeys: true,
+    sql: `
+      -- 每日文献推送（消息侧）工作流 literature_daily_msg：与 daily_digest→Obsidian
+      -- 管线完全隔离的独立规则，消息经飞书 bot 发送，不写 Vault。
+      --
+      -- SQLite 不能原地修改 CHECK 约束，所以 agent_runs / schedules 两张表按
+      -- 官方 12 步重建流程放宽 workflow_key 枚举（foreign_keys 由迁移器临时关闭，
+      -- 完成后 foreign_key_check 校验子表引用）。重建是纯复制：列序与既有表一致，
+      -- 索引随后重建，用户数据一字不差地搬进新表。
+      CREATE TABLE agent_runs_v33 (
+        id TEXT PRIMARY KEY NOT NULL,
+        workflow_key TEXT NOT NULL CHECK (workflow_key IN (
+          'daily_digest', 'paper_summary', 'literature_matrix', 'literature_review',
+          'research_ideation', 'research_plan', 'manuscript_draft', 'literature_daily_msg'
+        )),
+        provider_profile_id TEXT REFERENCES ai_provider_profiles(id) ON DELETE SET NULL,
+        prompt_template_id TEXT NOT NULL REFERENCES prompt_templates(id) ON DELETE RESTRICT,
+        project_id TEXT REFERENCES projects(id) ON DELETE SET NULL,
+        paper_ids_json TEXT NOT NULL DEFAULT '[]' CHECK (json_valid(paper_ids_json)),
+        status TEXT NOT NULL DEFAULT 'queued'
+          CHECK (status IN ('queued', 'running', 'completed', 'failed', 'canceled')),
+        input_json TEXT NOT NULL DEFAULT '{}' CHECK (json_valid(input_json)),
+        output TEXT NOT NULL DEFAULT '',
+        citations_json TEXT NOT NULL DEFAULT '[]' CHECK (json_valid(citations_json)),
+        error TEXT,
+        created_at TEXT NOT NULL,
+        started_at TEXT,
+        finished_at TEXT,
+        job_id TEXT,
+        runtime TEXT NOT NULL DEFAULT 'pi' CHECK (runtime IN ('codex', 'pi')),
+        transport TEXT NOT NULL DEFAULT 'inprocess' CHECK (transport IN ('cli', 'inprocess')),
+        tool_profile TEXT NOT NULL DEFAULT 'read-only' CHECK (tool_profile IN ('read-only', 'approved-write')),
+        agent_status TEXT NOT NULL DEFAULT 'queued'
+          CHECK (agent_status IN ('planned', 'queued', 'running', 'waiting_confirmation', 'completed', 'partial', 'failed', 'canceled', 'blocked', 'missed')),
+        artifact_id TEXT,
+        idempotency_key TEXT,
+        conversation_id TEXT,
+        permission_mode TEXT NOT NULL DEFAULT 'read-only'
+          CHECK (permission_mode IN ('read-only', 'auto', 'full-access')),
+        approval_policy TEXT NOT NULL DEFAULT 'on-request'
+          CHECK (approval_policy IN ('on-request', 'never')),
+        skill_key TEXT,
+        skill_snapshot_json TEXT,
+        credential_source TEXT NOT NULL DEFAULT 'none'
+          CHECK (credential_source IN ('app-safeStorage', 'none')),
+        archived_at TEXT,
+        revision INTEGER NOT NULL DEFAULT 0 CHECK (revision >= 0)
+      ) STRICT;
+      INSERT INTO agent_runs_v33 (
+        id, workflow_key, provider_profile_id, prompt_template_id, project_id,
+        paper_ids_json, status, input_json, output, citations_json, error,
+        created_at, started_at, finished_at, job_id, runtime, transport,
+        tool_profile, agent_status, artifact_id, idempotency_key, conversation_id,
+        permission_mode, approval_policy, skill_key, skill_snapshot_json,
+        credential_source, archived_at, revision
+      )
+      SELECT
+        id, workflow_key, provider_profile_id, prompt_template_id, project_id,
+        paper_ids_json, status, input_json, output, citations_json, error,
+        created_at, started_at, finished_at, job_id, runtime, transport,
+        tool_profile, agent_status, artifact_id, idempotency_key, conversation_id,
+        permission_mode, approval_policy, skill_key, skill_snapshot_json,
+        credential_source, archived_at, revision
+      FROM agent_runs;
+      DROP TABLE agent_runs;
+      ALTER TABLE agent_runs_v33 RENAME TO agent_runs;
+      CREATE INDEX agent_runs_created_idx ON agent_runs(created_at);
+      CREATE INDEX agent_runs_status_created_idx ON agent_runs(status, created_at);
+      CREATE UNIQUE INDEX agent_runs_idempotency_idx
+        ON agent_runs(idempotency_key)
+        WHERE idempotency_key IS NOT NULL;
+      CREATE INDEX agent_runs_agent_status_created_idx ON agent_runs(agent_status, created_at);
+      CREATE INDEX agent_runs_conversation_created_idx ON agent_runs(conversation_id, created_at);
+
+      CREATE TABLE schedules_v33 (
+        id TEXT PRIMARY KEY NOT NULL,
+        name TEXT NOT NULL,
+        workflow_key TEXT NOT NULL CHECK (workflow_key IN (
+          'daily_digest', 'paper_summary', 'literature_matrix', 'literature_review',
+          'research_ideation', 'research_plan', 'manuscript_draft', 'literature_daily_msg'
+        )),
+        prompt_template_id TEXT NOT NULL REFERENCES prompt_templates(id) ON DELETE RESTRICT,
+        provider_profile_id TEXT REFERENCES ai_provider_profiles(id) ON DELETE SET NULL,
+        project_id TEXT REFERENCES projects(id) ON DELETE SET NULL,
+        cron TEXT NOT NULL,
+        timezone TEXT NOT NULL,
+        enabled INTEGER NOT NULL DEFAULT 1 CHECK (enabled IN (0, 1)),
+        missed_policy TEXT NOT NULL DEFAULT 'coalesce_one'
+          CHECK (missed_policy = 'coalesce_one'),
+        next_run_at TEXT,
+        last_run_at TEXT,
+        archived_at TEXT,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL,
+        revision INTEGER NOT NULL DEFAULT 0 CHECK (revision >= 0),
+        runtime TEXT CHECK (runtime IS NULL OR runtime IN ('codex', 'pi')),
+        model TEXT,
+        assistant_key TEXT,
+        workspace_path TEXT,
+        frequency TEXT NOT NULL DEFAULT 'custom'
+          CHECK (frequency IN ('manual', 'hourly', 'daily', 'weekdays', 'weekly', 'custom')),
+        execution_mode TEXT NOT NULL DEFAULT 'new_conversation'
+          CHECK (execution_mode IN ('new_conversation', 'existing')),
+        conversation_id TEXT,
+        prompt TEXT NOT NULL DEFAULT '',
+        skill_key TEXT,
+        topic TEXT NOT NULL DEFAULT '',
+        output_folder TEXT NOT NULL DEFAULT '每日文献推送',
+        permission_mode TEXT NOT NULL DEFAULT 'read-only'
+          CHECK (permission_mode IN ('read-only', 'auto', 'full-access')),
+        approval_policy TEXT NOT NULL DEFAULT 'on-request'
+          CHECK (approval_policy IN ('on-request', 'never')),
+        sources_json TEXT NOT NULL DEFAULT '[]'
+          CHECK (json_valid(sources_json)),
+        lookback_days INTEGER NOT NULL DEFAULT 30
+          CHECK (lookback_days BETWEEN 1 AND 365),
+        response_language TEXT NOT NULL DEFAULT 'zh-CN'
+          CHECK (response_language IN ('zh-CN', 'en'))
+      ) STRICT;
+      INSERT INTO schedules_v33 (
+        id, name, workflow_key, prompt_template_id, provider_profile_id, project_id,
+        cron, timezone, enabled, missed_policy, next_run_at, last_run_at, archived_at,
+        created_at, updated_at, revision, runtime, model, assistant_key, workspace_path,
+        frequency, execution_mode, conversation_id, prompt, skill_key, topic,
+        output_folder, permission_mode, approval_policy, sources_json, lookback_days,
+        response_language
+      )
+      SELECT
+        id, name, workflow_key, prompt_template_id, provider_profile_id, project_id,
+        cron, timezone, enabled, missed_policy, next_run_at, last_run_at, archived_at,
+        created_at, updated_at, revision, runtime, model, assistant_key, workspace_path,
+        frequency, execution_mode, conversation_id, prompt, skill_key, topic,
+        output_folder, permission_mode, approval_policy, sources_json, lookback_days,
+        response_language
+      FROM schedules;
+      DROP TABLE schedules;
+      ALTER TABLE schedules_v33 RENAME TO schedules;
+      CREATE INDEX schedules_enabled_next_run_idx ON schedules(enabled, next_run_at);
+      CREATE INDEX schedules_archived_at_idx ON schedules(archived_at);
+
+      -- 决策卡输出模板：全部列出不精选、中文摘要 3-5 句、读不读判断 + 理由、
+      -- 关联研究问题、原文链接。变量 {{papers}} 为检索结果、{{matrix}} 为矩阵增强。
+      INSERT OR IGNORE INTO prompt_templates (
+        id, key, name, description, system_prompt, user_template,
+        version, built_in, created_at, updated_at, revision
+      ) VALUES (
+        'builtin.prompt.daily-feishu-msg', 'daily-feishu-msg', '每日文献推送（飞书消息）',
+        '从检索结果生成中文决策卡列表，全部列出不精选。',
+        '你是严谨的科研阅读助手。只根据输入材料作答，区分事实与作者主张，缺少证据时明确说明，不臆测。对检索结果中的每篇文献生成一张中文决策卡；不得省略输入中的文献，也不要自行添加输入中没有的文献或链接。',
+        '从以下检索结果中，为每篇文献生成一张中文决策卡，严格按此格式输出：\n\n【第 N 篇】\n- 中文标题：……\n- 中文摘要：3-5 句话，说清研究问题、方法、核心发现与局限\n- 读不读：读 / 不读 / 先看摘要\n- 理由：一句话（与你的研究问题的相关性，或为什么值得/不值得读）\n- 关联研究问题：与本项目文献矩阵中哪个研究问题相关（若无关写「暂无直接关联」）\n- 链接：原文 URL\n\n要求：全部列出、不精选；最多 20 篇（按上限截断）；不要编造输入中不存在的文献或链接。\n\n检索结果：\n{{papers}}\n\n文献矩阵（用于关联研究问题）：\n{{matrix}}',
+        1, 1, '2026-09-20T00:00:00.000Z', '2026-09-20T00:00:00.000Z', 0
+      );
+
+      -- 内置消息推送规则：INSERT OR IGNORE（只写缺失），与
+      -- DEFAULT_AGENT_SCHEDULE_RULES 中的字面量保持一致；default-schedules
+      -- 测试若漂移会失败。运行时统一为 pi（codex 已移除）。
+      INSERT OR IGNORE INTO schedules (
+        id, name, workflow_key, prompt_template_id, provider_profile_id,
+        project_id, cron, timezone, enabled, missed_policy, next_run_at,
+        last_run_at, archived_at, created_at, updated_at, revision,
+        skill_key, topic, sources_json, lookback_days, response_language,
+        output_folder, permission_mode, approval_policy,
+        runtime, assistant_key, frequency
+      ) VALUES (
+        'builtin.schedule.feishu-daily-msg', '每日文献推送（飞书消息）', 'literature_daily_msg',
+        'builtin.prompt.daily-feishu-msg', NULL, NULL, '0 9 * * *', 'Asia/Shanghai',
+        1, 'coalesce_one', NULL, NULL, NULL,
+        strftime('%Y-%m-%dT%H:%M:%fZ', 'now'), strftime('%Y-%m-%dT%H:%M:%fZ', 'now'), 0,
+        'literature-matrix', '每日文献精选推送', '[]', 1, 'zh-CN',
+        '每日文献推送', 'read-only', 'on-request',
+        'pi', 'researcher', 'daily'
+      );
+    `
+  },
+  {
+    id: 34,
+    name: 'rss_daily_subscription',
+    sql: `
+      -- 每日文献推送（消息侧）增量 3：来源从"引擎检索"改为"纯 RSS 订阅"。
+      -- rss_sources 是用户在设置页维护的 OA 期刊 feed 列表（默认种子 4 条），
+      -- rss_items 是已抓取条目的去重账本（item_url 唯一），推送只针对新增条目。
+      -- 纯新增表 + 种子，不重建既有表。
+      CREATE TABLE rss_sources (
+        id TEXT PRIMARY KEY NOT NULL,
+        title TEXT NOT NULL,
+        url TEXT NOT NULL UNIQUE,
+        enabled INTEGER NOT NULL DEFAULT 1 CHECK (enabled IN (0, 1)),
+        sort_order INTEGER NOT NULL DEFAULT 0,
+        created_at TEXT NOT NULL
+      ) STRICT;
+      CREATE INDEX rss_sources_enabled_sort_idx ON rss_sources(enabled, sort_order);
+
+      CREATE TABLE rss_items (
+        id TEXT PRIMARY KEY NOT NULL,
+        source_id TEXT NOT NULL REFERENCES rss_sources(id) ON DELETE CASCADE,
+        item_url TEXT NOT NULL UNIQUE,
+        title TEXT NOT NULL,
+        summary TEXT NOT NULL DEFAULT '',
+        published_at TEXT,
+        fetched_at TEXT NOT NULL
+      ) STRICT;
+      CREATE INDEX rss_items_source_fetched_idx ON rss_items(source_id, fetched_at);
+
+      -- 默认 OA / Nature 系期刊源（全部已实测 HTTP 200）。INSERT OR IGNORE：
+      -- 用户对内置源做过的启停/改名不会被重播种覆盖；新增源只在缺失时写入。
+      INSERT OR IGNORE INTO rss_sources (id, title, url, enabled, sort_order, created_at) VALUES
+        ('rss.nature', 'Nature', 'https://www.nature.com/nature.rss', 1, 0,
+         strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+        ('rss.nature-computational-science', 'Nature Computational Science',
+         'https://www.nature.com/natcomputsci.rss', 1, 1,
+         strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+        ('rss.npj-computational-materials', 'npj Computational Materials',
+         'https://www.nature.com/npjcompumats.rss', 1, 2,
+         strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+        ('rss.nature-machine-intelligence', 'Nature Machine Intelligence',
+         'https://www.nature.com/natmachintell.rss', 1, 3,
+         strftime('%Y-%m-%dT%H:%M:%fZ', 'now'));
+    `
+  },
+  {
+    id: 35,
+    name: 'rss_intel_categories_visibility_archive',
+    sql: `
+      ALTER TABLE rss_sources ADD COLUMN category TEXT NOT NULL DEFAULT 'literature'
+        CHECK (category IN ('technology', 'literature'));
+      ALTER TABLE rss_sources ADD COLUMN display_enabled INTEGER NOT NULL DEFAULT 1
+        CHECK (display_enabled IN (0, 1));
+      ALTER TABLE rss_sources ADD COLUMN archived_at TEXT;
+      ALTER TABLE rss_items ADD COLUMN guid TEXT NOT NULL DEFAULT '';
+      ALTER TABLE rss_items ADD COLUMN authors_json TEXT NOT NULL DEFAULT '[]'
+        CHECK (json_valid(authors_json));
+
+      UPDATE rss_sources SET category = 'technology'
+      WHERE id IN ('rss.juejin', 'rss.hacker-news');
+      UPDATE rss_sources SET sort_order = sort_order + 2
+      WHERE category = 'literature';
+
+      INSERT OR IGNORE INTO rss_sources
+        (id, title, url, category, enabled, display_enabled, sort_order, created_at)
+      VALUES
+        ('rss.juejin', '掘金', 'https://juejin.cn/rss', 'technology', 1, 1, 0,
+         strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+        ('rss.hacker-news', 'Hacker News', 'https://hnrss.org/frontpage', 'technology', 1, 1, 1,
+         strftime('%Y-%m-%dT%H:%M:%fZ', 'now'));
+
+      CREATE INDEX rss_sources_category_display_idx
+        ON rss_sources(category, display_enabled, archived_at);
+      CREATE INDEX rss_items_published_idx ON rss_items(published_at);
+    `
+  },
+  {
+    id: 36,
+    name: 'rss_default_sources_five',
+    sql: `
+      -- The product default is five sources. Preserve a user-customized URL;
+      -- only archive the untouched legacy Nature Computational Science seed.
+      UPDATE rss_sources
+      SET enabled = 0,
+          display_enabled = 0,
+          archived_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+      WHERE id = 'rss.nature-computational-science'
+        AND url = 'https://www.nature.com/natcomputsci.rss'
+        AND archived_at IS NULL;
+    `
+  },
+  {
+    id: 37,
+    name: 'rss_source_management_history_snapshots',
+    disableForeignKeys: true,
+    sql: `
+      CREATE TABLE rss_categories (
+        id TEXT PRIMARY KEY NOT NULL,
+        name TEXT NOT NULL UNIQUE,
+        built_in INTEGER NOT NULL DEFAULT 0 CHECK (built_in IN (0, 1)),
+        sort_order INTEGER NOT NULL DEFAULT 0 CHECK (sort_order >= 0),
+        created_at TEXT NOT NULL
+      ) STRICT;
+      CREATE INDEX rss_categories_sort_idx ON rss_categories(sort_order, name);
+
+      INSERT INTO rss_categories (id, name, built_in, sort_order, created_at) VALUES
+        ('rsscat.technology-news', '技术新闻', 1, 0, strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+        ('rsscat.academic-papers', '学术论文', 1, 1, strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+        ('rsscat.industry', '行业动态', 1, 2, strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+        ('rsscat.ai-technology', 'AI / 科技', 1, 3, strftime('%Y-%m-%dT%H:%M:%fZ', 'now'));
+
+      CREATE TABLE rss_sources_v37 (
+        id TEXT PRIMARY KEY NOT NULL,
+        title TEXT NOT NULL,
+        url TEXT NOT NULL UNIQUE,
+        site_url TEXT,
+        description TEXT NOT NULL DEFAULT '',
+        category_id TEXT NOT NULL REFERENCES rss_categories(id) ON DELETE RESTRICT,
+        enabled INTEGER NOT NULL DEFAULT 1 CHECK (enabled IN (0, 1)),
+        display_enabled INTEGER NOT NULL DEFAULT 1 CHECK (display_enabled IN (0, 1)),
+        sort_order INTEGER NOT NULL DEFAULT 0 CHECK (sort_order >= 0),
+        created_at TEXT NOT NULL
+      ) STRICT;
+
+      INSERT INTO rss_sources_v37
+        (id, title, url, site_url, description, category_id, enabled, display_enabled, sort_order, created_at)
+      SELECT
+        id, title, url, NULL, '',
+        CASE
+          WHEN id = 'rss.nature-machine-intelligence' THEN 'rsscat.ai-technology'
+          WHEN category = 'technology' THEN 'rsscat.technology-news'
+          ELSE 'rsscat.academic-papers'
+        END,
+        enabled, display_enabled, sort_order, created_at
+      FROM rss_sources
+      WHERE archived_at IS NULL;
+
+      INSERT OR IGNORE INTO rss_sources_v37
+        (id, title, url, site_url, description, category_id, enabled, display_enabled, sort_order, created_at)
+      VALUES
+        ('rss.juejin', '掘金', 'https://juejin.cn/rss', NULL, '', 'rsscat.technology-news', 1, 1, 0, strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+        ('rss.hacker-news', 'Hacker News', 'https://hnrss.org/frontpage', NULL, '', 'rsscat.technology-news', 1, 1, 1, strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+        ('rss.nature', 'Nature', 'https://www.nature.com/nature.rss', NULL, '', 'rsscat.academic-papers', 1, 1, 2, strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+        ('rss.npj-computational-materials', 'npj Computational Materials', 'https://www.nature.com/npjcompumats.rss', NULL, '', 'rsscat.academic-papers', 1, 1, 3, strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+        ('rss.nature-machine-intelligence', 'Nature Machine Intelligence', 'https://www.nature.com/natmachintell.rss', NULL, '', 'rsscat.ai-technology', 1, 1, 4, strftime('%Y-%m-%dT%H:%M:%fZ', 'now'));
+
+      CREATE TABLE rss_items_v37 (
+        id TEXT PRIMARY KEY NOT NULL,
+        source_id TEXT NOT NULL,
+        source_title TEXT NOT NULL,
+        source_url TEXT NOT NULL,
+        source_category_id TEXT NOT NULL,
+        source_category_name TEXT NOT NULL,
+        item_url TEXT NOT NULL UNIQUE,
+        guid TEXT NOT NULL DEFAULT '',
+        title TEXT NOT NULL,
+        summary TEXT NOT NULL DEFAULT '',
+        authors_json TEXT NOT NULL DEFAULT '[]' CHECK (json_valid(authors_json)),
+        published_at TEXT,
+        fetched_at TEXT NOT NULL
+      ) STRICT;
+
+      INSERT INTO rss_items_v37
+        (id, source_id, source_title, source_url, source_category_id, source_category_name,
+         item_url, guid, title, summary, authors_json, published_at, fetched_at)
+      SELECT
+        i.id, i.source_id, COALESCE(s.title, i.source_id), COALESCE(s.url, ''),
+        CASE
+          WHEN s.id = 'rss.nature-machine-intelligence' THEN 'rsscat.ai-technology'
+          WHEN s.category = 'technology' THEN 'rsscat.technology-news'
+          ELSE 'rsscat.academic-papers'
+        END,
+        CASE
+          WHEN s.id = 'rss.nature-machine-intelligence' THEN 'AI / 科技'
+          WHEN s.category = 'technology' THEN '技术新闻'
+          ELSE '学术论文'
+        END,
+        i.item_url, i.guid, i.title, i.summary, i.authors_json, i.published_at, i.fetched_at
+      FROM rss_items i
+      LEFT JOIN rss_sources s ON s.id = i.source_id;
+
+      DROP TABLE rss_items;
+      DROP TABLE rss_sources;
+      ALTER TABLE rss_sources_v37 RENAME TO rss_sources;
+      ALTER TABLE rss_items_v37 RENAME TO rss_items;
+      CREATE INDEX rss_sources_enabled_sort_idx ON rss_sources(enabled, sort_order);
+      CREATE INDEX rss_sources_category_display_idx ON rss_sources(category_id, display_enabled);
+      CREATE INDEX rss_items_source_fetched_idx ON rss_items(source_id, fetched_at);
+      CREATE INDEX rss_items_published_idx ON rss_items(published_at);
+    `
   }
 ]
 

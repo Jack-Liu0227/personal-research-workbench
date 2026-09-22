@@ -18,6 +18,7 @@ import {
 } from './credentials.js'
 import { readAgentCredential, removeAgentCredential, writeAgentCredential } from './agent-credentials.js'
 import { registerRpcHandler } from './ipc.js'
+import { FeishuBindingController } from './feishu-binding.js'
 import { migrateLegacyUserData } from './data-migration.js'
 import { registerUpdateHandlers } from './updater.js'
 import {
@@ -139,6 +140,23 @@ async function bootstrap(): Promise<void> {
   // envelope, so a Zotero write it requests asks for exactly one profile's key.
   coreClient.setIntegrationSecretReader(async (profileId) =>
     credentialVault.get(credentialKey('integration', profileId)))
+  // Message-side push (literature_daily_msg): Main owns the Feishu token and the
+  // bound openId in its vault, so Core only hands over the rendered text and
+  // learns ok/error — the token never crosses the process boundary. The bound
+  // probe refuses a scheduled run before any model call.
+  const feishuController = new FeishuBindingController({
+    vault: credentialVault,
+    keyOf: (id) => credentialKey('integration', id)
+  })
+  coreClient.setFeishuSender(async (text) => {
+    const status = await feishuController.getStatus()
+    if (!status.bound || status.boundUserOpenId === null) {
+      return { ok: false, error: 'FEISHU_NOT_BOUND：尚未绑定飞书应用，消息未发送。' }
+    }
+    await feishuController.sendText(status.boundUserOpenId, text)
+    return { ok: true }
+  })
+  coreClient.setFeishuStatusReader(async () => (await feishuController.getStatus()).bound)
   // An OAuth flow inside Core cannot open a browser, so it hands the URL over.
   // Validation stays with the shared `ExternalOpenUrlSchema` allowlist applied
   // in `CoreRpcClient` before this callback runs.
@@ -148,7 +166,8 @@ async function bootstrap(): Promise<void> {
     client: coreClient,
     credentialVault,
     getWindow: () => mainWindow,
-    developmentUrl
+    developmentUrl,
+    feishu: feishuController
   })
   const updates = registerUpdateHandlers({
     getWindow: () => mainWindow,

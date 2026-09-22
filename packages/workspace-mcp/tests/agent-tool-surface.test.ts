@@ -10,7 +10,7 @@ describe('embedded workspace MCP surface', () => {
     try {
       const listed = await session.client.listTools()
       const names = new Set(listed.tools.map((tool) => tool.name))
-      for (const name of ['literature.search', 'literature.results', 'papers.list', 'notes.list', 'notes.read', 'notes.metadata.preview', 'zotero.capability', 'zotero.collections', 'zotero.items', 'zotero.paperToZotero.preview', 'literature.stagingToZotero.preview', 'automation.rules.list', 'automation.runs.list', 'agent.settings.get', 'tasks.create', 'calendar.create', 'calendar.markers.create']) {
+      for (const name of ['literature.search', 'literature.results', 'papers.list', 'notes.list', 'notes.read', 'notes.metadata.preview', 'zotero.capability', 'zotero.collections', 'zotero.items', 'zotero.paperToZotero.preview', 'literature.stagingToZotero.preview', 'automation.rules.list', 'automation.runs.list', 'agent.settings.get', 'intel.rss.sources', 'intel.rss.search', 'intel.rss.refresh', 'tasks.create', 'calendar.create', 'calendar.markers.create']) {
         assert.equal(names.has(name), true, `${name} should be advertised`)
       }
       for (const name of ['tasks.hardDelete', 'notes.write', 'zotero.paperToZotero.execute', 'zotero.deleteRemote.execute', 'bash']) {

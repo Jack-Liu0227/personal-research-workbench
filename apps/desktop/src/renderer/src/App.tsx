@@ -11,6 +11,7 @@ import {
   LibraryBig,
   Moon,
   NotebookPen,
+  RadioTower,
   Search,
   Settings2,
   Sun
@@ -33,6 +34,7 @@ import { ObsidianPage } from './features/obsidian'
 import { ZoteroPage } from './features/zotero'
 import { AgentPage } from './features/agent'
 import { AutomationPage } from './features/automation'
+import { IntelDailyPage } from './features/intel-daily'
 import { useProjectsQuery } from './features/queries'
 import { getWorkbenchApi } from './lib/workbench'
 import { ContextMenuHost, ContextMenuTrigger, useContextMenu, type ContextActionHandlers } from './shell/context-menu'
@@ -40,7 +42,7 @@ import { UnsavedObsidianProvider, useUnsavedCloseConfirmation } from './shell/un
 import { useWorkspaceTabs, type WorkspaceTabAction } from './shell/workspace-tabs'
 import { WorkspaceTabsBar } from './shell/workspace-tabs-bar'
 
-type ViewId = 'dashboard' | 'calendar' | 'tasks' | 'project' | 'literature' | 'obsidian' | 'zotero' | 'agent' | 'automation' | 'settings'
+type ViewId = 'dashboard' | 'calendar' | 'tasks' | 'project' | 'literature' | 'obsidian' | 'zotero' | 'agent' | 'automation' | 'intel-daily' | 'settings'
 type Theme = 'light' | 'dark'
 
 type FontScale = 'compact' | 'comfortable' | 'large'
@@ -76,7 +78,8 @@ const researchNavigation: NavigationItem[] = [
   { id: 'literature', label: '文献检索', icon: <Search aria-hidden="true" /> },
   { id: 'obsidian', label: 'Obsidian', icon: <NotebookPen aria-hidden="true" /> },
   { id: 'zotero', label: 'Zotero', icon: <BookOpenText aria-hidden="true" /> },
-  { id: 'automation', label: '定时任务', icon: <Clock3 aria-hidden="true" /> }
+  { id: 'automation', label: '定时任务', icon: <Clock3 aria-hidden="true" /> },
+  { id: 'intel-daily', label: '情报日报', icon: <RadioTower aria-hidden="true" /> }
 ]
 
 /**
@@ -358,6 +361,7 @@ function AppContent(): React.JSX.Element {
   else if (view === 'zotero') page = <ZoteroPage projects={projects} />
   else if (view === 'agent') page = <AgentPage onNavigate={navigate} projects={projects} />
   else if (view === 'automation') page = <AutomationPage projects={projects} />
+  else if (view === 'intel-daily') page = <IntelDailyPage />
   else if (view === 'settings') page = <IntegrationsSettingsPage projects={projects} />
   else page = <ViewNotFound />
   const connectorStatuses = serviceQuery.data?.connectors

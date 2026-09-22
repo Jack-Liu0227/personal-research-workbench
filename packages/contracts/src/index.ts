@@ -1,6 +1,56 @@
 import { z } from 'zod'
 import { ExternalOpenUrlSchema } from './external-url.js'
 import { AgentExternalActionRequestResultSchema } from './agent.js'
+import {
+  FeishuBeginBindInputSchema,
+  FeishuBeginBindResultSchema,
+  FeishuBindingStatusSchema,
+  FeishuSaveAppInputSchema,
+  FeishuSendTestResultSchema
+} from './feishu.js'
+import type {
+  FeishuBeginBindInput,
+  FeishuBeginBindResult,
+  FeishuBindingStatus,
+  FeishuSaveAppInput,
+  FeishuSendTestResult
+} from './feishu.js'
+import {
+  RssSaveSourceInputSchema,
+  RssSourceDeleteInputSchema,
+  RssSourceListSchema,
+  RssSourceSchema,
+  RssSourcePreviewInputSchema,
+  RssSourcePreviewSchema,
+  RssSourceSetEnabledInputSchema,
+  RssSourceSetDisplayEnabledInputSchema,
+  RssCategoryDeleteInputSchema,
+  RssCategoryListSchema,
+  RssCategorySaveInputSchema,
+  RssCategorySchema,
+  RssItemsQueryInputSchema,
+  RssItemsPageSchema
+  , RssItemsRefreshInputSchema
+  , RssItemsRefreshResultSchema
+} from './rss.js'
+import type {
+  RssSaveSourceInput,
+  RssSource,
+  RssSourceDeleteInput,
+  RssSourceList,
+  RssSourceSetEnabledInput
+  , RssSourceSetDisplayEnabledInput
+  , RssSourcePreviewInput
+  , RssSourcePreview
+  , RssCategoryDeleteInput
+  , RssCategoryList
+  , RssCategorySaveInput
+  , RssCategory
+  , RssItemsQueryInput
+  , RssItemsPage
+  , RssItemsRefreshInput
+  , RssItemsRefreshResult
+} from './rss.js'
 
 type JsonValue = string | number | boolean | null | JsonValue[] | { [key: string]: JsonValue }
 const JsonValueSchema: z.ZodType<JsonValue> = z.lazy(() => z.union([
@@ -181,6 +231,9 @@ import {
   KnowledgeEngineSaveInputSchema,
   KnowledgeEngineTestInputSchema,
   KnowledgeEngineTestResultSchema,
+  IntelDailyConfigSchema,
+  IntelDailyOverviewSchema,
+  IntelDailySetConfigInputSchema,
   UpdateStateSchema,
   type BulkOperationResult,
   type CalendarEvent,
@@ -242,13 +295,18 @@ import {
   type KnowledgeEngineConfig,
   type KnowledgeEngineSaveInput,
   type KnowledgeEngineTestInput,
-  type KnowledgeEngineTestResult
+  type KnowledgeEngineTestResult,
+  type IntelDailyConfig,
+  type IntelDailyOverview,
+  type IntelDailySetConfigInput
 } from './v2.js'
 
 export * from './research.js'
 export * from './v2.js'
 export * from './agent.js'
 export * from './external-url.js'
+export * from './feishu.js'
+export * from './rss.js'
 
 
 export const TaskStatusSchema = z.enum([
@@ -597,6 +655,25 @@ export const RpcMethodPayloadSchemas = {
   'knowledge.engines.list': z.null(),
   'knowledge.engines.save': strictPayload(KnowledgeEngineSaveInputSchema),
   'knowledge.engines.test': strictPayload(KnowledgeEngineTestInputSchema),
+  'intelDaily.getConfig': z.null(),
+  'intelDaily.setConfig': strictPayload(IntelDailySetConfigInputSchema),
+  'intelDaily.overview': z.null(),
+  'feishu.saveApp': strictPayload(FeishuSaveAppInputSchema),
+  'feishu.getStatus': z.null(),
+  'feishu.beginBind': strictPayload(FeishuBeginBindInputSchema),
+  'feishu.unbind': z.null(),
+  'feishu.sendTest': z.null(),
+  'rss.sources.list': z.null(),
+  'rss.sources.preview': strictPayload(RssSourcePreviewInputSchema),
+  'rss.sources.save': strictPayload(RssSaveSourceInputSchema),
+  'rss.sources.remove': strictPayload(RssSourceDeleteInputSchema),
+  'rss.sources.setEnabled': strictPayload(RssSourceSetEnabledInputSchema),
+  'rss.sources.setDisplayEnabled': strictPayload(RssSourceSetDisplayEnabledInputSchema),
+  'rss.categories.list': z.null(),
+  'rss.categories.save': strictPayload(RssCategorySaveInputSchema),
+  'rss.categories.remove': strictPayload(RssCategoryDeleteInputSchema),
+  'rss.items.query': strictPayload(RssItemsQueryInputSchema),
+  'rss.items.refresh': strictPayload(RssItemsRefreshInputSchema),
   'workspace.status': z.null(),
   'system.openExternal': ExternalOpenUrlSchema,
   'system.health': z.null(),
@@ -683,6 +760,25 @@ export const RpcMethodResultSchemas = {
   , 'knowledge.engines.list': z.array(KnowledgeEngineConfigSchema)
   , 'knowledge.engines.save': KnowledgeEngineConfigSchema
   , 'knowledge.engines.test': KnowledgeEngineTestResultSchema
+  , 'intelDaily.getConfig': IntelDailyConfigSchema
+  , 'intelDaily.setConfig': IntelDailyConfigSchema
+  , 'intelDaily.overview': IntelDailyOverviewSchema
+  , 'feishu.saveApp': FeishuBindingStatusSchema
+  , 'feishu.getStatus': FeishuBindingStatusSchema
+  , 'feishu.beginBind': FeishuBeginBindResultSchema
+  , 'feishu.unbind': FeishuBindingStatusSchema
+  , 'feishu.sendTest': FeishuSendTestResultSchema
+  , 'rss.sources.list': RssSourceListSchema
+  , 'rss.sources.preview': RssSourcePreviewSchema
+  , 'rss.sources.save': RssSourceSchema
+  , 'rss.sources.remove': z.null()
+  , 'rss.sources.setEnabled': RssSourceSchema
+  , 'rss.sources.setDisplayEnabled': RssSourceSchema
+  , 'rss.categories.list': RssCategoryListSchema
+  , 'rss.categories.save': RssCategorySchema
+  , 'rss.categories.remove': z.null()
+  , 'rss.items.query': RssItemsPageSchema
+  , 'rss.items.refresh': RssItemsRefreshResultSchema
   , 'system.revealPath': z.null()
   , 'system.saveTextFile': SystemSaveTextFileResultSchema
 } as const
@@ -799,6 +895,25 @@ const RpcRequestVariants = [
   rpc('knowledge.engines.list', RpcMethodPayloadSchemas['knowledge.engines.list']),
   rpc('knowledge.engines.save', RpcMethodPayloadSchemas['knowledge.engines.save']),
   rpc('knowledge.engines.test', RpcMethodPayloadSchemas['knowledge.engines.test']),
+  rpc('intelDaily.getConfig', RpcMethodPayloadSchemas['intelDaily.getConfig']),
+  rpc('intelDaily.setConfig', RpcMethodPayloadSchemas['intelDaily.setConfig']),
+  rpc('intelDaily.overview', RpcMethodPayloadSchemas['intelDaily.overview']),
+  rpc('feishu.saveApp', RpcMethodPayloadSchemas['feishu.saveApp']),
+  rpc('feishu.getStatus', RpcMethodPayloadSchemas['feishu.getStatus']),
+  rpc('feishu.beginBind', RpcMethodPayloadSchemas['feishu.beginBind']),
+  rpc('feishu.unbind', RpcMethodPayloadSchemas['feishu.unbind']),
+  rpc('feishu.sendTest', RpcMethodPayloadSchemas['feishu.sendTest']),
+  rpc('rss.sources.list', RpcMethodPayloadSchemas['rss.sources.list']),
+  rpc('rss.sources.preview', RpcMethodPayloadSchemas['rss.sources.preview']),
+  rpc('rss.sources.save', RpcMethodPayloadSchemas['rss.sources.save']),
+  rpc('rss.sources.remove', RpcMethodPayloadSchemas['rss.sources.remove']),
+  rpc('rss.sources.setEnabled', RpcMethodPayloadSchemas['rss.sources.setEnabled']),
+  rpc('rss.sources.setDisplayEnabled', RpcMethodPayloadSchemas['rss.sources.setDisplayEnabled']),
+  rpc('rss.categories.list', RpcMethodPayloadSchemas['rss.categories.list']),
+  rpc('rss.categories.save', RpcMethodPayloadSchemas['rss.categories.save']),
+  rpc('rss.categories.remove', RpcMethodPayloadSchemas['rss.categories.remove']),
+  rpc('rss.items.query', RpcMethodPayloadSchemas['rss.items.query']),
+  rpc('rss.items.refresh', RpcMethodPayloadSchemas['rss.items.refresh']),
   rpc('workspace.status', RpcMethodPayloadSchemas['workspace.status']),
   rpc('system.openExternal', RpcMethodPayloadSchemas['system.openExternal']),
   rpc('system.health', RpcMethodPayloadSchemas['system.health']),
@@ -1075,6 +1190,35 @@ export interface WorkbenchApiV2 {
       list(): Promise<KnowledgeEngineConfig[]>
       save(input: KnowledgeEngineSaveInput): Promise<KnowledgeEngineConfig>
       test(input: KnowledgeEngineTestInput): Promise<KnowledgeEngineTestResult>
+    }
+  }
+  intelDaily: {
+    getConfig(): Promise<IntelDailyConfig>
+    setConfig(input: IntelDailySetConfigInput): Promise<IntelDailyConfig>
+    overview(): Promise<IntelDailyOverview>
+  }
+  feishu: {
+    saveApp(input: FeishuSaveAppInput): Promise<FeishuBindingStatus>
+    getStatus(): Promise<FeishuBindingStatus>
+    beginBind(input: FeishuBeginBindInput): Promise<FeishuBeginBindResult>
+    unbind(): Promise<FeishuBindingStatus>
+    sendTest(): Promise<FeishuSendTestResult>
+  }
+  rss: {
+    sources: {
+      list(): Promise<RssSourceList>
+      preview(input: RssSourcePreviewInput): Promise<RssSourcePreview>
+      save(input: RssSaveSourceInput): Promise<RssSource>
+      remove(input: RssSourceDeleteInput): Promise<void>
+      setEnabled(input: RssSourceSetEnabledInput): Promise<RssSource>
+      setDisplayEnabled(input: RssSourceSetDisplayEnabledInput): Promise<RssSource>
+      query(input: RssItemsQueryInput): Promise<RssItemsPage>
+      refresh(input: RssItemsRefreshInput): Promise<RssItemsRefreshResult>
+    }
+    categories: {
+      list(): Promise<RssCategoryList>
+      save(input: RssCategorySaveInput): Promise<RssCategory>
+      remove(input: RssCategoryDeleteInput): Promise<void>
     }
   }
   workspace: {

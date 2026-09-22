@@ -2,8 +2,8 @@
  * Focused check for the shipped built-in schedule set.
  *
  * Requirement: a new install — and an upgrade of an existing database — owns
- * exactly three enabled rules (last30days / literature-matrix /
- * literature-review-push), and the seeding must be idempotent: a rule that
+ * exactly four enabled rules (last30days / literature-matrix /
+ * literature-review-push / feishu-daily-msg), and the seeding must be idempotent: a rule that
  * already exists is never inserted twice and never updated, so a user's own
  * edit, pause or archive survives every migration re-run.
  *
@@ -101,14 +101,14 @@ afterEach(() => {
 })
 
 describe('default schedule rules', () => {
-  it('seeds exactly the three frozen enabled rules on a fresh database', () => {
+  it('seeds exactly the four frozen enabled rules on a fresh database', () => {
     const repository = openRepository(makeRoot())
     const rules = repository.listSchedules()
     deepStrictEqual(
       rules.map((rule) => rule.id).sort(),
       DEFAULT_AGENT_SCHEDULE_RULES.map((rule) => rule.id).sort()
     )
-    strictEqual(rules.length, 3, `expected exactly 3 default rules, got ${rules.length}`)
+    strictEqual(rules.length, 4, `expected exactly 4 default rules, got ${rules.length}`)
     for (const expected of DEFAULT_AGENT_SCHEDULE_RULES) {
       const rule = find(rules, expected.id)
       assertFrozen(rule, expected)
@@ -133,7 +133,7 @@ describe('default schedule rules', () => {
     // A second open on the same file (the normal upgrade path) is equally stable.
     const reopened = openRepository(root)
     deepStrictEqual(cursors(reopened), before)
-    strictEqual(reopened.listSchedules().length, 3)
+    strictEqual(reopened.listSchedules().length, 4)
   })
 
   it('recreates a missing default rule without touching the other two', () => {
@@ -166,7 +166,7 @@ describe('default schedule rules', () => {
     reseed(handle)
 
     const rules = repository.listSchedules()
-    strictEqual(rules.length, 2, 'the archived rule stays archived and nothing is resurrected')
+    strictEqual(rules.length, 3, 'the archived rule stays archived and nothing is resurrected')
     const edited = find(rules, 'builtin.schedule.literature-matrix')
     strictEqual(edited.name, '我的矩阵')
     strictEqual(edited.topic, '我的主题')
@@ -196,23 +196,39 @@ describe('default schedule rules', () => {
     })
     reseed(handle)
     const rules = repository.listSchedules()
-    strictEqual(rules.length, 4, 'a user rule must not be dropped or merged into a default')
+    strictEqual(rules.length, 5, 'a user rule must not be dropped or merged into a default')
     strictEqual(find(rules, custom.id).topic, '自定义主题')
     assertFrozen(find(rules, 'builtin.schedule.literature-matrix'), DEFAULT_AGENT_SCHEDULE_RULES[1]!)
   })
 
   it('guards the migration SQL against drifting from the contract constant', () => {
     const source = readFileSync(resolve(import.meta.dirname, '../src/migrations.ts'), 'utf8')
-    const block = /id:\s*28,\s*name:\s*'three_builtin_schedule_rules',\s*sql:\s*`([\s\S]*?)`/.exec(source)
-    ok(block !== null, 'the three_builtin_schedule_rules migration must exist')
-    const sql = block[1]!.replace(/--[^\n]*/gu, '')
-    const statements = sql.split(';').map((statement) => statement.trim()).filter((statement) => statement.length > 0)
-    strictEqual(statements.length, 3, 'exactly three seeding statements')
-    for (const statement of statements) ok(statement.startsWith('INSERT OR IGNORE INTO schedules'), `seeding must stay insert-only, got: ${statement.slice(0, 40)}`)
-    for (const rule of DEFAULT_AGENT_SCHEDULE_RULES) {
+    // Migration 28 seeds the three original rules; migration 33 seeds the
+    // message-side rule (its own block, because the rebuild + seed live there).
+    const original = DEFAULT_AGENT_SCHEDULE_RULES.filter((rule) => rule.id !== 'builtin.schedule.feishu-daily-msg')
+    const messageRule = DEFAULT_AGENT_SCHEDULE_RULES.find((rule) => rule.id === 'builtin.schedule.feishu-daily-msg')
+    ok(messageRule !== undefined, 'the message-side rule must exist in the contract')
+
+    const block28 = /id:\s*28,\s*name:\s*'three_builtin_schedule_rules',\s*sql:\s*`([\s\S]*?)`/.exec(source)
+    ok(block28 !== null, 'the three_builtin_schedule_rules migration must exist')
+    const sql28 = block28[1]!.replace(/--[^\n]*/gu, '')
+    const statements28 = sql28.split(';').map((statement) => statement.trim()).filter((statement) => statement.length > 0)
+    strictEqual(statements28.length, 3, 'exactly three seeding statements in migration 28')
+    for (const statement of statements28) ok(statement.startsWith('INSERT OR IGNORE INTO schedules'), `seeding must stay insert-only, got: ${statement.slice(0, 40)}`)
+    for (const rule of original) {
       for (const literal of [rule.id, rule.name, rule.skillKey, rule.workflowKey, rule.promptTemplateId, rule.topic, rule.outputFolder, rule.cron, rule.timezone]) {
-        ok(sql.includes(literal), `migration SQL is missing the frozen literal ${literal}`)
+        ok(sql28.includes(literal), `migration 28 is missing the frozen literal ${literal}`)
       }
+    }
+
+    const block33 = /id:\s*33,\s*name:\s*'feishu_daily_msg_workflow',\s*disableForeignKeys:\s*true,\s*sql:\s*`([\s\S]*?)`/.exec(source)
+    ok(block33 !== null, 'the feishu_daily_msg_workflow migration must exist')
+    const sql33 = block33[1]!.replace(/--[^\n]*/gu, '')
+    const seeds33 = sql33.split(';').map((statement) => statement.trim()).filter((statement) => statement.startsWith('INSERT OR IGNORE'))
+    strictEqual(seeds33.length, 2, 'migration 33 seeds the prompt template and the rule, nothing else')
+    for (const statement of seeds33) ok(statement.startsWith('INSERT OR IGNORE INTO'), `seeding must stay insert-only, got: ${statement.slice(0, 40)}`)
+    for (const literal of [messageRule.id, messageRule.name, messageRule.skillKey, messageRule.workflowKey, messageRule.promptTemplateId, messageRule.topic, messageRule.outputFolder, messageRule.cron, messageRule.timezone]) {
+      ok(sql33.includes(literal), `migration 33 is missing the frozen literal ${literal}`)
     }
   })
 })

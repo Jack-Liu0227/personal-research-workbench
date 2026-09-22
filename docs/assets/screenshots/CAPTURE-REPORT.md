@@ -6,56 +6,61 @@ sample data created through the real `window.workbench.v2` command surface.
 
 | Image | Pixels | Size | Visible characters | Sample-data markers |
 | --- | --- | --- | --- | --- |
-| `docs/assets/screenshots/01-dashboard.png` | 2139x1325 | 235 KiB | 1079 | `今日工作面`<br>`最近科研产物`<br>`钙钛矿太阳能电池界面工程`<br>`整理钝化层配方的 XRD 数据`<br>`钙钛矿钝化层文献综述提纲`<br>`Benchmarking clustering algorithms on rare cell populations` |
-| `docs/assets/screenshots/02-calendar.png` | 2139x1325 | 160 KiB | 1216 | `发布门禁评审`<br>`钝化层退火实验`<br>`组会` |
-| `docs/assets/screenshots/03-tasks-board.png` | 2139x1325 | 255 KiB | 1351 | `整理钝化层配方的 XRD 数据`<br>`补齐 10x 数据集的批次信息` |
-| `docs/assets/screenshots/04-project-space.png` | 2139x1325 | 240 KiB | 871 | `钙钛矿太阳能电池界面工程`<br>`单细胞转录组聚类方法对比` |
-| `docs/assets/screenshots/05-literature.png` | 2139x1325 | 351 KiB | 18250 | `INSPECTOR / PAPER`<br>`文献信息` |
-| `docs/assets/screenshots/06-obsidian.png` | 2139x1325 | 293 KiB | 1289 | `Obsidian` |
-| `docs/assets/screenshots/07-zotero.png` | 2139x1325 | 151 KiB | 580 | `Zotero` |
-| `docs/assets/screenshots/08-agent.png` | 2139x1325 | 196 KiB | 721 | `Codex`<br>`Pi` |
-| `docs/assets/screenshots/09-automation.png` | 2139x1325 | 149 KiB | 564 | (none asserted) |
-| `docs/assets/screenshots/10-settings.png` | 2139x1325 | 147 KiB | 528 | (none asserted) |
+| `docs/assets/screenshots/01-dashboard.png` | 2139x1325 | 414 KiB | 1146 | `今日工作面`<br>`项目进度`<br>`科研工作台 V2 发布`<br>`整理钝化层配方的 XRD 数据`<br>`单细胞转录组聚类方法对比` |
+| `docs/assets/screenshots/02-calendar.png` | 2139x1325 | 315 KiB | 1484 | `发布门禁评审`<br>`钝化层退火实验`<br>`组会` |
+| `docs/assets/screenshots/03-tasks-board.png` | 2139x1325 | 364 KiB | 1307 | `整理钝化层配方的 XRD 数据`<br>`补齐 10x 数据集的批次信息` |
+| `docs/assets/screenshots/04-project-space.png` | 2139x1325 | 371 KiB | 884 | `钙钛矿太阳能电池界面工程`<br>`单细胞转录组聚类方法对比` |
+| `docs/assets/screenshots/05-literature.png` | 2139x1325 | 484 KiB | 18757 | `INSPECTOR / PAPER`<br>`文献信息` |
+| `docs/assets/screenshots/06-obsidian.png` | 2139x1325 | 478 KiB | 1482 | `Obsidian` |
+| `docs/assets/screenshots/07-zotero.png` | 2139x1325 | 302 KiB | 654 | `Zotero` |
+| `docs/assets/screenshots/08-agent.png` | 2139x1325 | 217 KiB | 743 | `Pi` |
+| `docs/assets/screenshots/09-automation.png` | 2139x1325 | 351 KiB | 1246 | (none asserted) |
+| `docs/assets/screenshots/10-settings.png` | 2139x1325 | 288 KiB | 544 | (none asserted) |
+| `docs/assets/screenshots/11-rss.png` | 2139x1325 | 318 KiB | 741 | `情报日报`<br>`RSS INTELLIGENCE`<br>`Research Radar RSS`<br>`AI Agent 可靠性评测的新进展` |
 
 ## Captured page excerpts
 
 ### 01-dashboard
 
-> 跳到主要内容 科研工作台 RESEARCH WORKSPACE ‹ 仪表盘 日历 任务 项目空间 文献检索 Obsidian Zotero Agent 定时任务 设置 浅色主题 Workspace Service 已连接 9月11日周五 当前项目 全部项目 单细胞转录组聚类方法对比 科研工作台 V2 发布 钙钛矿太阳能电池界面工程 全局搜索 Ctrl K 快速添加 Todo 仪表盘 WORKBENCH / OVERVIEW 今日工作面 把今天的注意力放在可推进的研究行动上。所有数字和列表均来自本地 SQLite；没有记录时会明确显示为空。 新建项目 新建任务 收件箱 2 今日到期 2 已逾期 1 本周完成 2 收件箱是尚未绑定项目的快速 Todo；“待读文献”来自 Paper 的 queued 状态；科研产物来自本地 Agent/Artifact 记录，不是演示数据。 P
+> 跳到主要内容 科研工作台 RESEARCH WORKSPACE ‹ Agent 日历 任务 研究 仪表盘 项目空间 文献检索 Obsidian Zotero 定时任务 情报日报 设置 浅色主题 Workspace Service 已连接 9月23日周三 当前项目 全部项目 科研工作台 V2 发布 单细胞转录组聚类方法对比 钙钛矿太阳能电池界面工程 全局搜索 Ctrl K 快速添加 Todo 仪表盘 WORKBENCH / OVERVIEW 今日工作面 把今天的注意力放在可推进的研究行动上。所有数字和列表均来自本地 SQLite；没有记录时会明确显示为空。 新建项目 新建任务 收件箱 2 今日到期 2 已逾期 1 本周完成 2 收件箱是尚未绑定项目的快速 Todo；“待读文献”的状态来自 Paper 的读阅状态；“Agent 收件箱”只展示本地收件箱记录与最近 0 条定时推送
 
 ### 02-calendar
 
-> 跳到主要内容 科研工作台 RESEARCH WORKSPACE ‹ 仪表盘 日历 任务 项目空间 文献检索 Obsidian Zotero Agent 定时任务 设置 浅色主题 Workspace Service 已连接 9月11日周五 当前项目 全部项目 单细胞转录组聚类方法对比 科研工作台 V2 发布 钙钛矿太阳能电池界面工程 全局搜索 Ctrl K 快速添加 Todo 日历 WORKSPACE / CALENDAR 日历 月、周、日和议程共享同一组显式事件；任务与项目截止日期保持各自权威。 新建日程 日 周 月 议程 今天 锚点日期 项目 全部项目 单细胞转录组聚类方法对比 科研工作台 V2 发布 钙钛矿太阳能电池界面工程 类型 全部类型 日程 里程碑 论文精读 实验 会议 投稿 / 返修 截止日期 任务/项目状态 全部状态 收件箱 计划中 进行中 已阻塞 已完成 已取
+> 跳到主要内容 科研工作台 RESEARCH WORKSPACE ‹ Agent 日历 任务 研究 设置 浅色主题 Workspace Service 已连接 9月23日周三 当前项目 全部项目 科研工作台 V2 发布 单细胞转录组聚类方法对比 钙钛矿太阳能电池界面工程 全局搜索 Ctrl K 快速添加 Todo 日历 WORKSPACE / CALENDAR 日历 月、周、日和议程共享同一组显式事件；任务与项目截止日期保持各自权威。 新建日程 日 周 月 议程 今天 锚点日期 项目 全部项目 科研工作台 V2 发布 单细胞转录组聚类方法对比 钙钛矿太阳能电池界面工程 类型 全部类型 日程 里程碑 论文精读 实验 会议 投稿 / 返修 截止日期 每日推送 任务/项目状态 全部状态 收件箱 计划中 进行中 已阻塞 已完成 已取消 已归档 活跃项目 暂停项目 已完成项目 工作区时区
 
 ### 03-tasks-board
 
-> 跳到主要内容 科研工作台 RESEARCH WORKSPACE ‹ 仪表盘 日历 任务 项目空间 文献检索 Obsidian Zotero Agent 定时任务 设置 浅色主题 Workspace Service 已连接 9月11日周五 当前项目 全部项目 单细胞转录组聚类方法对比 科研工作台 V2 发布 钙钛矿太阳能电池界面工程 全局搜索 Ctrl K 快速添加 Todo 任务 WORKSPACE / TASKS 任务 看板、列表和任务 Inspector 共用同一套 Task Command · 服务时区 Asia/Shanghai 任务项目 全部任务 单细胞转录组聚类方法对比 科研工作台 V2 发布 钙钛矿太阳能电池界面工程 快速 Todo 显示已归档 看板 列表 Todo 创建日期筛选 全部日期 今天 明天 未来 7 天 已逾期 无日期 自定义范围 按创建时间 PR
+> 跳到主要内容 科研工作台 RESEARCH WORKSPACE ‹ Agent 日历 任务 研究 设置 浅色主题 Workspace Service 已连接 9月23日周三 当前项目 全部项目 科研工作台 V2 发布 单细胞转录组聚类方法对比 钙钛矿太阳能电池界面工程 全局搜索 Ctrl K 快速添加 Todo 任务 WORKSPACE / TASKS 任务 看板、列表和任务 Inspector 共用同一套 Task Command · 服务时区 Asia/Shanghai 任务项目 全部任务 科研工作台 V2 发布 单细胞转录组聚类方法对比 钙钛矿太阳能电池界面工程 快速 Todo 显示已归档 看板 列表 Todo 创建日期筛选 全部日期 今天 明天 未来 7 天 已逾期 无日期 自定义范围 按创建时间 PROJECT / BOARD 任务看板 五个主状态列；归档列按
 
 ### 04-project-space
 
-> 跳到主要内容 科研工作台 RESEARCH WORKSPACE ‹ 仪表盘 日历 任务 项目空间 文献检索 Obsidian Zotero Agent 定时任务 设置 浅色主题 Workspace Service 已连接 9月11日周五 当前项目 全部项目 单细胞转录组聚类方法对比 科研工作台 V2 发布 钙钛矿太阳能电池界面工程 全局搜索 Ctrl K 快速添加 Todo 项目空间 WORKSPACE / PROJECT 单细胞转录组聚类方法对比 项目级聚合只读取已关联的本地数据；写操作回到各领域的 Command 和安全通道。归档可恢复，外部文件不会被删除。 选择项目空间 单细胞转录组聚类方法对比 科研工作台 V2 发布 钙钛矿太阳能电池界面工程 归档项目 总览 任务 文献 文献矩阵 Obsidian 笔记 日历 资源关系 知识映射 项目 ID：01a090f8-c9a4
+> 跳到主要内容 科研工作台 RESEARCH WORKSPACE ‹ Agent 日历 任务 研究 仪表盘 项目空间 文献检索 Obsidian Zotero 定时任务 情报日报 设置 浅色主题 Workspace Service 已连接 9月23日周三 当前项目 全部项目 科研工作台 V2 发布 单细胞转录组聚类方法对比 钙钛矿太阳能电池界面工程 全局搜索 Ctrl K 快速添加 Todo 项目空间 WORKSPACE / PROJECT 科研工作台 V2 发布 项目级聚合只读取已关联的本地数据；写操作回到各领域的 Command 和安全通道。归档可恢复，外部文件不会被删除。 选择项目空间 科研工作台 V2 发布 单细胞转录组聚类方法对比 钙钛矿太阳能电池界面工程 归档项目 总览 任务 文献 文献矩阵 Obsidian 笔记 日历 资源关系 知识映射 项目 ID：01a0ca
 
 ### 05-literature
 
-> 跳到主要内容 科研工作台 RESEARCH WORKSPACE ‹ 仪表盘 日历 任务 项目空间 文献检索 Obsidian Zotero Agent 定时任务 设置 浅色主题 Workspace Service 已连接 检索 学术搜索（全部免费来源） Crossref OpenAlex PubMed arXiv Semantic Scholar Google Scholar（scholarly） ☷ 高级检索 检索历史 ? SEARCH / FREE SOURCES 联网检索 从全球学术资源中检索文献，支持多数据库、智能筛选与一键导入 检索 50 待分类 0 检索范围 全部结果 Crossref OpenAlex PubMed arXiv Semantic Scholar Google Scholar（scholarly） 初始显示 10 20 50 年份 不限年份 202
+> 跳到主要内容 科研工作台 RESEARCH WORKSPACE ‹ Agent 日历 任务 研究 仪表盘 项目空间 文献检索 Obsidian Zotero 定时任务 情报日报 设置 浅色主题 Workspace Service 已连接 检索 学术搜索（全部免费来源） Crossref OpenAlex PubMed arXiv Semantic Scholar Google Scholar（scholarly） ☷ 高级检索 请求 Zotero 写入权限 检索历史 SEARCH / FREE SOURCES 联网检索 从全球学术资源中检索文献，支持多数据库、智能筛选与一键导入 检索 50 待分类 0 检索范围 全部结果 Crossref OpenAlex PubMed arXiv Semantic Scholar Google Scholar（scholarly） 初始显示
 
 ### 06-obsidian
 
-> 跳到主要内容 科研工作台 RESEARCH WORKSPACE ‹ 仪表盘 日历 任务 项目空间 文献检索 Obsidian Zotero Agent 定时任务 设置 浅色主题 Workspace Service 已连接 9月11日周五 当前项目 全部项目 单细胞转录组聚类方法对比 科研工作台 V2 发布 钙钛矿太阳能电池界面工程 全局搜索 Ctrl K 快速添加 Todo Obsidian KNOWLEDGE / OBSIDIAN Obsidian 仅浏览和编辑已授权 Vault 内的 Markdown；服务端负责路径、realpath、符号链接和敏感目录检查。 LIBRARY / EDITABLE 知识库入口 浏览 Vault 中已索引的 Markdown。 编辑器与实时预览共享中央工作区。 1 个 Markdown 文件 全部 每日文献推送 每日资讯推送 提示词库
+> 跳到主要内容 科研工作台 RESEARCH WORKSPACE ‹ Agent 日历 任务 研究 仪表盘 项目空间 文献检索 Obsidian Zotero 定时任务 情报日报 设置 浅色主题 Workspace Service 已连接 9月23日周三 当前项目 全部项目 科研工作台 V2 发布 单细胞转录组聚类方法对比 钙钛矿太阳能电池界面工程 全局搜索 Ctrl K 快速添加 Todo Obsidian KNOWLEDGE / OBSIDIAN Obsidian 仅浏览和编辑已授权 Vault 内的 Markdown；服务端负责路径、realpath、符号链接和敏感目录检查。 LIBRARY / EDITABLE 知识库入口 浏览 Vault 中已索引的 Markdown。 编辑器与实时预览共享中央工作区。 1 个 Markdown 文件 全部 每日文献推送 每日资
 
 ### 07-zotero
 
-> 跳到主要内容 科研工作台 RESEARCH WORKSPACE ‹ 仪表盘 日历 任务 项目空间 文献检索 Obsidian Zotero Agent 定时任务 设置 浅色主题 Workspace Service 已连接 9月11日周五 当前项目 全部项目 单细胞转录组聚类方法对比 科研工作台 V2 发布 钙钛矿太阳能电池界面工程 全局搜索 Ctrl K 快速添加 Todo Zotero LIBRARY / ZOTERO LOCAL Zotero 通过 Workspace Service 的 typed Zotero routes 读取本机数据；不会打开 zotero.sqlite，也不会复制附件。 重新探测并刷新 Zotero 配置 我的 Zotero 连接状态： 不可用 连接能力、授权和探测结果统一在“设置 → 工具连接”管理；本页仅浏览实际可读的集合与条目。Bette
+> 跳到主要内容 科研工作台 RESEARCH WORKSPACE ‹ Agent 日历 任务 研究 仪表盘 项目空间 文献检索 Obsidian Zotero 定时任务 情报日报 设置 浅色主题 Workspace Service 已连接 9月23日周三 当前项目 全部项目 科研工作台 V2 发布 单细胞转录组聚类方法对比 钙钛矿太阳能电池界面工程 全局搜索 Ctrl K 快速添加 Todo Zotero LIBRARY / ZOTERO LOCAL Zotero 通过 Workspace Service 的 typed Zotero routes 读取本机数据；不会打开 zotero.sqlite，也不会复制附件。 重新探测并刷新 Zotero 配置 我的 Zotero 连接状态： 不可用 请求本机写入授权 连接能力、授权和探测结果统一在“设置 → 工具连接”管理；本页仅浏
 
 ### 08-agent
 
-> 跳到主要内容 科研工作台 RESEARCH WORKSPACE ‹ 仪表盘 日历 任务 项目空间 文献检索 Obsidian Zotero Agent 定时任务 设置 浅色主题 Workspace Service 已连接 9月11日周五 当前项目 全部项目 单细胞转录组聚类方法对比 科研工作台 V2 发布 钙钛矿太阳能电池界面工程 全局搜索 Ctrl K 快速添加 Todo Agent WORKSPACE 对话 全部 Codex Pi 项目 还没有对话。 从右侧输入框开始一次新的 Agent 任务。 历史记录保存在本地工作区 · 每个对话一个 session 文件 Hi，今天有什么安排？ 选择一个 runtime，开始你的科研工作流 Codex Pi 正在探测 runtime… 模型 跟随 CLI 模型 思考深度 跟随 CLI 配置 权限模式 跟随 CLI 配置 跟随 C
+> 跳到主要内容 科研工作台 RESEARCH WORKSPACE ‹ Agent 日历 任务 研究 仪表盘 项目空间 文献检索 Obsidian Zotero 定时任务 情报日报 设置 浅色主题 Workspace Service 已连接 9月23日周三 当前项目 全部项目 科研工作台 V2 发布 单细胞转录组聚类方法对比 钙钛矿太阳能电池界面工程 全局搜索 Ctrl K 快速添加 Todo Agent WORKSPACE 对话 全部 项目 还没有对话。 从右侧输入框开始一次新的 Agent 任务。 历史记录保存在本地工作区 · 每个对话一个 session 文件 Hi，今天有什么安排？ 告诉我你做了什么、接下来打算做什么 Pi · 未选择模型 · 默认思考 自动批准 对话 轨迹 0 准备好开始了吗？ 输入问题、上传上下文，或从下方指令开始。 0 个回合 0 次工具调用
 
 ### 09-automation
 
-> 跳到主要内容 科研工作台 RESEARCH WORKSPACE ‹ 仪表盘 日历 任务 项目空间 文献检索 Obsidian Zotero Agent 定时任务 设置 浅色主题 Workspace Service 已连接 9月11日周五 当前项目 全部项目 单细胞转录组聚类方法对比 科研工作台 V2 发布 钙钛矿太阳能电池界面工程 全局搜索 Ctrl K 快速添加 Todo 定时任务 AUTOMATION / SCHEDULES 定时任务 管理由 Codex 或 Pi 执行的定时研究任务。任务仅在应用运行时调度，权限依据所选 CLI 的能力配置。 新建定时任务 RUNTIME SCHEDULE 已配置任务 1 个任务 Last 30 days 每日资讯推送 已启用 每天 · 0 9 * * * · Codex · 全部项目 · read-only · Asia/Sha
+> 跳到主要内容 科研工作台 RESEARCH WORKSPACE ‹ Agent 日历 任务 研究 仪表盘 项目空间 文献检索 Obsidian Zotero 定时任务 情报日报 设置 浅色主题 Workspace Service 已连接 9月23日周三 当前项目 全部项目 科研工作台 V2 发布 单细胞转录组聚类方法对比 钙钛矿太阳能电池界面工程 全局搜索 Ctrl K 快速添加 Todo 定时任务 AUTOMATION / SCHEDULES 定时任务 管理由内嵌 Pi Agent 执行的定时研究任务。任务仅在应用运行时调度，写入范围遵循设置中的本地工具策略。 新建定时任务 RUNTIME SCHEDULE 已配置任务 4 个任务 Last 30 days 每日资讯推送 已启用 技能 last30days · 主题 AI 最新资讯 · 简体中文（默认） 每天 · 0
 
 ### 10-settings
 
-> 跳到主要内容 科研工作台 RESEARCH WORKSPACE ‹ 仪表盘 日历 任务 项目空间 文献检索 Obsidian Zotero Agent 定时任务 设置 浅色主题 Workspace Service 已连接 9月11日周五 当前项目 全部项目 单细胞转录组聚类方法对比 科研工作台 V2 发布 钙钛矿太阳能电池界面工程 全局搜索 Ctrl K 快速添加 Todo 设置 SETTINGS / WORKSPACE 设置 管理工作区、外部工具、代理、Agent 运行时和知识引擎映射；页面仅显示后端真实状态。 通用 工作区与数据 文献检索 代理 工具连接 Agent 运行时 知识引擎 MCP Server 安全与审计 SETTINGS / GENERAL 通用 主题 深色 浅色 字号 紧凑（13px） 标准（14px） 大号（16px） 主题和字号会保存在当前用户配
+> 跳到主要内容 科研工作台 RESEARCH WORKSPACE ‹ Agent 日历 任务 研究 仪表盘 项目空间 文献检索 Obsidian Zotero 定时任务 情报日报 设置 浅色主题 Workspace Service 已连接 9月23日周三 当前项目 全部项目 科研工作台 V2 发布 单细胞转录组聚类方法对比 钙钛矿太阳能电池界面工程 全局搜索 Ctrl K 快速添加 Todo 设置 SETTINGS / WORKSPACE 设置 管理工作区、外部工具、代理、模型认证与知识引擎映射；页面仅显示后端真实状态。 通用 工作区与数据 文献检索 代理 工具连接 RSS 来源 模型与 Agent 知识引擎 MCP Server 安全与审计 关于与更新 SETTINGS / GENERAL 通用 主题 深色 浅色 字号 紧凑（13px） 标准（14px） 大号（16px）
+
+### 11-rss
+
+> 跳到主要内容 科研工作台 RESEARCH WORKSPACE ‹ Agent 日历 任务 研究 仪表盘 项目空间 文献检索 Obsidian Zotero 定时任务 情报日报 设置 浅色主题 Workspace Service 已连接 9月23日周三 当前项目 全部项目 科研工作台 V2 发布 单细胞转录组聚类方法对比 钙钛矿太阳能电池界面工程 全局搜索 Ctrl K 快速添加 Todo 情报日报 研究工作台 情报日报 RSS 技术新闻与文献的统一结果视图；来源、启停和显示策略在设置中管理。 RSS INTELLIGENCE 全部来源 刷新 RSS 全部来源 掘金 Research Radar RSS Hacker News Nature npj Computational Materials Nature Machine Intelligence AI Agent 可
 

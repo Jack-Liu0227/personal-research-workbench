@@ -780,7 +780,8 @@ function promptTemplateForWorkflow(workflowKey: import('@prw/contracts').AgentWo
     literature_review: 'builtin.prompt.review-outline',
     research_ideation: 'builtin.prompt.research-idea',
     research_plan: 'builtin.prompt.research-plan',
-    manuscript_draft: 'builtin.prompt.writing-revision'
+    manuscript_draft: 'builtin.prompt.writing-revision',
+    literature_daily_msg: 'builtin.prompt.daily-feishu-msg'
   }
   return map[workflowKey]
 }
@@ -2437,6 +2438,57 @@ export class WorkbenchRepository {
     return toKnowledgeEngine({ ...latest, ...row })
   }
 
+  /** Generic JSON key/value settings row. `workspace_settings` is a migration-owned
+   * KV table; values are parsed defensively so a corrupt row degrades to null
+   * instead of crashing a feature. */
+  getWorkspaceSettingValue(key: string): { value: unknown; revision: number } | null {
+    const row = this.sqlite
+      .prepare('SELECT value_json, revision FROM workspace_settings WHERE key = ?')
+      .get(key) as { value_json: string; revision: number } | undefined
+    if (!row) return null
+    try {
+      return { value: JSON.parse(row.value_json) as unknown, revision: row.revision }
+    } catch {
+      return { value: null, revision: row.revision }
+    }
+  }
+
+  /** Upsert a JSON workspace setting with an optional compare-and-swap lock.
+   * `expectedRevision === null` skips the check (create-or-replace). */
+  setWorkspaceSettingValue(key: string, value: unknown, expectedRevision: number | null = null): { revision: number } {
+    const current = this.getWorkspaceSettingValue(key)
+    if (expectedRevision !== null && (current?.revision ?? 0) !== expectedRevision) {
+      throw new WorkbenchDatabaseError('REVISION_CONFLICT', 'workspace setting changed by another operation', {
+        retryable: true,
+        details: { key }
+      })
+    }
+    const nextRevision = (current?.revision ?? 0) + 1
+    const timestamp = this.now().toISOString()
+    if (current) {
+      this.sqlite
+        .prepare('UPDATE workspace_settings SET value_json = ?, updated_at = ?, revision = ? WHERE key = ?')
+        .run(JSON.stringify(value), timestamp, nextRevision, key)
+    } else {
+      this.sqlite
+        .prepare('INSERT INTO workspace_settings (key, value_json, updated_at, revision) VALUES (?, ?, ?, ?)')
+        .run(key, JSON.stringify(value), timestamp, nextRevision)
+    }
+    return { revision: nextRevision }
+  }
+
+  clearWorkspaceSettingValue(key: string, expectedRevision: number | null = null): void {
+    const current = this.getWorkspaceSettingValue(key)
+    if (!current) return
+    if (expectedRevision !== null && current.revision !== expectedRevision) {
+      throw new WorkbenchDatabaseError('REVISION_CONFLICT', 'workspace setting changed by another operation', {
+        retryable: true,
+        details: { key }
+      })
+    }
+    this.sqlite.prepare('DELETE FROM workspace_settings WHERE key = ?').run(key)
+  }
+
   listExternalLinks(profileId?: string): ExternalLink[] {
     return this.researchRepository.listExternalLinks(profileId)
   }
@@ -2583,6 +2635,46 @@ export class WorkbenchRepository {
 
   bulkArchiveSchedules(input: ArchiveBulkInput): ArchiveBulkResult {
     return this.researchRepository.bulkArchiveSchedules(input)
+  }
+
+  listRssSources(onlyEnabled = false, onlyVisible = false): import('@prw/contracts').RssSource[] {
+    return this.researchRepository.listRssSources(onlyEnabled, onlyVisible)
+  }
+
+  listRssCategories(): import('@prw/contracts').RssCategory[] {
+    return this.researchRepository.listRssCategories()
+  }
+
+  saveRssCategory(input: import('@prw/contracts').RssCategorySaveInput): import('@prw/contracts').RssCategory {
+    return this.researchRepository.saveRssCategory(input)
+  }
+
+  deleteRssCategory(id: string): void {
+    this.researchRepository.deleteRssCategory(id)
+  }
+
+  saveRssSource(input: import('@prw/contracts').RssSaveSourceInput): import('@prw/contracts').RssSource {
+    return this.researchRepository.saveRssSource(input)
+  }
+
+  deleteRssSource(id: string): void {
+    this.researchRepository.deleteRssSource(id)
+  }
+
+  setRssSourceEnabled(id: string, enabled: boolean): import('@prw/contracts').RssSource {
+    return this.researchRepository.setRssSourceEnabled(id, enabled)
+  }
+
+  setRssSourceDisplayEnabled(id: string, displayEnabled: boolean): import('@prw/contracts').RssSource {
+    return this.researchRepository.setRssSourceDisplayEnabled(id, displayEnabled)
+  }
+
+  insertNewRssItems(items: readonly import('@prw/contracts').RssFeedItem[]): import('@prw/contracts').RssFeedItem[] {
+    return this.researchRepository.insertNewRssItems(items)
+  }
+
+  queryRssItems(input: import('@prw/contracts').RssItemsQueryInput): import('@prw/contracts').RssItemsPage {
+    return this.researchRepository.queryRssItems(input)
   }
 
   getScheduleOccurrenceByIdempotencyKey(idempotencyKey: string): ScheduleOccurrence | null {

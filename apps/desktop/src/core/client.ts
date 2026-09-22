@@ -82,6 +82,8 @@ export class CoreRpcClient {
   private credentialWriter: CredentialWriter | null = null
   private credentialReader: ((provider: string) => Promise<Record<string, unknown> | null>) | null = null
   private integrationSecretReader: ((profileId: string) => Promise<string | null>) | null = null
+  private feishuSender: ((text: string) => Promise<{ ok: true } | { ok: false; error?: string }>) | null = null
+  private feishuStatusReader: (() => Promise<boolean>) | null = null
   private externalOpener: ((url: string) => void) | null = null
 
   constructor(options: CoreRpcClientOptions) {
@@ -151,6 +153,14 @@ export class CoreRpcClient {
       }
       if (isIntegrationCredentialReadMessage(message)) {
         void this.handleIntegrationCredentialRead(message)
+        return
+      }
+      if (isFeishuSendMessage(message)) {
+        void this.handleFeishuSend(message)
+        return
+      }
+      if (isFeishuStatusMessage(message)) {
+        void this.handleFeishuStatus(message)
         return
       }
       if (isOpenExternalMessage(message)) {
@@ -298,6 +308,67 @@ export class CoreRpcClient {
     if (this.disposed) return
     try {
       this.child.postMessage({ type: 'integration-credential-result', requestId, ...result })
+    } catch {
+      // Core is gone; the requester is already failing closed on its own timer.
+    }
+  }
+
+  /**
+   * Message-side push transport (literature_daily_msg). Core hands the rendered
+   * decision-card text to Main, which owns the Feishu token/openId in its vault;
+   * Main answers ok/error, never the token.
+   */
+  setFeishuSender(sender: (text: string) => Promise<{ ok: true } | { ok: false; error?: string }>): void {
+    this.feishuSender = sender
+  }
+
+  /** Bound-state probe for the message workflow: an unbound rule is refused
+   * before any model call. */
+  setFeishuStatusReader(reader: () => Promise<boolean>): void {
+    this.feishuStatusReader = reader
+  }
+
+  private async handleFeishuSend(message: FeishuSendMessage): Promise<void> {
+    const sender = this.feishuSender
+    if (!sender) {
+      this.answerFeishuSend(message.requestId, { ok: false, error: '飞书发送通道尚未就绪' })
+      return
+    }
+    try {
+      this.answerFeishuSend(message.requestId, await sender(message.text))
+    } catch (error) {
+      this.answerFeishuSend(message.requestId, { ok: false, error: error instanceof Error ? error.message : '飞书消息发送失败' })
+    }
+  }
+
+  private answerFeishuSend(requestId: string, result: { ok: true } | { ok: false; error?: string }): void {
+    if (this.disposed) return
+    try {
+      this.child.postMessage({ type: 'feishu-send-result', requestId, ...result })
+    } catch {
+      // Core is gone; the requester is already failing closed on its own timer.
+    }
+  }
+
+  private async handleFeishuStatus(message: FeishuStatusMessage): Promise<void> {
+    const reader = this.feishuStatusReader
+    if (!reader) {
+      this.answerFeishuStatus(message.requestId, false)
+      return
+    }
+    try {
+      this.answerFeishuStatus(message.requestId, await reader())
+    } catch {
+      // Unbound and unreadable are the same fail-closed answer for a scheduled
+      // message push: it is refused before the model call either way.
+      this.answerFeishuStatus(message.requestId, false)
+    }
+  }
+
+  private answerFeishuStatus(requestId: string, bound: boolean): void {
+    if (this.disposed) return
+    try {
+      this.child.postMessage({ type: 'feishu-status-result', requestId, bound })
     } catch {
       // Core is gone; the requester is already failing closed on its own timer.
     }
@@ -620,4 +691,35 @@ interface CredentialReadMessage {
   readonly type: 'credential-read'
   readonly requestId: string
   readonly provider: string
+}
+
+function isFeishuSendMessage(message: unknown): message is FeishuSendMessage {
+  if (typeof message !== 'object' || message === null) return false
+  if (!('type' in message) || message.type !== 'feishu-send') return false
+  if (!('requestId' in message) || typeof message.requestId !== 'string') return false
+  // The text is the rendered decision-card list. It is bounded here so a
+  // malformed Core message cannot become an unbounded outbound message.
+  return 'text' in message && typeof message.text === 'string' && message.text.length > 0 && message.text.length <= 200_000
+}
+
+/** Core's request to send one Feishu message to the bound user. */
+interface FeishuSendMessage {
+  readonly type: 'feishu-send'
+  readonly requestId: string
+  readonly text: string
+}
+
+function isFeishuStatusMessage(message: unknown): message is FeishuStatusMessage {
+  return typeof message === 'object'
+    && message !== null
+    && 'type' in message
+    && message.type === 'feishu-status'
+    && 'requestId' in message
+    && typeof message.requestId === 'string'
+}
+
+/** Core's bound-state probe for the message workflow. */
+interface FeishuStatusMessage {
+  readonly type: 'feishu-status'
+  readonly requestId: string
 }

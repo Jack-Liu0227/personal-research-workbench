@@ -28,6 +28,7 @@ import type {
   ResourceKind,
   ResourceLink,
   ResourceRelationship,
+  RssCategory,
   ResearchArtifact,
   Schedule,
   ScheduleOccurrence,
@@ -986,3 +987,62 @@ export type AgentRunRecordRow = typeof agentRunRecords.$inferSelect
 export type AgentInboxItemRow = typeof agentInboxItems.$inferSelect
 export type AgentConversationRow = typeof agentConversations.$inferSelect
 export type AgentMessageRow = typeof agentMessages.$inferSelect
+export type RssSourceRow = typeof rssSources.$inferSelect
+export type RssItemRow = typeof rssItems.$inferSelect
+export type RssCategoryRow = typeof rssCategories.$inferSelect
+
+export const rssCategories = sqliteTable(
+  'rss_categories',
+  {
+    id: text('id').primaryKey(),
+    name: text('name').notNull().unique(),
+    builtIn: integer('built_in', { mode: 'boolean' }).notNull().default(false),
+    sortOrder: integer('sort_order').notNull().default(0),
+    createdAt: text('created_at').notNull()
+  },
+  (table) => [index('rss_categories_sort_idx').on(table.sortOrder, table.name)]
+)
+
+export const rssSources = sqliteTable(
+  'rss_sources',
+  {
+    id: text('id').primaryKey(),
+    title: text('title').notNull(),
+    url: text('url').notNull().unique(),
+    siteUrl: text('site_url'),
+    description: text('description').notNull().default(''),
+    categoryId: text('category_id').notNull().references(() => rssCategories.id, { onDelete: 'restrict' }),
+    enabled: integer('enabled', { mode: 'boolean' }).notNull().default(true),
+    displayEnabled: integer('display_enabled', { mode: 'boolean' }).notNull().default(true),
+    sortOrder: integer('sort_order').notNull().default(0),
+    createdAt: text('created_at').notNull()
+  },
+  (table) => [
+    index('rss_sources_enabled_sort_idx').on(table.enabled, table.sortOrder),
+    index('rss_sources_category_display_idx').on(table.categoryId, table.displayEnabled)
+  ]
+)
+
+export const rssItems = sqliteTable(
+  'rss_items',
+  {
+    id: text('id').primaryKey(),
+    /** Immutable provenance key; it intentionally survives source deletion. */
+    sourceId: text('source_id').notNull(),
+    sourceTitle: text('source_title').notNull(),
+    sourceUrl: text('source_url').notNull(),
+    sourceCategoryId: text('source_category_id').notNull(),
+    sourceCategoryName: text('source_category_name').notNull(),
+    itemUrl: text('item_url').notNull().unique(),
+    guid: text('guid').notNull().default(''),
+    title: text('title').notNull(),
+    summary: text('summary').notNull().default(''),
+    authorsJson: text('authors_json').notNull().default('[]'),
+    publishedAt: text('published_at'),
+    fetchedAt: text('fetched_at').notNull()
+  },
+  (table) => [
+    index('rss_items_source_fetched_idx').on(table.sourceId, table.fetchedAt),
+    index('rss_items_published_idx').on(table.publishedAt)
+  ]
+)

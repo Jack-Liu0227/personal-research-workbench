@@ -1,6 +1,6 @@
 {
   "name": "personal-research-workbench",
-  "version": "0.0.4",
+  "version": "0.0.5",
   "private": true,
   "type": "module",
   "description": "Local-first personal research workbench for tasks, literature and AI-assisted writing.",
@@ -23,7 +23,10 @@
     "test:last30days:cli": "node scripts/last30days-skill-cli-run.cjs",
     "test:daily-literature": "jiti scripts/daily-literature-push-check.ts",
     "test:calendar-daily-push": "node --import jiti/register --test packages/workspace-service/tests/calendar-daily-push.test.ts",
+    "test:intel-daily": "node --import jiti/register --test packages/workspace-service/tests/intel-daily.test.ts",
     "test:agent-credentials": "node --import jiti/register --test apps/desktop/test/agent-credentials.test.ts",
+    "test:feishu-binding": "node --import jiti/register --test apps/desktop/test/feishu-binding.test.ts",
+    "test:literature-daily-msg": "node --import jiti/register --test packages/workspace-service/tests/feishu-message.test.ts",
     "test:agent-runtime-pi": "node --import jiti/register --test packages/agent-runtime/tests/pi-credential-store-and-tools.test.ts packages/agent-runtime/tests/pi-ledger-normalizer.test.ts packages/agent-runtime/tests/pi-models-file.test.ts packages/agent-runtime/tests/pi-auth-flow.test.ts packages/agent-runtime/tests/pi-tool-names.test.ts packages/agent-runtime/tests/pi-resources.test.ts",
     "test:agent-custom-providers": "node --import jiti/register --test packages/agent-runtime/tests/pi-custom-providers.test.ts",
     "test:agent-discovery": "node --import jiti/register --test packages/agent-runtime/tests/pi-discovery.test.ts",
@@ -49,7 +52,8 @@
     "test:agent-settings": "node --import jiti/register --test packages/database/tests/agent-settings-and-codex-removal.test.ts",
     "test:agent-external-actions": "node --import jiti/register --test packages/database/tests/agent-external-actions.test.ts packages/workspace-service/tests/agent-external-actions.test.ts",
     "test:agent-scheduled-credentials": "node --import jiti/register --test packages/workspace-service/tests/agent-scheduled-credentials.test.ts",
-    "test:agent-live": "node scripts/agent-live-check.cjs"
+    "test:agent-live": "node scripts/agent-live-check.cjs",
+    "test:rss-daily-msg": "node --import jiti/register --test packages/workspace-service/tests/rss-feed.test.ts packages/workspace-service/tests/rss-daily.test.ts packages/workspace-service/tests/rss-daily-push.test.ts packages/database/tests/rss-sources.test.ts packages/workspace-service/tests/feishu-message.test.ts packages/workspace-service/tests/feishu-daily-msg-gate.test.ts packages/database/tests/default-schedules.test.ts"
   },
   "devDependencies": {
     "@types/node": "24.10.14",

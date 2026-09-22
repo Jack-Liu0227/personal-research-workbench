@@ -1,6 +1,18 @@
-# Personal Research Workbench Agent Rules
+# Personal Research Workbench — Agent Handoff Guide
 
-These instructions apply to the whole repository. Read the relevant specification in `docs/` and the assigned role file in `.agents/roles/` before changing code.
+These instructions apply to the whole repository. This file is both the project policy and the minimum handoff guide for a new AI agent.
+
+## Start here when taking over
+
+1. Read this file completely.
+2. Inspect the working tree with `git status --short`; preserve unrelated dirty files and never reset/clean them.
+3. Read [`docs/README.md`](docs/README.md), [`docs/QUICK_START.md`](docs/QUICK_START.md), and the relevant module plan in `docs/plan/`.
+4. Read the owning role file in `.agents/roles/` before editing that area. Use `.agents/roles/README.md` to resolve ownership.
+5. Check [`docs/development-progress.csv`](docs/development-progress.csv) and the relevant `docs/implementation/` entry for current evidence and open validation gaps.
+6. Inspect shared contracts and migrations before changing behavior: `packages/contracts` and `packages/database/src/migrations.ts`.
+7. State the intended scope, non-goals, owner, and verification commands before making consequential edits.
+
+Do not infer completion from UI presence, a generated artifact, a mocked provider, or an unrun command. Reconcile implementation, documentation, tests, and progress evidence before reporting status.
 
 ## Source of truth
 
@@ -26,6 +38,28 @@ Documentation distinguishes implemented MVP behavior from remaining release work
 - AI generation uses pinned `@earendil-works/pi-ai` 0.85.1 (MIT), and the Agent is the pinned `@earendil-works/pi-coding-agent` 0.85.1 `AgentSession` embedded in the Core utility process — never a spawned CLI. Provider identity and wire API remain separate; credentials use app-owned `safeStorage`, never Pi CLI or `~/.pi` auth. User-defined providers are stored in Pi's own `<userData>/agent-runtime/pi/models.json` (endpoints and model ids only, never keys); entries the app cannot represent are preserved verbatim and never rewritten.
 - Closed-source-compatible green development: direct dependencies require license review; GPL/AGPL code is reference-only by default.
 
+## Repository map
+
+- `apps/desktop`: Electron Main, Preload, Core utility process, and React Renderer.
+- `packages/contracts`: shared Zod DTOs and trust-boundary schemas; public contract owner coordinates changes.
+- `packages/domain`: pure domain rules and injected time/IO logic.
+- `packages/database`: SQLite schema, versioned migrations, repositories, and transactions.
+- `packages/connectors`: Obsidian, Zotero, and other external-system adapters.
+- `packages/workspace-service`: cross-entity commands, queries, dispatch, integrations, and scheduling orchestration.
+- `packages/agent-runtime`: in-process pinned Pi Agent integration, credentials boundary, model discovery, tools, and run ledger normalization.
+- `packages/ai-runtime`: provider/prompt/workflow abstractions and scheduler support; do not confuse provider identity with wire API.
+- `packages/workspace-mcp`: local stdio MCP server and its token/allowlist boundary.
+- `docs/plan`: active module specifications; `docs/implementation`: implementation evidence and release notes.
+- `.agents/skills`: project-local skills. Treat skill code as executable and load only trusted project content.
+
+## Current project reality
+
+- The first vertical slice (project → Todo/task → board movement → progress → restart persistence) is implemented.
+- The current work is research-MVP validation and Windows release hardening. Many roadmap rows remain `IN_REVIEW`; do not promote them to `DONE` without executable and independent evidence.
+- The app is local-first and single-user. Tasks, projects, literature indexes/matrices, AI artifacts, profiles, links, runs, schedules, and sync state belong in the authoritative SQLite database.
+- External services and real credentials are optional validation dependencies, not acceptable substitutes for local contract tests. Explicitly label blocked or untested real-service paths.
+- Version values must be read from the relevant `package.json` files and release docs; do not hard-code a version in handoff text.
+
 ## Role ownership
 
 | Area | Owner role | Role file |
@@ -35,6 +69,7 @@ Documentation distinguishes implemented MVP behavior from remaining release work
 | Renderer shared queries/components/design/accessibility | Frontend Platform | [frontend.md](.agents/roles/frontend.md) |
 | Cross-entity commands, queries and transaction orchestration | Workspace Service | [workspace-service.md](.agents/roles/workspace-service.md) |
 | Electron Main/Preload/Core process and packaging | Desktop Backend | [desktop-backend.md](.agents/roles/desktop-backend.md) |
+| Agent runtime, credentials, Pi integration, tools and automation | Agent Runtime | [agent-runtime.md](.agents/roles/agent-runtime.md) |
 | Schema, migrations, repositories and transactions | Database | [database.md](.agents/roles/database.md) |
 | Link Registry, IntegrationCoordinator and adapter baseline | Integrations Platform | [integrations.md](.agents/roles/integrations.md) |
 | Task board and Inbox Todo vertical slice | Task Board & Todo | [task-board-todo.md](.agents/roles/task-board-todo.md) |
@@ -64,16 +99,19 @@ Public contracts have one coordinated owner at a time. Other roles propose chang
 
 ## Verification
 
-Run the narrowest relevant checks during development and the full available gate before handoff:
+Use the narrowest relevant checks during development, then the full available gate before handoff. From a PowerShell terminal at the repository root:
 
 ```powershell
-pnpm typecheck
-pnpm test
+pnpm install
+pnpm typecheck              # equivalent to pnpm -r typecheck
 pnpm build
-pnpm test:e2e
+pnpm test:e2e               # isolated Electron smoke; not an installed NSIS smoke
+pnpm package:win            # only for release/package work
 ```
 
-Do not claim a command passed if the script does not exist or the command was not run. Package/release changes additionally require a real Windows x64 NSIS smoke test, not only a build.
+Named checks live in the root `package.json`, for example `pnpm test:agent-runtime-pi`, `pnpm test:agent-live`, `pnpm test:literature-skills`, and the Zotero/Obsidian focused checks. Run only checks relevant to the change and record exact results. **`pnpm test` is intentionally a no-op and is not a full test gate.**
+
+Real provider, OAuth, Zotero, Obsidian, network, and Windows installer checks must be clearly labeled as executed, blocked, or not run. Packaging changes require a real Windows x64 NSIS install/start/restart/profile/uninstall smoke; a successful build alone is insufficient. Never put real keys or personal data in commands, fixtures, logs, screenshots, or handoff notes.
 
 ## Status and handoff
 
@@ -82,4 +120,15 @@ Do not claim a command passed if the script does not exist or the command was no
 - Handoff must state outcome, changed paths/contracts, verification commands/results, risks and the next receiving role.
 - Authors cannot approve their own Review/Security gate. Escalate data-loss, credential, external-write, RCE, migration and license risks immediately.
 
-Detailed workflow: [Agent Playbook](docs/operations/AGENT_PLAYBOOK.md).
+### Handoff template
+
+```text
+Outcome: <what is implemented or investigated>
+Changed paths/contracts: <exact files, schemas, migrations, APIs>
+Evidence: <exact commands and results; include blocked/not-run checks>
+Remaining risks: <security, data loss, external service, packaging, UX or release gaps>
+Next receiving role: <role file / owner>
+Suggested next step: <one bounded action>
+```
+
+For detailed product usage, read [`docs/QUICK_START.md`](docs/QUICK_START.md) and [`docs/AGENT_USER_GUIDE.md`](docs/AGENT_USER_GUIDE.md). For module ownership, read [`.agents/roles/README.md`](.agents/roles/README.md); do not rely on the removed/nonexistent `docs/operations/AGENT_PLAYBOOK.md` path.

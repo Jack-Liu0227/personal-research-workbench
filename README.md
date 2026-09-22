@@ -24,7 +24,7 @@ Windows 本地优先的个人科研工作台。Electron + React 19 桌面端，T
 
 ## 界面总览
 
-十个一级页面共享同一套 Shell：左侧导航、项目上下文切换、全局 Quick Todo、顶部工作区 Tabs、右侧 Inspector 和底部服务状态栏。
+十一个一级页面共享同一套 Shell：左侧导航、项目上下文切换、全局 Quick Todo、顶部工作区 Tabs、右侧 Inspector 和底部服务状态栏。
 
 ### 仪表盘
 
@@ -55,6 +55,12 @@ Windows 本地优先的个人科研工作台。Electron + React 19 桌面端，T
 ![文献检索](docs/assets/screenshots/05-literature.png)
 
 联网检索工作区，可并行查询 Crossref、OpenAlex、PubMed、arXiv、Semantic Scholar 和 Google Scholar（scholarly）。结果支持按年份、影响因子和引用指标排序，分页显示（10／20／50），并可按项目分配。感兴趣的结果先进入「待分类」暂存区，再从暂存区**预览后**导入 Zotero；也可以导出 Better BibTeX 或 RIS。右侧 Inspector 显示文献信息、Zotero 导入状态、DOI 与摘要；其中「笔记」和「相关文献」两个分页目前只有外观，尚未实现交互。
+
+### 情报日报 / RSS
+
+![情报日报 RSS](docs/assets/screenshots/11-rss.png)
+
+统一查看 RSS 技术新闻与学术文献，支持按来源、关键词、作者和年份筛选，并可通过真实订阅刷新抓取结果。来源的启停、分类和是否加入日报在设置页管理；截图使用隔离 profile 中的本地合成 feed，不包含个人订阅或外部服务数据。
 
 ### Obsidian
 
@@ -175,7 +181,7 @@ node scripts/capture-readme-shots.cjs
 - [开发文档索引](docs/README.md) — 模块状态快照与阅读路径
 - [Quick Start](docs/QUICK_START.md) — 安装、首次配置和第一条 Agent 对话
 - [Agent 使用教程](docs/AGENT_USER_GUIDE.md) — 文献、Obsidian、Zotero、定时任务、参数、skill/extension 与故障排查
-- [模块计划 00–09](docs/plan)：仪表盘、日历、任务、项目空间、文献检索、Obsidian、Zotero、设置、Agent 运行时、完整需求快照
+- [模块计划 00–10](docs/plan)：仪表盘、日历、任务、项目空间、文献检索、Obsidian、Zotero、设置、Agent 运行时、情报日报与飞书推送、完整需求快照
 - [仓库协作规则](AGENTS.md) 与 [角色分工](.agents/roles/README.md)
 
 > 历史架构与数据模型文档已归档且不再随仓库维护，因此这里不再链接它们；共享 Zod 契约（`packages/contracts`）与数据库 migration（`packages/database/src/migrations.ts`）是当前的事实来源。

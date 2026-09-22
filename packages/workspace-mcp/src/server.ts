@@ -590,6 +590,40 @@ export function createWorkspaceMcpServer(client: WorkspaceToolBackend): McpServe
     annotations: { readOnlyHint: true, openWorldHint: false }
   }, async () => textResult(await data(client.requestAgent('agent.settings.get', null))))
 
+  server.registerTool('intel.rss.sources', {
+    title: 'List RSS intelligence sources',
+    description: '列出技术新闻和文献 RSS 来源及其抓取、显示和归档状态。',
+    inputSchema: {},
+    annotations: { readOnlyHint: true, openWorldHint: false }
+  }, async () => textResult(await data(client.request('rss.sources.list', null))))
+
+  server.registerTool('intel.rss.search', {
+    title: 'Search RSS intelligence',
+    description: '查询本地 RSS 情报索引。默认只返回已启用且显示的来源；可按来源、关键词、作者、年份和日期筛选。',
+    inputSchema: {
+      sourceIds: z.array(z.string().min(1)).max(100).default([]),
+      keywords: z.array(z.string().trim().min(1).max(100)).max(20).default([]),
+      authors: z.array(z.string().trim().min(1).max(200)).max(20).default([]),
+      yearFrom: z.number().int().min(1900).max(3000).optional(),
+      yearTo: z.number().int().min(1900).max(3000).optional(),
+      publishedFrom: z.string().optional(),
+      publishedTo: z.string().optional(),
+      includeHidden: z.boolean().default(false),
+      cursor: z.string().nullable().default(null),
+      limit: z.number().int().min(1).max(100).default(50)
+    },
+    annotations: { readOnlyHint: true, openWorldHint: false }
+  }, async (input) => textResult(await data(client.request('rss.items.query', input))))
+
+  server.registerTool('intel.rss.refresh', {
+    title: 'Refresh RSS intelligence',
+    description: '刷新工作台配置的 RSS 来源并写入本地索引；不会修改远端来源。',
+    inputSchema: { sourceIds: z.array(z.string().min(1)).max(100).default([]) },
+    annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: true }
+  }, async ({ sourceIds }) => {
+    return textResult(await data(client.request('rss.items.refresh', { sourceIds })))
+  })
+
   server.registerTool('inbox.ai.list', {
     title: 'List Agent inbox',
     description: 'List generated artifacts and Agent notifications.',

@@ -82,6 +82,17 @@ import {
   LiteratureStagingToZoteroExecuteInputSchema,
   KnowledgeEngineSaveInputSchema,
   KnowledgeEngineTestInputSchema,
+  IntelDailySetConfigInputSchema,
+  RssSourcePreviewInputSchema,
+  RssCategorySaveInputSchema,
+  RssCategoryDeleteInputSchema,
+  RssSaveSourceInputSchema,
+  RssSourceDeleteInputSchema,
+  RssSourceSetEnabledInputSchema,
+  RssSourceSetDisplayEnabledInputSchema,
+  RssItemsQueryInputSchema,
+  RssItemsRefreshInputSchema,
+  RssItemsRefreshResultSchema,
   type RpcRequest,
   type RpcResponse,
   type BulkOperationResult,
@@ -89,6 +100,7 @@ import {
 } from '@prw/contracts'
 import type { WorkbenchRepository } from '@prw/database'
 import { z } from 'zod'
+import { fetchRssSources, previewRssFeed } from './rss-feed.js'
 import {
   buildDailyPushCalendarEvents,
   dailyPushRunOutcome,
@@ -102,6 +114,7 @@ import type { IntegrationCoordinator } from './integration-runtime.js'
 import type { LiteratureCoordinator } from './literature-runtime.js'
 import type { AgentExternalActionContext, AgentExternalActionCoordinator } from './agent-external-actions.js'
 import type { KnowledgeEngineCoordinator } from './knowledge-engines.js'
+import type { IntelDailyCoordinator } from './intel-daily.js'
 import { ObsidianLayoutError } from './obsidian-layout.js'
 
 const ProjectIdInputSchema = z.object({ projectId: ProjectIdSchema })
@@ -185,6 +198,7 @@ export interface CoreServices {
   readonly integrations: IntegrationCoordinator
   readonly literature: LiteratureCoordinator
   readonly knowledgeEngines: KnowledgeEngineCoordinator
+  readonly intelDaily: IntelDailyCoordinator
   /** Pending-approval store for Agent-driven external writes. Optional because
    * the Core test harness builds a service set without one; the request methods
    * fail closed when it is missing. */
@@ -512,6 +526,36 @@ async function execute(services: CoreServices, metadata: CoreMetadata, request: 
     case 'knowledge.engines.test': {
       const payload = KnowledgeEngineTestInputSchema.parse(request.payload)
       return services.knowledgeEngines.test({ kind: payload.kind, secret: credential?.secret ?? null })
+    }
+    case 'intelDaily.getConfig': z.null().parse(request.payload); return services.intelDaily.getConfig()
+    case 'intelDaily.setConfig': return services.intelDaily.setConfig(IntelDailySetConfigInputSchema.parse(request.payload))
+    case 'intelDaily.overview': z.null().parse(request.payload); return services.intelDaily.overview()
+    case 'rss.sources.list': z.null().parse(request.payload); return repository.listRssSources(false, false)
+    case 'rss.sources.preview': return previewRssFeed(RssSourcePreviewInputSchema.parse(request.payload).url)
+    case 'rss.sources.save': return repository.saveRssSource(RssSaveSourceInputSchema.parse(request.payload))
+    case 'rss.sources.remove': { repository.deleteRssSource(RssSourceDeleteInputSchema.parse(request.payload).id); return null }
+    case 'rss.sources.setEnabled': {
+      const p = RssSourceSetEnabledInputSchema.parse(request.payload)
+      return repository.setRssSourceEnabled(p.id, p.enabled)
+    }
+    case 'rss.sources.setDisplayEnabled': {
+      const p = RssSourceSetDisplayEnabledInputSchema.parse(request.payload)
+      return repository.setRssSourceDisplayEnabled(p.id, p.displayEnabled)
+    }
+    case 'rss.categories.list': z.null().parse(request.payload); return repository.listRssCategories()
+    case 'rss.categories.save': return repository.saveRssCategory(RssCategorySaveInputSchema.parse(request.payload))
+    case 'rss.categories.remove': { repository.deleteRssCategory(RssCategoryDeleteInputSchema.parse(request.payload).id); return null }
+    case 'rss.items.query': return repository.queryRssItems(RssItemsQueryInputSchema.parse(request.payload))
+    case 'rss.items.refresh': {
+      const input = RssItemsRefreshInputSchema.parse(request.payload)
+      const sources = repository.listRssSources(true).filter((source) => input.sourceIds.length === 0 || input.sourceIds.includes(source.id))
+      const fetched = await fetchRssSources(sources)
+      const added = repository.insertNewRssItems(fetched.results.flatMap((result) => result.items))
+      return RssItemsRefreshResultSchema.parse({
+        fetchedSources: fetched.results.length,
+        addedItems: added.length,
+        failures: fetched.failures.map((failure) => ({ sourceId: failure.sourceId, message: failure.message }))
+      })
     }
     case 'workspace.status': z.null().parse(request.payload); return workspaceStatus(repository, metadata.version)
     case 'system.openExternal': { const error = new Error('system.openExternal is a Main-process operation'); error.name = 'FEATURE_DISABLED'; throw error }

@@ -31,6 +31,28 @@ import type {
   WorkbenchAgentApiV1,
   WorkbenchApiV2,
   KnowledgeEngineSaveInput,
+  IntelDailyConfig,
+  IntelDailyOverview,
+  IntelDailySetConfigInput,
+  FeishuBeginBindInput,
+  FeishuBeginBindResult,
+  FeishuBindingStatus,
+  FeishuSaveAppInput,
+  FeishuSendTestResult,
+  RssSaveSourceInput,
+  RssSource,
+  RssSourcePreviewInput,
+  RssSourcePreview,
+  RssSourceDeleteInput,
+  RssSourceSetEnabledInput,
+  RssSourceSetDisplayEnabledInput,
+  RssCategory,
+  RssCategoryList,
+  RssCategorySaveInput,
+  RssCategoryDeleteInput,
+  RssItemsQueryInput,
+  RssItemsPage,
+  RssItemsRefreshInput,
   UpdateState
 } from '@prw/contracts'
 import {
@@ -226,6 +248,30 @@ import {
   KnowledgeEngineSaveInputSchema,
   KnowledgeEngineTestInputSchema,
   KnowledgeEngineTestResultSchema,
+  IntelDailyConfigSchema,
+  IntelDailyOverviewSchema,
+  IntelDailySetConfigInputSchema,
+  FeishuBeginBindInputSchema,
+  FeishuBeginBindResultSchema,
+  FeishuBindingStatusSchema,
+  FeishuSaveAppInputSchema,
+  FeishuSendTestResultSchema,
+  RssSaveSourceInputSchema,
+  RssSourcePreviewInputSchema,
+  RssSourcePreviewSchema,
+  RssSourceDeleteInputSchema,
+  RssSourceListSchema,
+  RssSourceSchema,
+  RssSourceSetEnabledInputSchema,
+  RssSourceSetDisplayEnabledInputSchema,
+  RssCategoryListSchema,
+  RssCategorySaveInputSchema,
+  RssCategoryDeleteInputSchema,
+  RssCategorySchema,
+  RssItemsQueryInputSchema,
+  RssItemsPageSchema,
+  RssItemsRefreshInputSchema,
+  RssItemsRefreshResultSchema,
   UpdateStateSchema,
   /** Same allowlist Main enforces; a non-http(s) URL never leaves the renderer bridge. */
   ExternalOpenUrlSchema
@@ -814,6 +860,39 @@ const api: WorkbenchApiV2 = {
         KnowledgeEngineTestInputSchema.parse(input),
         KnowledgeEngineTestResultSchema
       )
+    }
+  },
+  intelDaily: {
+    getConfig: () => invoke('intelDaily.getConfig', null, IntelDailyConfigSchema),
+    setConfig: (input: IntelDailySetConfigInput) => invoke(
+      'intelDaily.setConfig',
+      IntelDailySetConfigInputSchema.parse(input),
+      IntelDailyConfigSchema
+    ),
+    overview: () => invoke('intelDaily.overview', null, IntelDailyOverviewSchema)
+  },
+  feishu: {
+    saveApp: (input: FeishuSaveAppInput) => invoke('feishu.saveApp', FeishuSaveAppInputSchema.parse(input), FeishuBindingStatusSchema),
+    getStatus: () => invoke('feishu.getStatus', null, FeishuBindingStatusSchema),
+    beginBind: (input: FeishuBeginBindInput) => invoke('feishu.beginBind', FeishuBeginBindInputSchema.parse(input), FeishuBeginBindResultSchema),
+    unbind: () => invoke('feishu.unbind', null, FeishuBindingStatusSchema),
+    sendTest: () => invoke('feishu.sendTest', null, FeishuSendTestResultSchema)
+  },
+  rss: {
+    sources: {
+      list: () => invoke('rss.sources.list', null, RssSourceListSchema),
+      preview: (input: RssSourcePreviewInput) => invoke('rss.sources.preview', RssSourcePreviewInputSchema.parse(input), RssSourcePreviewSchema),
+      save: (input: RssSaveSourceInput) => invoke('rss.sources.save', RssSaveSourceInputSchema.parse(input), RssSourceSchema),
+      remove: (input: RssSourceDeleteInput) => invoke('rss.sources.remove', RssSourceDeleteInputSchema.parse(input), VoidResultSchema),
+      setEnabled: (input: RssSourceSetEnabledInput) => invoke('rss.sources.setEnabled', RssSourceSetEnabledInputSchema.parse(input), RssSourceSchema),
+      setDisplayEnabled: (input: RssSourceSetDisplayEnabledInput) => invoke('rss.sources.setDisplayEnabled', RssSourceSetDisplayEnabledInputSchema.parse(input), RssSourceSchema),
+      query: (input: RssItemsQueryInput) => invoke('rss.items.query', RssItemsQueryInputSchema.parse(input), RssItemsPageSchema),
+      refresh: (input: RssItemsRefreshInput) => invoke('rss.items.refresh', RssItemsRefreshInputSchema.parse(input), RssItemsRefreshResultSchema)
+    },
+    categories: {
+      list: () => invoke('rss.categories.list', null, RssCategoryListSchema),
+      save: (input: RssCategorySaveInput) => invoke('rss.categories.save', RssCategorySaveInputSchema.parse(input), RssCategorySchema),
+      remove: (input: RssCategoryDeleteInput) => invoke('rss.categories.remove', RssCategoryDeleteInputSchema.parse(input), VoidResultSchema)
     }
   },
   workspace: {

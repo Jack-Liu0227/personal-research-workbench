@@ -117,7 +117,8 @@ const workflowLabels: Record<AgentRun['workflowKey'], string> = {
   literature_review: '文献综述',
   research_ideation: '研究想法',
   research_plan: '研究方案',
-  manuscript_draft: '论文草稿'
+  manuscript_draft: '论文草稿',
+  literature_daily_msg: '每日文献推送'
 }
 
 export function AgentRunList({ runs, emptyText = '尚无 Agent 运行记录', onCancel, cancelingId }: {

@@ -13,9 +13,11 @@ import { dispatchRpc, type AgentCallContext } from './dispatcher.js'
 import { AgentExternalActionCoordinator } from './agent-external-actions.js'
 import { AgentCoordinator } from './agent-coordinator.js'
 import { deliverDailyLiterature, type DailyLiteratureDelivery } from './daily-literature.js'
+import { deliverFeishuMessage, type FeishuMessageDelivery, type FeishuMessageWriter } from './feishu-message.js'
 import { IntegrationCoordinator } from './integration-runtime.js'
 import { LiteratureCoordinator } from './literature-runtime.js'
 import { KnowledgeEngineCoordinator } from './knowledge-engines.js'
+import { IntelDailyCoordinator } from './intel-daily.js'
 
 export interface ServiceParentPort {
   postMessage(message: unknown): void
@@ -78,6 +80,13 @@ export function startWorkspaceService(options: WorkspaceServiceHostOptions): voi
   // in-process MCP transport, which carries no credential envelope, so a Zotero
   // write the Agent asks for reads its one profile's secret here instead.
   const pendingIntegrationReads = new Map<string, PendingIntegrationSecretRead>()
+  // Message-side push (literature_daily_msg) is delivered over the same
+  // request/ack pattern: Core hands the rendered decision-card text to Main,
+  // which owns the Feishu token/openId in its vault and sends it. The status
+  // probe answers from Main's binding controller so an unbound rule is refused
+  // before any model call.
+  const pendingFeishuSends = new Map<string, PendingFeishuSend>()
+  const pendingFeishuStatusReads = new Map<string, PendingFeishuStatusRead>()
   options.parentPort.on('message', (event) => {
     const ack = parseCredentialAck(event.data)
     if (ack) {
@@ -97,6 +106,25 @@ export function startWorkspaceService(options: WorkspaceServiceHostOptions): voi
       clearTimeout(pending.timer)
       if (result.ok) pending.resolve(result.credential)
       else pending.reject(new Error(result.error ?? '凭据读取被拒绝'))
+      return
+    }
+    const feishuSend = parseFeishuSendResult(event.data)
+    if (feishuSend) {
+      const pending = pendingFeishuSends.get(feishuSend.requestId)
+      if (!pending) return
+      pendingFeishuSends.delete(feishuSend.requestId)
+      clearTimeout(pending.timer)
+      if (feishuSend.ok) pending.resolve()
+      else pending.reject(new Error(feishuSend.error ?? '飞书消息发送被拒绝'))
+      return
+    }
+    const feishuStatus = parseFeishuStatusResult(event.data)
+    if (feishuStatus) {
+      const pending = pendingFeishuStatusReads.get(feishuStatus.requestId)
+      if (!pending) return
+      pendingFeishuStatusReads.delete(feishuStatus.requestId)
+      clearTimeout(pending.timer)
+      pending.resolve(feishuStatus.bound)
       return
     }
     const secret = parseIntegrationCredentialResult(event.data)
@@ -137,6 +165,7 @@ export function startWorkspaceService(options: WorkspaceServiceHostOptions): voi
     integrations,
     literature,
     knowledgeEngines: new KnowledgeEngineCoordinator(repository),
+    intelDaily: new IntelDailyCoordinator(repository),
     externalActions: new AgentExternalActionCoordinator({
       repository,
       // Every port is one of the connector entry points the UI already calls,
@@ -164,6 +193,13 @@ export function startWorkspaceService(options: WorkspaceServiceHostOptions): voi
       agentRuntime: runtimeAdapter,
       requestCredential: (provider) => readCredential(options.parentPort, pendingCredentialReads, provider),
       persistScheduledOutput: (input) => persistScheduledOutput(integrations, input),
+      deliverFeishuMessage: (input) => {
+        const writer: FeishuMessageWriter = {
+          sendText: (text) => sendFeishuMessage(options.parentPort, pendingFeishuSends, text)
+        }
+        return deliverFeishuMessage(writer, input)
+      },
+      requestFeishuStatus: () => requestFeishuStatus(options.parentPort, pendingFeishuStatusReads),
       // Normalized ledger records leave the Core process over the same parent
       // port as RPC responses. The desktop Main process decides which renderer
       // window subscribed to which run before forwarding anything.
@@ -432,6 +468,85 @@ function readIntegrationSecret(
  * dropped, which leaves the write failing on its own connection check instead of
  * being signed with a value nobody can name.
  */
+/**
+ * Ask Electron Main to send one text message to the bound Feishu user.
+ *
+ * The answer is one-shot: Main's controller owns the tenant token and the bound
+ * openId, so Core only hands over the rendered text and learns ok/error. Nothing
+ * is cached here.
+ */
+function sendFeishuMessage(
+  parentPort: ServiceParentPort,
+  pending: Map<string, PendingFeishuSend>,
+  text: string
+): Promise<void> {
+  return new Promise<void>((resolve, reject) => {
+    const requestId = randomUUID()
+    const timer = setTimeout(() => {
+      pending.delete(requestId)
+      reject(new Error('飞书消息发送超时：Main 未返回发送结果'))
+    }, credentialWriteTimeoutMs)
+    timer.unref?.()
+    pending.set(requestId, { resolve, reject, timer })
+    parentPort.postMessage({ type: 'feishu-send', requestId, text })
+  })
+}
+
+/** Validate what Main returned for one Feishu message send. */
+export function parseFeishuSendResult(
+  value: unknown
+): { requestId: string; ok: true } | { requestId: string; ok: false; error?: string } | null {
+  if (typeof value !== 'object' || value === null) return null
+  if (!('type' in value) || value.type !== 'feishu-send-result') return null
+  if (!('requestId' in value) || typeof value.requestId !== 'string') return null
+  if (!('ok' in value) || typeof value.ok !== 'boolean') return null
+  if (value.ok) return { requestId: value.requestId, ok: true }
+  const error = 'error' in value && typeof value.error === 'string' ? value.error : undefined
+  return error === undefined ? { requestId: value.requestId, ok: false } : { requestId: value.requestId, ok: false, error }
+}
+
+/** Ask Electron Main whether the Feishu app is bound (and to whom). */
+function requestFeishuStatus(
+  parentPort: ServiceParentPort,
+  pending: Map<string, PendingFeishuStatusRead>
+): Promise<boolean> {
+  return new Promise<boolean>((resolve, reject) => {
+    const requestId = randomUUID()
+    const timer = setTimeout(() => {
+      pending.delete(requestId)
+      reject(new Error('飞书绑定状态读取超时：Main 未返回绑定状态'))
+    }, credentialWriteTimeoutMs)
+    timer.unref?.()
+    pending.set(requestId, { resolve, reject, timer })
+    parentPort.postMessage({ type: 'feishu-status', requestId })
+  })
+}
+
+/** Validate what Main returned for a Feishu bound-state probe. */
+export function parseFeishuStatusResult(
+  value: unknown
+): { requestId: string; bound: boolean } | null {
+  if (typeof value !== 'object' || value === null) return null
+  if (!('type' in value) || value.type !== 'feishu-status-result') return null
+  if (!('requestId' in value) || typeof value.requestId !== 'string') return null
+  if (!('bound' in value) || typeof value.bound !== 'boolean') return null
+  return { requestId: value.requestId, bound: value.bound }
+}
+
+/** One Feishu message send waiting on Electron Main. */
+interface PendingFeishuSend {
+  readonly resolve: () => void
+  readonly reject: (error: Error) => void
+  readonly timer: ReturnType<typeof setTimeout>
+}
+
+/** One Feishu bound-state probe waiting on Electron Main. */
+interface PendingFeishuStatusRead {
+  readonly resolve: (bound: boolean) => void
+  readonly reject: (error: Error) => void
+  readonly timer: ReturnType<typeof setTimeout>
+}
+
 export function parseIntegrationCredentialResult(
   value: unknown
 ): { requestId: string; ok: true; secret: string | null } | { requestId: string; ok: false; error?: string } | null {

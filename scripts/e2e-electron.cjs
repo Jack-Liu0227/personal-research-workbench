@@ -45,7 +45,7 @@ function assert(condition, message) {
  * reachable but not mounted-visible until the group is expanded, so navigation
  * has to open the group first instead of assuming every surface is a top-level
  * item. */
-const researchNavLabels = ['仪表盘', '项目空间', '文献检索', 'Obsidian', 'Zotero', '定时任务']
+const researchNavLabels = ['仪表盘', '项目空间', '文献检索', 'Obsidian', 'Zotero', '定时任务', '情报日报']
 
 async function clickNav(page, label) {
   if (researchNavLabels.includes(label)) {
@@ -127,6 +127,12 @@ async function main() {
     await page.getByText('只读投影：任务 / 项目截止日期，以及每日推送', { exact: false }).waitFor({ state: 'visible', timeout: 20_000 })
     assert(await page.locator('select[aria-label="按类型筛选"] option[value="daily_push"]').count() === 1, 'Calendar daily-push type filter missing')
     assert(await page.locator('[data-calendar-readonly-legend]').count() === 1, 'Calendar read-only projection legend missing')
+
+    // Intel daily is the read-only RSS result view backed by the source ledger.
+    await clickNav(page, '情报日报')
+    await page.getByRole('heading', { name: '情报日报' }).waitFor({ state: 'visible', timeout: 20_000 })
+    assert(await page.getByLabel('RSS 来源').count() === 1, 'RSS source filter missing')
+    assert((await bodyText(page)).includes('RSS 技术新闻与文献'), 'RSS intel description missing')
 
     // Project-space knowledge categories use the same safe empty-folder
     // deletion contract as the dedicated Obsidian page, including select-all
@@ -703,7 +709,10 @@ async function main() {
     assert(connectorBarText.includes('全选仅覆盖'), 'Connection selection scope text missing')
     assert(connectorBarText.includes('本列表无分页、无筛选'), 'Connection selection scope boundary missing')
     assert(/共 \d+|已选 \d+/.test(connectorBarText), 'Connection selection count missing')
-    const connectionRowCount = await page.locator('.settings-row').count()
+    // Count only the connection rows inside the profile list card, never the
+    // RSS source card that also renders .settings-row rows above it.
+    const connectionListCard = page.locator('section', { hasText: 'Obsidian · Zotero · Notion' }).first()
+    const connectionRowCount = await connectionListCard.locator('.settings-row').count()
     if (connectionRowCount === 0) {
       assert(await connectorBar.getByLabel('全选当前列表连接记录').isDisabled(), 'Empty connection list must disable select-all')
       assert(await connectorBar.getByRole('button', { name: '删除选中的 0 条连接记录' }).isDisabled(), 'Empty connection list must disable bulk delete')
@@ -713,6 +722,34 @@ async function main() {
     }
     console.log('connection bulk delete bar: ok')
 
+    // Settings → 工具连接: the Feishu binding card (daily literature push
+    // channel) renders its status from the Main-owned RPC and guides setup.
+    // The status query fires on mount, so reaching this line proves the
+    // feishu.getStatus RPC round-trips through preload → Main → safeStorage.
+    const feishuPanel = page.locator('section', { hasText: '飞书（每日文献推送）' }).first()
+    assert(await feishuPanel.count() === 1, 'Feishu binding card missing')
+    const feishuText = await feishuPanel.innerText()
+    assert(/未配置|已保存凭据|已绑定/.test(feishuText), 'Feishu binding status not rendered')
+    assert(feishuText.includes('扫码绑定'), 'Feishu bind action missing')
+    assert(feishuText.includes('重定向 URL'), 'Feishu redirect guidance missing')
+    assert(feishuText.includes('35231'), 'Feishu callback port guidance missing')
+    console.log('feishu binding card: ok')
+
+    // RSS source management card: the default sources and categories are seeded
+    // (migration 37) and listed via the rss.sources.list RPC, and the add form
+    // is present. This proves the source ledger is wired end to end.
+    const rssPanel = page.locator('section', { hasText: 'RSS 订阅源（每日文献推送）' }).first()
+    assert(await rssPanel.count() === 1, 'RSS source card missing')
+    const rssText = await rssPanel.innerText()
+    for (const title of ['掘金', 'Hacker News', 'Nature', 'npj Computational Materials', 'Nature Machine Intelligence']) {
+      assert(rssText.includes(title), `RSS default source ${title} missing from the card`)
+    }
+    assert(rssText.includes('https://www.nature.com/nature.rss'), 'RSS default URL missing from the card')
+    assert(await page.getByLabel('期刊名称').count() === 1, 'RSS source title input missing')
+    assert(await page.getByLabel('RSS 地址').count() === 1, 'RSS source url input missing')
+    assert(await page.getByRole('button', { name: '添加订阅' }).count() === 1, 'RSS add button missing')
+    console.log('rss source card: ok')
+
     // Schedule is seeded once, defaults enabled, and can be paused/resumed.
     await clickNav(page, '定时任务')
     await page.waitForFunction(() => !document.body.innerText.includes('正在读取定时任务') && document.body.innerText.includes('Last 30 days'), null, { timeout: 30_000 })
@@ -721,26 +758,29 @@ async function main() {
     assert(text.includes('每天') && text.includes('09:00'), 'Daily 09:00 schedule semantics missing')
     // Daily push naming and rule fields must be visible and drift-free: the
     // frozen shared default (skill last30days, topic AI 最新资讯, zh-CN, 30 days)
-    // owns the schedule surface, and 每日文献推送 stays an Obsidian layout
-    // category (checked on the Obsidian page) instead of a second schedule folder.
-    assert(text.includes('每日资讯推送'), 'Daily push output folder missing from the schedule card')
-    assert(!text.includes('每日文献推送'), 'Schedule surface still shows the legacy 每日文献推送 folder')
-    assert(text.includes('来源 全部可用'), 'Daily push source scope missing from the schedule card')
-    assert(text.includes('近 30 天'), 'Daily push lookback window missing from the schedule card')
-    assert(text.includes('AI 最新资讯'), 'Daily push topic missing from the schedule card')
-    assert(text.includes('简体中文'), 'Daily push response language missing from the schedule card')
-    // The shipped schedule surface is exactly the three frozen
+    // owns the schedule surface, and the legacy 每日文献推送 folder stays gone
+    // (the message-side rule legitimately carries the channel name, so the
+    // legacy-folder guard is scoped to the Obsidian-writing daily rule's card).
+    const scheduleCards = page.locator('.schedule-card')
+    const scheduleCardTexts = await scheduleCards.allInnerTexts()
+    const dailyCard = scheduleCardTexts.find((value) => value.includes('技能 last30days ·'))
+    assert(dailyCard !== undefined, 'Built-in Last 30 days card missing')
+    assert(dailyCard.includes('每日资讯推送') && !dailyCard.includes('每日文献推送'), 'Daily push must not regress to the legacy 每日文献推送 folder')
+    assert(dailyCard.includes('来源 全部可用'), 'Daily push source scope missing from the schedule card')
+    assert(dailyCard.includes('近 30 天'), 'Daily push lookback window missing from the schedule card')
+    assert(dailyCard.includes('主题 AI 最新资讯'), 'Daily push topic missing from the schedule card')
+    assert(dailyCard.includes('简体中文'), 'Daily push response language missing from the schedule card')
+    // The shipped schedule surface is exactly the four frozen
     // DEFAULT_AGENT_SCHEDULE_RULES entries, all enabled, so a fresh install can
     // neither silently lose a default rule nor grow a duplicate.
-    const scheduleCards = page.locator('.schedule-card')
-    assert(await scheduleCards.count() === 3, `Expected exactly 3 default schedules, got ${await scheduleCards.count()}: ${await scheduleCards.allInnerTexts()}`)
-    assert(text.includes('3 个任务'), 'Default schedule count badge is not exactly 3')
-    const scheduleCardTexts = await scheduleCards.allInnerTexts()
-    for (const [skillKey, topic, outputFolder] of [['last30days', 'AI 最新资讯', '每日资讯推送'], ['literature-matrix', '长上下文检索', '文献矩阵'], ['literature-review-push', '长上下文检索', '文献综述']]) {
-      const card = scheduleCardTexts.find((value) => value.includes(`技能 ${skillKey} ·`))
-      assert(card !== undefined, `Default schedule for ${skillKey} missing: ${scheduleCardTexts.join(' | ')}`)
-      assert(card.includes('已启用'), `Default schedule ${skillKey} is not enabled: ${card}`)
-      assert(card.includes(`主题 ${topic}`) && card.includes(outputFolder), `Default schedule ${skillKey} fields drifted: ${card}`)
+    assert(await scheduleCards.count() === 4, `Expected exactly 4 default schedules, got ${await scheduleCards.count()}: ${await scheduleCards.allInnerTexts()}`)
+    assert(text.includes('4 个任务'), 'Default schedule count badge is not exactly 4')
+    for (const [skillKey, topic, outputFolder] of [['last30days', 'AI 最新资讯', '每日资讯推送'], ['literature-matrix', '长上下文检索', '文献矩阵'], ['literature-review-push', '长上下文检索', '文献综述'], ['literature-matrix', '每日文献精选推送', '每日文献推送']]) {
+      // Two default rules share the literature-matrix skill; topic disambiguates.
+      const card = scheduleCardTexts.find((value) => value.includes(`技能 ${skillKey} ·`) && value.includes(`主题 ${topic}`))
+      assert(card !== undefined, `Default schedule ${skillKey}/${topic} missing: ${scheduleCardTexts.join(' | ')}`)
+      assert(card.includes('已启用'), `Default schedule ${skillKey}/${topic} is not enabled: ${card}`)
+      assert(card.includes(`主题 ${topic}`) && card.includes(outputFolder), `Default schedule ${skillKey}/${topic} fields drifted: ${card}`)
     }
     await page.getByRole('button', { name: '新建定时任务' }).click()
     assert(await page.getByRole('heading', { name: '新建定时任务', exact: true }).count() === 1, 'Schedule editor panel missing')

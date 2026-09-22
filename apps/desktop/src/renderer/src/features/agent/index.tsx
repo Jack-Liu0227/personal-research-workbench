@@ -630,7 +630,7 @@ export function AgentPage({ projects, onNavigate }: { projects: Project[]; onNav
       acceptSuggestion(highlightedCommand)
       return
     }
-    if (event.key === 'Enter' && !event.ctrlKey && !event.metaKey) {
+    if (event.key === 'Enter' && !event.shiftKey && !event.ctrlKey && !event.metaKey) {
       const parsed = parseAgentMagicCommand(instructions.trim())
       if (paletteVisible && highlightedCommand !== null && (parsed === null || 'error' in parsed) && highlightedCommand !== instructions.trim()) {
         event.preventDefault()

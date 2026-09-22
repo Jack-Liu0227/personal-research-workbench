@@ -36,6 +36,8 @@ import {
   KnowledgeEngineKindSchema,
   KnowledgeEngineSaveInputSchema,
   KnowledgeEngineTestInputSchema,
+  FeishuBeginBindInputSchema,
+  FeishuSaveAppInputSchema,
   IntegrationErrorSchema,
   SystemSelectFolderResultSchema,
   SystemRevealPathInputSchema,
@@ -57,6 +59,7 @@ import {
   credentialKey,
   type CredentialVault
 } from './credentials.js'
+import { FeishuBindingController } from './feishu-binding.js'
 
 export const WORKBENCH_RPC_CHANNEL = 'workbench:v2:rpc'
 export const WORKBENCH_AGENT_RPC_CHANNEL = 'workbench:agent:v1'
@@ -105,6 +108,8 @@ interface RegisterRpcOptions {
   readonly credentialVault: CredentialVault
   readonly getWindow: () => BrowserWindow | null
   readonly developmentUrl: string | undefined
+  /** Main-owned Feishu OAuth binding; absent in tests that route every RPC to Core. */
+  readonly feishu?: FeishuBindingController
 }
 
 export interface CoreRpcTransport {
@@ -519,6 +524,23 @@ export function registerRpcHandler(options: RegisterRpcOptions): () => void {
       if (parsed.data.method === 'system.saveTextFile') {
         return saveTextFile(options, event, SystemSaveTextFileInputSchema.parse(parsed.data.payload))
       }
+      if (parsed.data.method === 'feishu.saveApp') {
+        return withFeishu(options, event, 'feishu-save-app', () =>
+          options.feishu!.saveApp(FeishuSaveAppInputSchema.parse(parsed.data.payload)))
+      }
+      if (parsed.data.method === 'feishu.getStatus') {
+        return withFeishu(options, event, 'feishu-get-status', () => options.feishu!.getStatus())
+      }
+      if (parsed.data.method === 'feishu.beginBind') {
+        FeishuBeginBindInputSchema.parse(parsed.data.payload)
+        return withFeishu(options, event, 'feishu-begin-bind', () => options.feishu!.beginBind())
+      }
+      if (parsed.data.method === 'feishu.unbind') {
+        return withFeishu(options, event, 'feishu-unbind', () => options.feishu!.unbind())
+      }
+      if (parsed.data.method === 'feishu.sendTest') {
+        return withFeishu(options, event, 'feishu-send-test', () => options.feishu!.sendTest())
+      }
       return router.route(parsed.data.method, parsed.data.payload)
     }
   )
@@ -692,6 +714,30 @@ async function revealPath(options: RegisterRpcOptions, event: IpcMainInvokeEvent
     return { id: 'reveal-path', ok: true, data: null }
   } catch (error) {
     return { id: 'reveal-path', ok: false, error: normalizeMainError(error) }
+  }
+}
+
+/** Trusted-sender guard + result envelope for the Main-owned Feishu methods. */
+async function withFeishu(
+  options: RegisterRpcOptions,
+  event: IpcMainInvokeEvent,
+  id: string,
+  run: () => Promise<unknown>
+): Promise<RpcResponse> {
+  if (!options.feishu) {
+    return { id, ok: false, error: appError('NOT_AUTHORIZED', '飞书绑定服务不可用。') }
+  }
+  if (!isTrustedSender(event, options.getWindow(), options.developmentUrl)) {
+    return {
+      id: 'rejected-request',
+      ok: false,
+      error: appError('NOT_AUTHORIZED', 'The request did not come from the workbench window.')
+    }
+  }
+  try {
+    return { id, ok: true, data: await run() as Extract<RpcResponse, { ok: true }>['data'] }
+  } catch (error) {
+    return { id, ok: false, error: normalizeMainError(error) }
   }
 }
 

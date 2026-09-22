@@ -1,0 +1,314 @@
+# ═══════════════════════════════════════════════════════════════
+#                    TrendRadar 配置文件
+#              情报·日报定制版（基线：上游 master config.yaml）
+#      定制点：启用 custom 调度、新增论文/AI RSS 源、AI 分析默认开启（含 RSS）
+#      Webhook / AI Key 留空，由 GitHub Secrets 环境变量注入
+# ═══════════════════════════════════════════════════════════════
+
+# ===============================================================
+# 1. 基础设置
+# ===============================================================
+app:
+  timezone: "Asia/Shanghai"           # 北京时间 UTC+8
+  show_version_update: true
+
+
+# ===============================================================
+# 1.5 调度系统
+#   preset: "custom" → 读 timeline.yaml 底部 custom 段
+#   时段编排（见 timeline.yaml）：
+#     每小时 :33  → 前沿瞭望（incremental 增量）
+#     08:00-09:00 → 每日热点（daily 汇总 + AI 分析）
+#     09:00-10:00 → 每日论文精选与解读（daily 汇总 + AI 分析）
+# ===============================================================
+schedule:
+  enabled: true
+  preset: "custom"
+
+
+# ===============================================================
+# 2. 数据源 - 热榜平台（11 平台全开，供「每日热点」）
+# ===============================================================
+platforms:
+  enabled: true
+  api_url: ""
+  sources:
+    - id: "toutiao"
+      name: "今日头条"
+      expected_domain: "toutiao.com"
+    - id: "baidu"
+      name: "百度热搜"
+      expected_domain: "baidu.com"
+    - id: "wallstreetcn-hot"
+      name: "华尔街见闻"
+      expected_domain: "wallstreetcn.com"
+    - id: "thepaper"
+      name: "澎湃新闻"
+      expected_domain: "thepaper.cn"
+    - id: "bilibili-hot-search"
+      name: "bilibili 热搜"
+      expected_domain: "bilibili.com"
+    - id: "cls-hot"
+      name: "财联社热门"
+      expected_domain: "cls.cn"
+    - id: "ifeng"
+      name: "凤凰网"
+      expected_domain: "ifeng.com"
+    - id: "tieba"
+      name: "贴吧"
+      expected_domain: "baidu.com"
+    - id: "weibo"
+      name: "微博"
+      expected_domain: "weibo.com"
+    - id: "douyin"
+      name: "抖音"
+      expected_domain: "douyin.com"
+    - id: "zhihu"
+      name: "知乎"
+      expected_domain: "zhihu.com"
+
+
+# ===============================================================
+# 3. 数据源 - RSS 订阅
+#   RSS 区域按时间流展示（天然时间顺序），受当前时段关键词过滤
+#   「前沿瞭望」与「每日论文」共用以下论文/AI 源，靠关键词组区分
+#   已实测可用：arXiv / Nature 系列 / PLOS ONE（2026-09-20 验证）
+# ===============================================================
+rss:
+  enabled: true
+  freshness_filter:
+    enabled: true
+    max_age_days: 1                   # 只推送 1 天内的文章
+
+  feeds:
+    - id: "hacker-news"
+      name: "Hacker News"
+      url: "https://hnrss.org/frontpage"
+
+    - id: "arxiv-cs-ai"
+      name: "arXiv cs.AI"
+      url: "https://rss.arxiv.org/rss/cs.AI"
+
+    - id: "nature"
+      name: "Nature"
+      url: "https://www.nature.com/nature.rss"
+
+    - id: "nature-communications"
+      name: "Nature Communications"
+      url: "https://www.nature.com/ncomms.rss"
+
+    - id: "nature-machine-intelligence"
+      name: "Nature Machine Intelligence"
+      url: "https://www.nature.com/natmachintell.rss"
+
+    - id: "plos-one"
+      name: "PLOS ONE"
+      url: "https://journals.plos.org/plosone/feed/atom"
+
+
+# ===============================================================
+# 4. 报告模式（default 值，实际由 timeline 时段覆盖）
+# ===============================================================
+report:
+  mode: "incremental"                 # 时段外默认：增量
+  display_mode: "keyword"             # 按关键词分组显示
+  sort_by_position_first: false
+  rank_threshold: 5
+  max_news_per_keyword: 0             # 0=不限制
+
+
+# ===============================================================
+# 4.5 筛选策略（关键词匹配，不消耗 token；AI 筛选可后续切换）
+# ===============================================================
+filter:
+  method: "keyword"
+  priority_sort_enabled: true
+
+
+# ===============================================================
+# 4.6 AI 智能筛选（仅 filter.method=ai 时生效，默认不使用）
+# ===============================================================
+ai_filter:
+  batch_size: 200
+  batch_interval: 2
+  min_score: 0.7
+  reclassify_threshold: 0.6
+  prompt_file: "prompt.txt"
+  extract_prompt_file: "extract_prompt.txt"
+  update_tags_prompt_file: "update_tags_prompt.txt"
+
+
+# ===============================================================
+# 5. 推送内容控制
+# ===============================================================
+display:
+  region_order:
+    - new_items
+    - hotlist
+    - rss
+    - standalone
+    - ai_analysis
+
+  regions:
+    hotlist: true                     # 热榜区域（关键词匹配）
+    new_items: false
+    rss: true                         # RSS 区域（论文/前沿内容）
+    standalone: false                 # 独立展示区关闭，避免论文泄漏到所有推送
+    ai_analysis: true                 # AI 分析区域（解读）
+
+  standalone:
+    platforms: []
+    rss_feeds: []
+    max_items: 20
+
+
+# ===============================================================
+# 6. 推送通知
+#   安全警告：webhook 不要写在这里，填入 GitHub Secrets
+#   （FEISHU_WEBHOOK_URL 由 crawler.yml 环境变量注入）
+# ===============================================================
+notification:
+  enabled: true
+
+  channels:
+    feishu:
+      webhook_url: ""                 # ← 由 Secret FEISHU_WEBHOOK_URL 注入
+
+    dingtalk:
+      webhook_url: ""
+
+    wework:
+      webhook_url: ""
+      msg_type: "markdown"
+
+    telegram:
+      bot_token: ""
+      chat_id: ""
+
+    email:
+      from: ""
+      password: ""
+      to: ""
+      smtp_server: ""
+      smtp_port: ""
+
+    ntfy:
+      server_url: "https://ntfy.sh"
+      topic: ""
+      token: ""
+
+    bark:
+      url: ""
+
+    slack:
+      webhook_url: ""
+
+    generic_webhook:
+      webhook_url: ""
+      payload_template: ""
+
+
+# ===============================================================
+# 7. 存储配置（GitHub Actions → local；html 报告供 App 阅读）
+# ===============================================================
+storage:
+  backend: "auto"
+  formats:
+    sqlite: true                      # 主存储（勿关）
+    txt: false
+    html: true                        # HTML 报告（App 网页端阅读）
+  local:
+    data_dir: "output"
+    retention_days: 0
+  remote:
+    retention_days: 0
+    endpoint_url: ""
+    bucket_name: ""
+    access_key_id: ""
+    secret_access_key: ""
+    region: ""
+  pull:
+    enabled: false
+    days: 7
+
+
+# ===============================================================
+# 8. AI 模型配置（ai_analysis / ai_translation / ai_filter 共用）
+#   Key 由 Secret AI_API_KEY 注入；模型由 Secret AI_MODEL 注入
+# ===============================================================
+ai:
+  model: "deepseek/deepseek-v4-flash"
+  api_key: ""                         # ← 由 Secret AI_API_KEY 注入
+  api_base: ""                        # 留空用官方端点
+  timeout: 120
+  temperature: 1.0
+  max_tokens: 5000
+  num_retries: 1
+  fallback_models: []
+
+
+# ===============================================================
+# 9. AI 分析功能（“默认增强”：true；关闭入口见部署说明 §8）
+# ===============================================================
+ai_analysis:
+  enabled: true                       # AI 分析总开关
+  language: "Chinese"
+  prompt_file: "ai_analysis_prompt.txt"
+  mode: "follow_report"
+  max_news_for_analysis: 150
+  include_rss: true                   # ← 论文解读必须：分析 RSS 论文
+  include_standalone: true
+  include_rank_timeline: true
+
+
+# ===============================================================
+# 10. AI 翻译功能（论文/前沿标题翻译成中文）
+# ===============================================================
+ai_translation:
+  enabled: true
+  language: "中文"
+  prompt_file: "ai_translation_prompt.txt"
+  batch_size: 100
+  batch_interval: 2
+  scope:
+    hotlist: false
+    rss: true                         # 翻译 RSS 标题
+    standalone: true
+
+
+# ===============================================================
+# 11. 高级设置
+# ===============================================================
+advanced:
+  debug: false
+  version_check_url: "https://raw.githubusercontent.com/sansan0/TrendRadar/refs/heads/master/version"
+  mcp_version_check_url: "https://raw.githubusercontent.com/sansan0/TrendRadar/refs/heads/master/version_mcp"
+  configs_version_check_url: "https://raw.githubusercontent.com/sansan0/TrendRadar/refs/heads/master/version_configs"
+
+  crawler:
+    request_interval: 2000
+    use_proxy: false
+    default_proxy: "http://127.0.0.1:10801"
+
+  rss:
+    request_interval: 1000
+    timeout: 15
+    use_proxy: false
+    proxy_url: ""
+
+  # 排序权重（热榜区域；RSS 区域按时间流，不受此影响）
+  weight:
+    rank: 0.6
+    frequency: 0.3
+    hotness: 0.1
+
+  max_accounts_per_channel: 3
+
+  batch_size:
+    default: 4000
+    dingtalk: 20000
+    feishu: 30000
+    bark: 4000
+    slack: 4000
+  batch_send_interval: 3
+  feishu_message_separator: "━━━━━━━━━━━━━━━━"

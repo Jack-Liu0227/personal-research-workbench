@@ -1,0 +1,252 @@
+# ═══════════════════════════════════════════════════════════════
+#                   TrendRadar 时间线配置
+#           情报·日报版（基线：上游 master timeline.yaml）
+#   config.yaml 中 schedule.preset: "custom" → 读下方 custom 段
+#
+#   ⏰ 时段设计（GitHub Actions 每小时 :33 触发一次）：
+#     00:00-23:59  前沿瞭望   incremental 增量推送（每小时）
+#     08:00-08:59  每日热点   daily 汇总 + AI 分析（08:33 触发）
+#     09:00-10:00  每日论文   daily 汇总 + AI 分析/解读（09:33 触发）
+#
+#   重叠策略 last_wins：时段列表里靠后的优先 → 具体时段覆盖全天时段
+#   时段内未写的字段继承 default
+# ═══════════════════════════════════════════════════════════════
+
+presets:
+
+  always_on:
+    name: "全天监控"
+    description: "全天候监控，有新增立即推送。适合重度用户。"
+    default:
+      collect: true
+      analyze: false
+      ai_mode: "current"
+      push: true
+      report_mode: "incremental"
+      once:
+        analyze: false
+        push: false
+    periods: {}
+    day_plans:
+      all_day:
+        periods: []
+    week_map:
+      1: "all_day"
+      2: "all_day"
+      3: "all_day"
+      4: "all_day"
+      5: "all_day"
+      6: "all_day"
+      7: "all_day"
+
+
+  morning_evening:
+    name: "早晚汇总"
+    description: "全天推送 + 晚间当日汇总。适合大多数人。"
+    default:
+      collect: true
+      analyze: true
+      ai_mode: "current"
+      push: true
+      report_mode: "current"
+      once:
+        analyze: false
+        push: false
+    periods:
+      evening_summary:
+        name: "晚间汇总"
+        start: "20:00"
+        end: "22:00"
+        analyze: true
+        ai_mode: "daily"
+        report_mode: "daily"
+        once:
+          analyze: true
+          push: true
+    day_plans:
+      all_day:
+        periods: ["evening_summary"]
+    week_map:
+      1: "all_day"
+      2: "all_day"
+      3: "all_day"
+      4: "all_day"
+      5: "all_day"
+      6: "all_day"
+      7: "all_day"
+
+
+  office_hours:
+    name: "办公时间"
+    description: "工作日三段式推送（到岗→午间→收工），周末增量自由推送。"
+    default:
+      collect: true
+      analyze: false
+      ai_mode: "current"
+      push: false
+      report_mode: "current"
+      once:
+        analyze: true
+        push: true
+    periods:
+      morning_briefing:
+        name: "到岗速览"
+        start: "09:00"
+        end: "11:00"
+        analyze: true
+        ai_mode: "current"
+        push: true
+        report_mode: "current"
+      noon_update:
+        name: "午间热点"
+        start: "13:00"
+        end: "15:00"
+        push: true
+        report_mode: "current"
+      closing_summary:
+        name: "收工汇总"
+        start: "17:00"
+        end: "19:00"
+        analyze: true
+        ai_mode: "daily"
+        push: true
+        report_mode: "daily"
+      weekend_free:
+        name: "周末自由"
+        start: "08:00"
+        end: "23:00"
+        ai_mode: "current"
+        push: true
+        report_mode: "incremental"
+        once:
+          analyze: false
+          push: false
+    day_plans:
+      workday:
+        periods: ["morning_briefing", "noon_update", "closing_summary"]
+      weekend:
+        periods: ["weekend_free"]
+    week_map:
+      1: "workday"
+      2: "workday"
+      3: "workday"
+      4: "workday"
+      5: "workday"
+      6: "weekend"
+      7: "weekend"
+
+
+  night_owl:
+    name: "夜猫子模式"
+    description: "午后速览 + 深夜全天汇总。适合夜间工作者、海外时差用户。"
+    default:
+      collect: true
+      analyze: false
+      ai_mode: "current"
+      push: false
+      report_mode: "current"
+      once:
+        analyze: true
+        push: true
+    periods:
+      afternoon_peek:
+        name: "午后速览"
+        start: "15:00"
+        end: "17:00"
+        analyze: true
+        ai_mode: "current"
+        push: true
+        report_mode: "current"
+      late_night:
+        name: "深夜汇总"
+        start: "22:00"
+        end: "01:00"
+        analyze: true
+        ai_mode: "daily"
+        push: true
+        report_mode: "daily"
+    day_plans:
+      all_day:
+        periods: ["afternoon_peek", "late_night"]
+    week_map:
+      1: "all_day"
+      2: "all_day"
+      3: "all_day"
+      4: "all_day"
+      5: "all_day"
+      6: "all_day"
+      7: "all_day"
+
+
+# ═══════════════════════════════════════════════════════════════
+# 自定义模式（情报·日报三板块编排）
+# ═══════════════════════════════════════════════════════════════
+custom:
+  name: "情报日报三板块"
+  description: "前沿瞭望每小时增量 + 每日热点早间汇总 + 每日论文早间精选解读"
+
+  # 默认配置：静默采集（时段外不推送）
+  default:
+    collect: true
+    analyze: false
+    ai_mode: "current"
+    push: false
+    report_mode: "incremental"
+    once:
+      analyze: false
+      push: false
+
+  periods:
+
+    frontier_hourly:
+      name: "前沿瞭望-每小时"
+      start: "00:00"
+      end: "23:59"                    # 覆盖全天；被下方两个时段覆盖
+      frequency_file: "frontier.txt"  # config/custom/keyword/frontier.txt
+      push: true
+      report_mode: "incremental"      # 有新增即推，零重复
+      once:
+        analyze: false
+        push: false                   # 每小时都推（GHA 每小时 :33 触发）
+
+    daily_hot:
+      name: "每日热点"
+      start: "08:00"
+      end: "08:59"                    # 08:33 触发
+      # frequency_file 不填 → 使用默认 config/frequency_words.txt
+      analyze: true                   # AI 分析全天热点
+      ai_mode: "daily"
+      push: true
+      report_mode: "daily"            # 当日全部匹配新闻
+      once:
+        analyze: true
+        push: true                    # 窗口内只推一次
+
+    daily_papers:
+      name: "每日论文精选与解读"
+      start: "09:00"
+      end: "10:00"                    # 09:33 触发
+      frequency_file: "paper.txt"     # config/custom/keyword/paper.txt
+      analyze: true                   # AI 解读论文
+      ai_mode: "daily"
+      push: true
+      report_mode: "daily"
+      once:
+        analyze: true
+        push: true
+
+  day_plans:
+    all_day:
+      periods: ["frontier_hourly", "daily_hot", "daily_papers"]
+
+  week_map:
+    1: "all_day"
+    2: "all_day"
+    3: "all_day"
+    4: "all_day"
+    5: "all_day"
+    6: "all_day"
+    7: "all_day"
+
+  overlap:
+    policy: "last_wins"               # 列表靠后的时段优先（具体覆盖全天）

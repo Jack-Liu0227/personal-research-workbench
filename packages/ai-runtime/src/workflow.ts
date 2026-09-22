@@ -24,7 +24,10 @@ export const artifactKindForWorkflow: Record<AgentWorkflowKey, 'daily_digest' | 
   literature_review: 'literature_review',
   research_ideation: 'research_idea',
   research_plan: 'research_plan',
-  manuscript_draft: 'manuscript'
+  manuscript_draft: 'manuscript',
+  // 消息侧推送的 SQLite 投影沿用 daily_digest 类别（content 自带投递状态说明），
+  // 不新增 Artifact 类别，避免再触发 research_artifacts.kind CHECK 重建。
+  literature_daily_msg: 'daily_digest'
 }
 
 export async function runWorkflow(input: StartAgentRunInput, context: WorkflowRuntimeContext): Promise<GenerationResult> {

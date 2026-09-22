@@ -26,7 +26,16 @@ import type {
   LiteratureMatrixBulkDeleteResult,
   ArchiveBulkInput,
   ArchiveBulkReceipt,
-  ArchiveBulkResult
+  ArchiveBulkResult,
+  RssCategory,
+  RssCategoryDeleteInput,
+  RssCategorySaveInput,
+  RssSaveSourceInput,
+  RssSource,
+  RssFeedItem,
+  RssItemsQueryInput,
+  RssItemsPage,
+  RssSourceSetDisplayEnabledInput
 } from '@prw/contracts'
 import {
   AgentRunSchema,
@@ -55,7 +64,17 @@ import {
   LiteratureMatrixBulkDeleteInputSchema,
   LiteratureMatrixBulkDeleteResultSchema,
   ArchiveBulkInputSchema,
-  ArchiveBulkResultSchema
+  ArchiveBulkResultSchema,
+  RssCategorySchema,
+  RssCategoryListSchema,
+  RssCategorySaveInputSchema,
+  RssCategoryDeleteInputSchema,
+  RssSaveSourceInputSchema,
+  RssSourceSchema,
+  RssFeedItemSchema
+  , RssItemSchema
+  , RssItemsQueryInputSchema
+  , RssItemsPageSchema
 } from '@prw/contracts'
 import { and, asc, desc, eq, inArray, isNull, type SQL } from 'drizzle-orm'
 import type { BetterSQLite3Database } from 'drizzle-orm/better-sqlite3'
@@ -71,6 +90,9 @@ import {
   papers,
   promptTemplates,
   researchArtifacts,
+  rssItems,
+  rssCategories,
+  rssSources,
   scheduleOccurrences,
   schedules,
   syncRuns,
@@ -84,7 +106,10 @@ import {
   type ResearchArtifactRow,
   type ScheduleOccurrenceRow,
   type ScheduleRow,
-  type SyncRunRow
+  type SyncRunRow,
+  type RssSourceRow,
+  type RssItemRow,
+  type RssCategoryRow
 } from './schema.js'
 import type * as schema from './schema.js'
 
@@ -475,6 +500,32 @@ function toSchedule(row: ScheduleRow): Schedule {
     sources: safeParseSourcesJson(row.sourcesJson),
     lookbackDays: row.lookbackDays
   }, 'schedule', row.id)
+}
+
+function toRssSource(row: RssSourceRow, categoryName: string): RssSource {
+  return parseStored(RssSourceSchema, {
+    id: row.id,
+    title: row.title,
+    url: row.url,
+    siteUrl: row.siteUrl,
+    description: row.description,
+    categoryId: row.categoryId,
+    categoryName,
+    enabled: row.enabled,
+    displayEnabled: row.displayEnabled,
+    sortOrder: row.sortOrder,
+    createdAt: row.createdAt
+  }, 'rss source', row.id)
+}
+
+function toRssCategory(row: RssCategoryRow): RssCategory {
+  return parseStored(RssCategorySchema, {
+    id: row.id,
+    name: row.name,
+    builtIn: row.builtIn,
+    sortOrder: row.sortOrder,
+    createdAt: row.createdAt
+  }, 'rss category', row.id)
 }
 
 function toScheduleOccurrence(row: ScheduleOccurrenceRow): ScheduleOccurrence {
@@ -2290,4 +2341,162 @@ export class ResearchRepository {
       return ArchiveBulkResultSchema.parse(archiveBulkResult(items))
     })
   }
+
+  /** RSS 来源列表；来源删除后不再出现在当前列表。 */
+  listRssSources(onlyEnabled = false, onlyVisible = false): RssSource[] {
+    const categories = new Map(this.database.select().from(rssCategories).all().map((row) => [row.id, row.name]))
+    return this.database.select().from(rssSources)
+      .orderBy(asc(rssSources.sortOrder), asc(rssSources.createdAt)).all()
+      .filter((row) => (!onlyEnabled || row.enabled) && (!onlyVisible || row.displayEnabled))
+      .map((row) => toRssSource(row, categories.get(row.categoryId) ?? row.categoryId))
+  }
+
+  listRssCategories(): RssCategory[] {
+    return this.database.select().from(rssCategories).orderBy(asc(rssCategories.sortOrder), asc(rssCategories.name)).all().map(toRssCategory)
+  }
+
+  saveRssCategory(inputValue: RssCategorySaveInput): RssCategory {
+    const input = RssCategorySaveInputSchema.parse(inputValue)
+    return this.database.transaction((transaction) => {
+      const timestamp = this.now().toISOString()
+      if (input.id !== undefined) {
+        const current = transaction.select().from(rssCategories).where(eq(rssCategories.id, input.id)).get()
+        if (!current) databaseNotFound('rss category', input.id)
+        if (current.builtIn) throw new Error('内置分类不可重命名')
+        const duplicate = transaction.select().from(rssCategories).all().find((row) => row.id !== input.id && row.name.toLocaleLowerCase('zh-CN') === input.name.toLocaleLowerCase('zh-CN'))
+        if (duplicate) throw new Error('分类名称已存在')
+        const updated: RssCategoryRow = { ...current, name: input.name }
+        transaction.update(rssCategories).set(updated).where(eq(rssCategories.id, input.id)).run()
+        return toRssCategory(updated)
+      }
+      const duplicate = transaction.select().from(rssCategories).all().find((row) => row.name.toLocaleLowerCase('zh-CN') === input.name.toLocaleLowerCase('zh-CN'))
+      if (duplicate) throw new Error('分类名称已存在')
+      const row: RssCategoryRow = { id: 'rsscat.' + uuidv7(), name: input.name, builtIn: false, sortOrder: 1000, createdAt: timestamp }
+      transaction.insert(rssCategories).values(row).run()
+      return toRssCategory(row)
+    })
+  }
+
+  deleteRssCategory(id: string): void {
+    const current = this.database.select().from(rssCategories).where(eq(rssCategories.id, id)).get()
+    if (!current) databaseNotFound('rss category', id)
+    if (current.builtIn) throw new Error('内置分类不可删除')
+    if (this.database.select().from(rssSources).where(eq(rssSources.categoryId, id)).get()) throw new Error('分类仍被 RSS 来源使用，请先改派来源')
+    this.database.delete(rssCategories).where(eq(rssCategories.id, id)).run()
+  }
+
+  saveRssSource(inputValue: RssSaveSourceInput): RssSource {
+    const input = RssSaveSourceInputSchema.parse(inputValue)
+    return this.database.transaction((transaction) => {
+      const category = transaction.select().from(rssCategories).where(eq(rssCategories.id, input.categoryId)).get()
+      if (!category) databaseNotFound('rss category', input.categoryId)
+      const timestamp = this.now().toISOString()
+      const current = input.id === undefined ? undefined : transaction.select().from(rssSources).where(eq(rssSources.id, input.id)).get()
+      const duplicate = transaction.select().from(rssSources).all().find((row) => row.url === input.url && row.id !== input.id)
+      if (duplicate) throw new Error('RSS 地址已存在')
+      const row: RssSourceRow = current
+        ? { ...current, title: input.title, url: input.url, siteUrl: input.siteUrl, description: input.description, categoryId: input.categoryId, enabled: input.enabled ?? current.enabled, displayEnabled: input.displayEnabled ?? current.displayEnabled, sortOrder: input.sortOrder ?? current.sortOrder }
+        : { id: input.id ?? 'rss.' + uuidv7(), title: input.title, url: input.url, siteUrl: input.siteUrl, description: input.description, categoryId: input.categoryId, enabled: input.enabled ?? true, displayEnabled: input.displayEnabled ?? true, sortOrder: input.sortOrder ?? 0, createdAt: timestamp }
+      if (current) transaction.update(rssSources).set(row).where(eq(rssSources.id, current.id)).run()
+      else transaction.insert(rssSources).values(row).run()
+      return toRssSource(row, category.name)
+    })
+  }
+
+  /** Hard-delete only the source definition; item rows remain untouched. */
+  deleteRssSource(id: string): void {
+    const result = this.database.delete(rssSources).where(eq(rssSources.id, id)).run()
+    if (result.changes === 0) databaseNotFound('rss source', id)
+  }
+
+  setRssSourceEnabled(id: string, enabled: boolean): RssSource {
+    const current = this.database.select().from(rssSources).where(eq(rssSources.id, id)).get()
+    if (!current) databaseNotFound('rss source', id)
+    const row: RssSourceRow = { ...current, enabled }
+    this.database.update(rssSources).set(row).where(eq(rssSources.id, id)).run()
+    const category = this.database.select().from(rssCategories).where(eq(rssCategories.id, row.categoryId)).get()
+    return toRssSource(row, category?.name ?? row.categoryId)
+  }
+
+  setRssSourceDisplayEnabled(id: string, displayEnabled: boolean): RssSource {
+    const current = this.database.select().from(rssSources).where(eq(rssSources.id, id)).get()
+    if (!current) databaseNotFound('rss source', id)
+    const row: RssSourceRow = { ...current, displayEnabled }
+    this.database.update(rssSources).set(row).where(eq(rssSources.id, id)).run()
+    const category = this.database.select().from(rssCategories).where(eq(rssCategories.id, row.categoryId)).get()
+    return toRssSource(row, category?.name ?? row.categoryId)
+  }
+
+  insertNewRssItems(inputValue: readonly RssFeedItem[]): RssFeedItem[] {
+    const items = inputValue.map((item) => RssFeedItemSchema.parse(item))
+    if (items.length === 0) return []
+    const inserted: RssFeedItem[] = []
+    this.database.transaction((transaction) => {
+      for (const item of items) {
+        if (transaction.select({ id: rssItems.id }).from(rssItems).where(eq(rssItems.itemUrl, item.url)).get()) continue
+        const source = transaction.select().from(rssSources).where(eq(rssSources.id, item.sourceId)).get()
+        if (!source) continue
+        const category = transaction.select().from(rssCategories).where(eq(rssCategories.id, source.categoryId)).get()
+        if (!category) continue
+        transaction.insert(rssItems).values({
+          id: 'rssi.' + uuidv7(),
+          sourceId: item.sourceId,
+          sourceTitle: source.title,
+          sourceUrl: source.url,
+          sourceCategoryId: source.categoryId,
+          sourceCategoryName: category.name,
+          itemUrl: item.url,
+          guid: item.guid,
+          title: item.title,
+          summary: item.summary,
+          authorsJson: JSON.stringify(item.authors),
+          publishedAt: item.publishedAt,
+          fetchedAt: this.now().toISOString()
+        }).run()
+        inserted.push(item)
+      }
+    })
+    return inserted
+  }
+
+  queryRssItems(inputValue: RssItemsQueryInput): RssItemsPage {
+    const input = RssItemsQueryInputSchema.parse(inputValue)
+    const sourceById = new Map(this.database.select().from(rssSources).all().map((source) => [source.id, source]))
+    const needleKeywords = input.keywords.map((value) => value.toLocaleLowerCase('zh-CN'))
+    const needleAuthors = input.authors.map((value) => value.toLocaleLowerCase('zh-CN'))
+    const offset = input.cursor === null ? 0 : Number(input.cursor.startsWith('offset:') ? input.cursor.slice(7) : NaN)
+    if (!Number.isInteger(offset) || offset < 0) throw new Error('invalid RSS cursor')
+    const filtered = this.database.select().from(rssItems).all().map((row) => {
+      const source = sourceById.get(row.sourceId)
+      const sourceDeleted = source === undefined
+      let authors: string[] = []
+      try { authors = z.array(z.string()).parse(JSON.parse(row.authorsJson)) } catch { authors = [] }
+      return { row, source, sourceDeleted, authors }
+    }).filter(({ source, sourceDeleted }) => input.includeHidden || sourceDeleted || source?.displayEnabled === true)
+      .filter(({ row }) => input.sourceIds.length === 0 || input.sourceIds.includes(row.sourceId))
+      .filter(({ row }) => {
+        const text = (row.title + '\n' + row.summary).toLocaleLowerCase('zh-CN')
+        return needleKeywords.length === 0 || needleKeywords.some((needle) => text.includes(needle))
+      })
+      .filter(({ authors }) => needleAuthors.length === 0 || needleAuthors.some((needle) => authors.some((author) => author.toLocaleLowerCase('zh-CN').includes(needle))))
+      .filter(({ row }) => {
+        const timestamp = row.publishedAt === null ? null : Date.parse(row.publishedAt)
+        if (input.publishedFrom !== undefined && (timestamp === null || timestamp < Date.parse(input.publishedFrom))) return false
+        if (input.publishedTo !== undefined && (timestamp === null || timestamp > Date.parse(input.publishedTo))) return false
+        if (input.yearFrom !== undefined || input.yearTo !== undefined) {
+          if (timestamp === null) return false
+          const year = new Date(timestamp).getUTCFullYear()
+          if (input.yearFrom !== undefined && year < input.yearFrom) return false
+          if (input.yearTo !== undefined && year > input.yearTo) return false
+        }
+        return true
+      })
+      .sort((a, b) => (Date.parse(b.row.publishedAt ?? b.row.fetchedAt) - Date.parse(a.row.publishedAt ?? a.row.fetchedAt)) || a.row.id.localeCompare(b.row.id))
+    const page = filtered.slice(offset, offset + input.limit).map(({ row, sourceDeleted, authors }) => RssItemSchema.parse({
+      guid: row.guid || row.itemUrl, title: row.title, url: row.itemUrl, summary: row.summary, authors, publishedAt: row.publishedAt, sourceId: row.sourceId,
+      sourceTitle: row.sourceTitle, sourceUrl: row.sourceUrl, sourceCategoryId: row.sourceCategoryId, sourceCategoryName: row.sourceCategoryName, sourceDeleted
+    }))
+    return RssItemsPageSchema.parse({ items: page, total: filtered.length, nextCursor: offset + page.length < filtered.length ? 'offset:' + (offset + page.length) : null })
+  }
+
 }

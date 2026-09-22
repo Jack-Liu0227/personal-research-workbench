@@ -103,11 +103,32 @@ export function mergeRecords(
   base: readonly AgentRunRecordEntry[],
   overlay: Iterable<AgentRunRecordEntry>
 ): AgentRunRecordEntry[] {
-  const byId = new Map<string, AgentRunRecordEntry>()
-  for (const entry of base) byId.set(entry.id, entry)
-  for (const entry of overlay) byId.set(entry.id, entry)
-  return [...byId.values()].sort((left, right) =>
+  // A live push and a subsequent query can briefly carry different database
+  // row ids for the same logical streamed record (for example while an
+  // upsert is committed). Match by the adapter-owned recordKey first, and
+  // retain the richer/newer projection. Otherwise a short/empty snapshot can
+  // replace the text accumulated so far and the chat appears to go blank.
+  const byKey = new Map<string, AgentRunRecordEntry>()
+  const add = (entry: AgentRunRecordEntry): void => {
+    const key = `${entry.runId}:${entry.recordKey}`
+    const previous = byKey.get(key)
+    if (!previous || prefersRecord(entry, previous)) byKey.set(key, entry)
+  }
+  for (const entry of base) add(entry)
+  for (const entry of overlay) add(entry)
+  return [...byKey.values()].sort((left, right) =>
     Date.parse(left.createdAt) - Date.parse(right.createdAt) || left.seq - right.seq)
+}
+
+function prefersRecord(candidate: AgentRunRecordEntry, previous: AgentRunRecordEntry): boolean {
+  if (candidate.seq !== previous.seq) return candidate.seq > previous.seq
+  const candidateText = (candidate.detail?.length ?? 0) + (candidate.outputText?.length ?? 0) + (candidate.inputText?.length ?? 0)
+  const previousText = (previous.detail?.length ?? 0) + (previous.outputText?.length ?? 0) + (previous.inputText?.length ?? 0)
+  if (candidateText !== previousText) return candidateText > previousText
+  const candidateTerminal = candidate.status === 'completed' || candidate.status === 'failed' || candidate.status === 'canceled'
+  const previousTerminal = previous.status === 'completed' || previous.status === 'failed' || previous.status === 'canceled'
+  if (candidateTerminal !== previousTerminal) return candidateTerminal
+  return Date.parse(candidate.createdAt) >= Date.parse(previous.createdAt)
 }
 
 export interface LedgerTurn {

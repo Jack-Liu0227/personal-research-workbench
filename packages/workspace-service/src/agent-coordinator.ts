@@ -87,6 +87,15 @@ import {
   localDateKey,
   type DailyLiteratureDelivery
 } from './daily-literature.js'
+import {
+  FEISHU_DAILY_MSG_WORKFLOW_KEY,
+  buildFeishuMessageProjection,
+  deliverFeishuMessage,
+  type FeishuMessageDelivery,
+  type FeishuMessageWriter
+} from './feishu-message.js'
+import { fetchRssSources } from './rss-feed.js'
+import { buildRssPushMessage } from './rss-daily.js'
 
 export interface AgentCoordinatorOptions {
   readonly runRoot: string
@@ -149,6 +158,31 @@ export interface AgentCoordinatorOptions {
    * vault stays in Main, and Core holds no long-lived credential.
    */
   readonly requestCredential?: ((provider: string | null) => Promise<AgentRunCredentialInput | null>) | undefined
+  /**
+   * Message-side delivery sink for `literature_daily_msg` runs. The host (Electron
+   * Main) implements the writer with FeishuBindingController.sendText so the
+   * token/openId never leave Main's vault; Core only hands over the rendered
+   * decision-card text and records the outcome. Absent sink → NO_SINK skip, never
+   * a failed run.
+   */
+  readonly deliverFeishuMessage?: ((input: {
+    readonly scheduleId: string
+    readonly run: AgentRunRecord
+    readonly content: string
+  }) => Promise<FeishuMessageDelivery | void>) | undefined
+  /**
+   * Bound-state probe for the message workflow. The host answers from Main's
+   * FeishuBindingController.getStatus(). A scheduled `literature_daily_msg`
+   * occurrence that starts while nothing is bound is settled as blocked BEFORE
+   * the model call (no tokens spent). Absent hook → the check is skipped and a
+   * completion-time NO_SINK/SEND_FAILED skip still records the fact.
+   */
+  readonly requestFeishuStatus?: (() => Promise<boolean>) | undefined
+  /**
+   * RSS 拉取注入点：测试传 stub 避免真实外网；缺省用全局 fetch。
+   * 签名与 undici/全局 fetch 一致（url + init → Response）。
+   */
+  readonly rssFetchImpl?: ((url: string, init?: RequestInit) => Promise<Response>) | undefined
 }
 
 /**
@@ -1094,6 +1128,59 @@ export class AgentCoordinator {
     }
 
     try {
+      // Message-side rule: before any model call, make sure the Feishu app is
+      // actually bound. Unbound is a durable, explainable skip (blocked run row +
+      // settled occurrence), not a token-burning failure. Mirrors the full-access
+      // denial gate above: the slot is claimed first, then refused with a reason.
+      if (schedule.workflowKey === FEISHU_DAILY_MSG_WORKFLOW_KEY && this.options.requestFeishuStatus) {
+        const bound = await this.options.requestFeishuStatus().catch(() => false)
+        if (!bound) {
+          const message = '未绑定飞书应用：每日文献消息推送已跳过（不消耗模型额度）。请在「设置 → 工具连接 → 飞书」完成扫码绑定。'
+          const blocked = this.repository.startManagedAgentRun({
+            jobId: schedule.id,
+            conversationId: null,
+            runtime: schedule.runtime ?? 'pi',
+            transport: 'inprocess',
+            workflowKey: schedule.workflowKey,
+            projectId: schedule.projectId as import('@prw/contracts').AutomationRule['projectId'],
+            paperIds: [],
+            instructions: message,
+            thinking: null,
+            toolProfile: 'read-only',
+            permissionMode: schedule.permissionMode,
+            approvalPolicy: schedule.approvalPolicy,
+            skillKey: schedule.skillKey,
+            skillSnapshot: null,
+            credentialSource: 'none',
+            idempotencyKey
+          })
+          this.repository.appendAgentEvent(blocked.id, 'failed', { message })
+          this.repository.updateManagedAgentRun({ id: blocked.id, status: 'blocked', error: message })
+          this.repository.settleScheduleOccurrence({
+            id: claim.occurrence.id,
+            runId: blocked.id,
+            status: 'blocked',
+            reason: message
+          })
+          // The row was just updated to blocked; re-read so the caller (and the
+          // idempotency replay) sees the terminal state, not the queued draft.
+          return this.repository.getManagedAgentRun(blocked.id)
+        }
+      }
+      // RSS 快路径（增量 3）：literature_daily_msg 的内容完全由订阅源驱动，
+      // 不启动 agent runtime、不调用模型、不依赖技能包。拉取已启用源 → 按
+      // item_url 去重入库 → 有新增才组装消息投递；无可推或投递跳过都以
+      // completed + skipped 事件收尾，绝不伪装成模型运行失败。
+      if (schedule.workflowKey === FEISHU_DAILY_MSG_WORKFLOW_KEY) {
+        return this.runRssDailyPush({
+          schedule,
+          claim,
+          idempotencyKey,
+          occurrenceAt,
+          source
+        })
+      }
+
       let conversationId = schedule.conversationId
       if (schedule.executionMode === 'new_conversation' || conversationId === null) {
         const conversation = this.repository.createAgentConversation({
@@ -1119,6 +1206,8 @@ export class AgentCoordinator {
         skillKey: schedule.skillKey,
         projectId: schedule.projectId as import('@prw/contracts').AutomationRule['projectId'],
         paperIds: papers.slice(0, 200).map((paper) => paper.id),
+        // RSS 快路径已在前置分支拦截 literature_daily_msg；走到这里的
+        // 都是模型驱动工作流，指令与矩阵增强逻辑保持原样。
         instructions: buildScheduleInstructions(schedule),
         toolProfile: schedule.permissionMode === 'read-only' ? 'read-only' : 'approved-write',
         permissionMode: schedule.permissionMode,
@@ -1659,6 +1748,7 @@ export class AgentCoordinator {
         : sanitizeAgentText(output.trim())
       let artifactId: string | null = null
       let delivery: DailyLiteratureDelivery | null = null
+      let feishuDelivery: FeishuMessageDelivery | null = null
       if (finalKind === 'completed' && cleanOutput) {
         const run = this.repository.getManagedAgentRun(runId)
         // Daily literature push: deliver the Markdown projection *before* the
@@ -1669,10 +1759,17 @@ export class AgentCoordinator {
         // (the Vault note is the only authority for the article body).
         const isDailyLiteraturePush = run.jobId !== null && run.workflowKey === DAILY_LITERATURE_WORKFLOW_KEY
         if (isDailyLiteraturePush) delivery = await this.deliverScheduledOutput(run, cleanOutput)
+        // Message-side push (literature_daily_msg) is fully isolated from the
+        // Obsidian pipeline: the same four-source retrieval runs, but the
+        // decision-card output goes to the Feishu sink and never writes a note.
+        const isFeishuDailyMsgPush = run.jobId !== null && run.workflowKey === FEISHU_DAILY_MSG_WORKFLOW_KEY
+        if (isFeishuDailyMsgPush) feishuDelivery = await this.deliverFeishuOutput(run, cleanOutput)
         const dateKey = dailyLiteratureDateKey(new Date(run.finishedAt ?? run.createdAt), this.scheduleTimezone(run.jobId))
         const projection = isDailyLiteraturePush
           ? buildDailyLiteratureProjection({ delivery, content: cleanOutput, dateKey, scheduleId: run.jobId ?? run.id, run })
-          : null
+          : isFeishuDailyMsgPush
+            ? buildFeishuMessageProjection({ delivery: feishuDelivery, content: cleanOutput, dateKey, scheduleId: run.jobId ?? run.id, run })
+            : null
         const artifact = this.repository.createResearchArtifact({
           projectId: run.projectId,
           kind: artifactKindForWorkflow(run.workflowKey),
@@ -1708,11 +1805,13 @@ export class AgentCoordinator {
         this.repository.updateAgentConversationStatus(run.conversationId, finalKind === 'completed' ? 'finished' : 'pending')
         this.persistConversationSession(run.conversationId)
       }
-      if (finalKind === 'completed' && cleanOutput && run.jobId && this.options.persistScheduledOutput) {
+      if (finalKind === 'completed' && cleanOutput && run.jobId) {
         // Delivery already happened above (it has to precede the artifact because
         // the artifact records its outcome). The event is appended here so the
-        // run UI can show WROTE/SKIPPED alongside the run's terminal status.
-        this.appendDeliveryEvent(runId, delivery, artifactId)
+        // run UI can show WROTE/SKIPPED (Obsidian side) and SENT/SKIPPED
+        // (Feishu message side) alongside the run's terminal status.
+        if (this.options.persistScheduledOutput) this.appendDeliveryEvent(runId, delivery, artifactId)
+        if (this.options.deliverFeishuMessage) this.appendFeishuDeliveryEvent(runId, feishuDelivery, artifactId)
       }
     } catch (error) {
       if (this.disposed) return
@@ -1762,6 +1861,36 @@ export class AgentCoordinator {
    * turn a completed Agent run into a failed one; an *unexpected* throw is still
    * reported as WRITE_FAILED with the concrete message.
    */
+  /**
+   * Message-side delivery (literature_daily_msg). Mirrors deliverScheduledOutput
+   * for the Feishu sink: the writer is the host's sendText, the run's content is
+   * chunked by the boundary module, and a missing sink or a send error is a
+   * skipped delivery — the run itself stays completed so the schedule card shows
+   * SENT/SKIPPED instead of a misleading failure.
+   */
+  private async deliverFeishuOutput(run: AgentRunRecord, content: string): Promise<FeishuMessageDelivery | null> {
+    const jobId = run.jobId
+    if (!jobId) return null
+    const sink = this.options.deliverFeishuMessage
+    if (!sink) {
+      return {
+        status: 'skipped',
+        reason: 'NO_SINK',
+        message: '宿主未配置飞书消息投递通道；决策卡文本仅保存在运行记录中。'
+      }
+    }
+    try {
+      const result = await sink({ scheduleId: jobId, run, content })
+      return result ?? null
+    } catch (error) {
+      return {
+        status: 'skipped',
+        reason: 'SEND_FAILED',
+        message: error instanceof Error ? error.message.slice(0, 300) : '飞书消息发送失败。'
+      }
+    }
+  }
+
   private async deliverScheduledOutput(run: AgentRunRecord, content: string): Promise<DailyLiteratureDelivery | null> {
     // No owning rule means this run is not a scheduled push at all; the caller
     // only uses a non-null result for scheduled `daily_digest` runs.
@@ -1827,6 +1956,158 @@ export class AgentCoordinator {
     }
     this.repository.appendAgentEvent(runId, 'progress', {
       code: 'OBSIDIAN_DAILY_NOTE_SKIPPED',
+      message: delivery.message,
+      reason: delivery.reason,
+      artifactId
+    })
+  }
+
+  /**
+   * RSS 订阅快路径（增量 3）：从调度触发，拉取 → 去重 → 投递一条龙。
+   *
+   * 语义：
+   * - 无已启用源 / 无新增条目 / 未投递 → run completed + FEISHU_MESSAGE_SKIPPED
+   *   （reason 各自区分），计划任务永不报 failed；
+   * - 单源抓取失败只记 progress 事件，不阻塞其余源；
+   * - 去重由 rss_items.item_url 唯一键保证（insertNewRssItems 只返回真正新增），
+   *   同一篇论文跨源出现也只推送一次；
+   * - 未绑定 gate 已在 runAutomationNow 早期完成，走到这里必然已通过。
+   */
+  private async runRssDailyPush(input: {
+    readonly schedule: Schedule
+    readonly claim: {
+      readonly occurrence: {
+        readonly id: string
+        readonly localDateKey: string
+      }
+    }
+    readonly idempotencyKey: string
+    readonly occurrenceAt: Date
+    readonly source: import('@prw/contracts').ScheduleOccurrence['source']
+  }): Promise<AgentRunRecord> {
+    const { schedule, claim, idempotencyKey, occurrenceAt } = input
+    const dateKey = localDateKey(occurrenceAt, schedule.timezone)
+    const sources = this.repository.listRssSources(true, true)
+    const run = this.repository.startManagedAgentRun({
+      jobId: schedule.id,
+      conversationId: null,
+      runtime: schedule.runtime ?? 'pi',
+      transport: 'inprocess',
+      workflowKey: schedule.workflowKey,
+      projectId: schedule.projectId as import('@prw/contracts').AutomationRule['projectId'],
+      paperIds: [],
+      instructions: `RSS 订阅拉取：${sources.length === 0 ? '无已启用源' : `${sources.length} 个源（${sources.map((s) => s.title).join('、')}）`}`,
+      thinking: null,
+      toolProfile: 'read-only',
+      permissionMode: schedule.permissionMode,
+      approvalPolicy: schedule.approvalPolicy,
+      skillKey: null,
+      skillSnapshot: null,
+      credentialSource: 'none',
+      idempotencyKey
+    })
+
+    // 首条事件占住 seq=0：listAgentEvents(runId, 0, …) 按既有语义跳过 seq 0，
+    // 之后的投递事件（seq≥1）才可见（与 consume 路径的生命周期事件行为一致）。
+    this.repository.appendAgentEvent(run.id, 'started', {
+      code: 'RSS_COLLECTION_STARTED',
+      message: `RSS 订阅拉取开始：${sources.length === 0 ? '无已启用源' : `${sources.length} 个源`}`
+    })
+
+    const settle = (status: 'completed', reason: string) => {
+      this.repository.settleScheduleOccurrence({
+        id: claim.occurrence.id,
+        runId: run.id,
+        status,
+        reason
+      })
+    }
+
+    if (sources.length === 0) {
+      const delivery: FeishuMessageDelivery = {
+        status: 'skipped',
+        reason: 'NO_SOURCES',
+        message: '没有已启用的 RSS 订阅源：请在「设置 → RSS 订阅源」添加或启用期刊源。'
+      }
+      this.repository.updateManagedAgentRun({ id: run.id, status: 'completed', error: null })
+      settle('completed', delivery.message)
+      this.appendFeishuDeliveryEvent(run.id, delivery, null)
+      return this.repository.getManagedAgentRun(run.id)
+    }
+
+    const { results, failures } = await fetchRssSources(sources, this.options.rssFetchImpl)
+    for (const failure of failures) {
+      this.repository.appendAgentEvent(run.id, 'progress', {
+        code: 'RSS_SOURCE_FAILED',
+        message: failure.message,
+        sourceId: failure.sourceId
+      })
+    }
+
+    const sourceTitles = new Map<string, string>(results.map((result) => [result.source.id, result.source.title]))
+    const categoryOrder = new Map(this.repository.listRssCategories().map((category) => [category.id, category] as const))
+    const sourceCategories = new Map(results.map((result) => {
+      const category = categoryOrder.get(result.source.categoryId)
+      return [result.source.id, { id: result.source.categoryId, name: result.source.categoryName, sortOrder: category?.sortOrder ?? 999 }] as const
+    }))
+    const fresh = this.repository.insertNewRssItems(results.flatMap((result) => result.items))
+    if (fresh.length === 0) {
+      const delivery: FeishuMessageDelivery = {
+        status: 'skipped',
+        reason: 'NO_NEW_ITEMS',
+        message: '本次没有新的论文条目（各订阅源内容与上次一致），不发送消息。'
+      }
+      this.repository.updateManagedAgentRun({ id: run.id, status: 'completed', error: null })
+      settle('completed', delivery.message)
+      this.appendFeishuDeliveryEvent(run.id, delivery, null)
+      return this.repository.getManagedAgentRun(run.id)
+    }
+
+    const content = buildRssPushMessage({
+      items: fresh,
+      sourceTitles,
+      sourceCategories,
+      dateKey
+    })
+    const delivery = await this.deliverFeishuOutput(run, content)
+    const projection = buildFeishuMessageProjection({
+      delivery,
+      content,
+      dateKey,
+      scheduleId: schedule.id,
+      run
+    })
+    this.repository.updateManagedAgentRun({
+      id: run.id,
+      status: 'completed',
+      output: projection.body,
+      error: null
+    })
+    const disposition = delivery === null
+      ? '未投递。'
+      : delivery.status === 'sent'
+        ? `已发送 ${String(delivery.messageCount)} 条飞书消息。`
+        : delivery.message
+    settle('completed', disposition)
+    this.appendFeishuDeliveryEvent(run.id, delivery, null)
+    return this.repository.getManagedAgentRun(run.id)
+  }
+
+  /** Message-side counterpart of appendDeliveryEvent (FEISHU_MESSAGE_SENT /
+   * FEISHU_MESSAGE_SKIPPED). A skip never marks the run failed. */
+  private appendFeishuDeliveryEvent(runId: string, delivery: FeishuMessageDelivery | null, artifactId: string | null): void {
+    if (!delivery) return
+    if (delivery.status === 'sent') {
+      this.repository.appendAgentEvent(runId, 'progress', {
+        code: 'FEISHU_MESSAGE_SENT',
+        message: `已发送 ${String(delivery.messageCount)} 条飞书消息。`,
+        messageCount: delivery.messageCount,
+        artifactId
+      })
+      return
+    }
+    this.repository.appendAgentEvent(runId, 'progress', {
+      code: 'FEISHU_MESSAGE_SKIPPED',
       message: delivery.message,
       reason: delivery.reason,
       artifactId
@@ -2154,7 +2435,8 @@ function promptTemplateForWorkflow(workflowKey: import('@prw/contracts').AgentWo
     literature_review: 'builtin.prompt.review-outline',
     research_ideation: 'builtin.prompt.research-idea',
     research_plan: 'builtin.prompt.research-plan',
-    manuscript_draft: 'builtin.prompt.writing-revision'
+    manuscript_draft: 'builtin.prompt.writing-revision',
+    literature_daily_msg: 'builtin.prompt.daily-feishu-msg'
   }
   return map[workflowKey]
 }

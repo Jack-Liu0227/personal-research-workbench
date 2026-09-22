@@ -47,7 +47,7 @@ export async function openInProcessWorkspaceSession(dispatch: (input: unknown) =
   const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair()
   const server = createWorkspaceMcpServer(createInProcessWorkspaceBackend(dispatch))
   await server.connect(serverTransport)
-  const client = new Client({ name: 'personal-research-workbench-agent', version: '0.0.4' })
+  const client = new Client({ name: 'personal-research-workbench-agent', version: '0.0.5' })
   await client.connect(clientTransport)
   return {
     client,

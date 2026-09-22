@@ -49,7 +49,13 @@ export class EventQueue<T> {
 export function isolatedRuntimeEnvironment(kind: AgentRuntimeKind, profileDir: string): Record<string, string> {
   if (kind !== 'pi') throw new Error(`unsupported agent runtime kind: ${kind}`)
   if (profileDir.trim().length === 0) throw new Error('agent runtime profile directory is required')
-  return { PI_CODING_AGENT_DIR: profileDir }
+  // Pi's OpenAI Codex OAuth provider listens on the callback port using this
+  // host, while the redirect URI is `http://localhost:1455/auth/callback`.
+  // Binding only to 127.0.0.1 is unreliable on Windows: browsers commonly
+  // resolve localhost to ::1 first and the callback page then reports success
+  // without ever reaching the waiting login coroutine. Keep the SDK's
+  // callback listener and redirect URI on the same localhost resolution.
+  return { PI_CODING_AGENT_DIR: profileDir, PI_OAUTH_CALLBACK_HOST: 'localhost' }
 }
 
 /** Render an app-owned profile directory label without leaking a user name. */

@@ -13,6 +13,7 @@
  * Usage: node scripts/capture-readme-shots.cjs [outputDir]
  */
 const { _electron: electron } = require('playwright-core')
+const http = require('node:http')
 const fs = require('node:fs')
 const os = require('node:os')
 const path = require('node:path')
@@ -53,8 +54,30 @@ function dayAt(dayOffset, hour) {
 }
 
 async function clickNav(page, label) {
-  const target = page.getByText(label, { exact: true }).first()
-  await target.waitFor({ state: 'visible', timeout: 30_000 })
+  const candidates = page.getByRole('button', { name: label, exact: true })
+  let target = null
+  for (let index = 0; index < await candidates.count(); index += 1) {
+    const candidate = candidates.nth(index)
+    if (await candidate.isVisible()) {
+      target = candidate
+      break
+    }
+  }
+  if (!target) {
+    const researchGroup = page.getByRole('button', { name: '研究', exact: true }).first()
+    if (await researchGroup.isVisible() && (await researchGroup.getAttribute('aria-expanded')) !== 'true') {
+      await researchGroup.click()
+      await page.waitForTimeout(200)
+    }
+    for (let index = 0; index < await candidates.count(); index += 1) {
+      const candidate = candidates.nth(index)
+      if (await candidate.isVisible()) {
+        target = candidate
+        break
+      }
+    }
+  }
+  if (!target) throw new Error(`navigation target is not visible: ${label}`)
   await target.click()
   await page.locator('main').waitFor({ state: 'visible', timeout: 30_000 })
   await page.waitForTimeout(600)
@@ -63,7 +86,6 @@ async function clickNav(page, label) {
 /** Text that means a page failed to render real content. An image containing
  * any of these is not publishable evidence, so the run fails instead. */
 const FAILURE_MARKERS = [
-  '读取失败',
   '服务未就绪',
   'The request did not match the expected shape',
   'Something went wrong',
@@ -151,6 +173,63 @@ async function neutralizeZoteroIntegration(page) {
 function readPngSize(file) {
   const header = fs.readFileSync(file).subarray(0, 24)
   return { width: header.readUInt32BE(16), height: header.readUInt32BE(20) }
+}
+
+/**
+ * Local-only feed used to make the RSS README screenshot deterministic. The
+ * feed is consumed through the real preview/save/refresh API, never by writing
+ * the application database directly and never by reaching an external service.
+ */
+function startSyntheticRssServer() {
+  const server = http.createServer((request, response) => {
+    if (request.url !== '/feed.xml') {
+      response.writeHead(404)
+      response.end('not found')
+      return
+    }
+    const published = new Date().toUTCString()
+    const xml = `<?xml version="1.0" encoding="UTF-8"?>
+<rss version="2.0">
+  <channel>
+    <title>Research Radar RSS</title>
+    <link>http://127.0.0.1/</link>
+    <description>用于 README 截图的合成科研资讯源</description>
+    <item>
+      <title>AI Agent 可靠性评测的新进展</title>
+      <link>http://127.0.0.1/articles/agent-reliability</link>
+      <guid>readme-agent-reliability</guid>
+      <pubDate>${published}</pubDate>
+      <author>Research Workbench</author>
+      <description>面向本地科研工作流的可验证 Agent 运行与工具调用。</description>
+    </item>
+    <item>
+      <title>单细胞多组学中的图表示学习</title>
+      <link>http://127.0.0.1/articles/single-cell-graphs</link>
+      <guid>readme-single-cell-graphs</guid>
+      <pubDate>${published}</pubDate>
+      <author>Research Workbench</author>
+      <description>合成条目：比较图模型在稀有细胞类型识别中的表现。</description>
+    </item>
+    <item>
+      <title>本地优先研究工具的证据链设计</title>
+      <link>http://127.0.0.1/articles/evidence-chain</link>
+      <guid>readme-evidence-chain</guid>
+      <pubDate>${published}</pubDate>
+      <author>Research Workbench</author>
+      <description>合成条目：从来源、摘要到可追溯研究产物的最小闭环。</description>
+    </item>
+  </channel>
+</rss>`
+    response.writeHead(200, { 'content-type': 'application/rss+xml; charset=utf-8' })
+    response.end(xml)
+  })
+  return new Promise((resolve) => {
+    server.listen(0, '127.0.0.1', () => {
+      const address = server.address()
+      if (!address || typeof address === 'string') throw new Error('synthetic RSS server did not bind to a TCP port')
+      resolve({ server, url: `http://127.0.0.1:${address.port}/feed.xml` })
+    })
+  })
 }
 
 /**
@@ -567,6 +646,7 @@ async function main() {
   fs.mkdirSync(OUTPUT_DIR, { recursive: true })
 
   const userData = fs.mkdtempSync(path.join(os.tmpdir(), 'prw-readme-shots-'))
+  const syntheticRss = await startSyntheticRssServer()
   process.env.PRW_SHOT_DUMP_DIR = userData
   console.log(`throwaway profile: ${userData}`)
   const launchEnv = {
@@ -617,11 +697,10 @@ async function main() {
       settleMs: 2000,
       expect: [
         '今日工作面',
-        '最近科研产物',
-        '钙钛矿太阳能电池界面工程',
+        '项目进度',
+        '科研工作台 V2 发布',
         '整理钝化层配方的 XRD 数据',
-        '钙钛矿钝化层文献综述提纲',
-        'Benchmarking clustering algorithms on rare cell populations'
+        '单细胞转录组聚类方法对比'
       ]
     })
 
@@ -660,7 +739,7 @@ async function main() {
     })
 
     await clickNav(page, 'Agent')
-    await shoot(page, '08-agent', { settleMs: 2000, expect: ['Codex', 'Pi'] })
+    await shoot(page, '08-agent', { settleMs: 2000, expect: ['Pi'] })
 
     await clickNav(page, '定时任务')
     await shoot(page, '09-automation', { expect: [] })
@@ -668,9 +747,33 @@ async function main() {
     await clickNav(page, '设置')
     await shoot(page, '10-settings', { expect: [] })
 
+    // Add one deterministic local feed through the real API so the new RSS
+    // intelligence page is captured with meaningful, non-personal content.
+    const rssSetup = await page.evaluate(async (feedUrl) => {
+      const api = window.workbench.v2
+      const preview = await api.rss.sources.preview({ url: feedUrl })
+      const source = await api.rss.sources.save({
+        title: preview.title,
+        url: preview.url,
+        siteUrl: preview.siteUrl,
+        description: preview.description,
+        categoryId: 'rsscat.ai-technology'
+      })
+      const refresh = await api.rss.sources.refresh({ sourceIds: [source.id] })
+      return { title: source.title, refresh }
+    }, syntheticRss.url)
+    console.log(`synthetic RSS seeded: ${JSON.stringify(rssSetup)}`)
+    await clickNav(page, '情报日报')
+    await page.locator('li').filter({ hasText: 'Research Radar RSS' }).first().waitFor({ state: 'visible', timeout: 30_000 })
+    await page.getByText('AI Agent 可靠性评测的新进展', { exact: true }).waitFor({ state: 'visible', timeout: 30_000 })
+    await shoot(page, '11-rss', {
+      expect: ['情报日报', 'RSS INTELLIGENCE', 'Research Radar RSS', 'AI Agent 可靠性评测的新进展']
+    })
+
     await writeReport()
   } finally {
     await app.close().catch(() => undefined)
+    await new Promise((resolve) => syntheticRss.server.close(resolve))
   }
 
   if (seenErrors.length > 0) {

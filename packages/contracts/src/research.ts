@@ -258,11 +258,40 @@ export const DEFAULT_AGENT_SCHEDULE_RULES: readonly DefaultAgentScheduleRule[] =
     runtime: 'pi',
     assistantKey: 'researcher',
     enabled: true
+  },
+  {
+    id: 'builtin.schedule.feishu-daily-msg',
+    name: '每日文献推送（飞书消息）',
+    skillKey: 'literature-matrix',
+    workflowKey: 'literature_daily_msg',
+    promptTemplateId: 'builtin.prompt.daily-feishu-msg',
+    topic: '每日文献精选推送',
+    responseLanguage: 'zh-CN',
+    sources: [],
+    lookbackDays: 1,
+    outputFolder: '每日文献推送',
+    frequency: 'daily',
+    cron: '0 9 * * *',
+    timezone: 'Asia/Shanghai',
+    runtime: 'pi',
+    assistantKey: 'researcher',
+    enabled: true
   }
 ]
 
 /** Longest accepted output folder, matching the stored column and the
  * `AutomationRule*` schemas. */
+/** 每日文献推送（消息侧）工作流：引擎全网检索 + 文献矩阵增强 + 中文决策卡，
+ * 经飞书 bot 发绑定用户，与 daily_digest→Obsidian 本地知识库管线完全隔离。 */
+export const LITERATURE_DAILY_MSG_WORKFLOW_KEY = 'literature_daily_msg' as const
+/** 内置消息推送规则（migration 33 种子）。 */
+export const LITERATURE_DAILY_MSG_SCHEDULE_ID = 'builtin.schedule.feishu-daily-msg' as const
+export const LITERATURE_DAILY_MSG_PROMPT_TEMPLATE_ID = 'builtin.prompt.daily-feishu-msg' as const
+/** 决策卡列表的单条消息上限字符数：超长按此分块发送，防单条刷屏。 */
+export const FEISHU_DAILY_MSG_CHUNK_CHARS = 3_500
+/** 决策卡条数上限：不做 AI 精选，全量列出、只截断（默认 20 篇防刷屏）。 */
+export const FEISHU_DAILY_MSG_MAX_ITEMS = 20
+
 export const AGENT_OUTPUT_FOLDER_MAX_LENGTH = 180
 
 export type AgentOutputFolderRejection =
@@ -859,7 +888,8 @@ export const AgentWorkflowKeySchema = z.enum([
   'literature_review',
   'research_ideation',
   'research_plan',
-  'manuscript_draft'
+  'manuscript_draft',
+  'literature_daily_msg'
 ])
 export type AgentWorkflowKey = z.infer<typeof AgentWorkflowKeySchema>
 
