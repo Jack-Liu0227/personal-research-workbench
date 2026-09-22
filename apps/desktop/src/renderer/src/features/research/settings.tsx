@@ -501,6 +501,73 @@ function ConnectorsPanel(): React.JSX.Element {
   )
 }
 
+function FeishuBindingPanel(): React.JSX.Element {
+  const queryClient = useQueryClient()
+  const status = useQuery({ queryKey: ['feishu-binding-status'], queryFn: () => getWorkbenchApi().feishu.getStatus(), refetchInterval: 3000 })
+  const [appId, setAppId] = useState('')
+  const [appSecret, setAppSecret] = useState('')
+  const [feedback, setFeedback] = useState<string | null>(null)
+
+  useEffect(() => {
+    if (status.data?.appId) setAppId((current) => current || status.data?.appId || '')
+  }, [status.data?.appId])
+
+  const invalidate = async (): Promise<void> => {
+    await queryClient.invalidateQueries({ queryKey: ['feishu-binding-status'] })
+  }
+  const save = useMutation({
+    mutationFn: () => getWorkbenchApi().feishu.saveApp({ appId: appId.trim(), appSecret: appSecret.trim() }),
+    onSuccess: async (next) => {
+      setAppSecret('')
+      setFeedback(next.message)
+      await invalidate()
+    },
+    onError: (error) => setFeedback(getErrorMessage(error))
+  })
+  const bind = useMutation({
+    mutationFn: () => getWorkbenchApi().feishu.beginBind({}),
+    onSuccess: (result) => setFeedback(result.message),
+    onError: (error) => setFeedback(getErrorMessage(error))
+  })
+  const sendTest = useMutation({
+    mutationFn: () => getWorkbenchApi().feishu.sendTest(),
+    onSuccess: (result) => setFeedback(result.message),
+    onError: (error) => setFeedback(getErrorMessage(error))
+  })
+  const unbind = useMutation({
+    mutationFn: () => getWorkbenchApi().feishu.unbind(),
+    onSuccess: async (next) => {
+      setAppId('')
+      setAppSecret('')
+      setFeedback(next.message)
+      await invalidate()
+    },
+    onError: (error) => setFeedback(getErrorMessage(error))
+  })
+  const busy = save.isPending || bind.isPending || sendTest.isPending || unbind.isPending
+
+  return <ResearchPanel eyebrow="FEISHU / DAILY LITERATURE" title="飞书（每日文献推送）">
+    <div className="grid gap-3 p-4">
+      <p className="text-xs leading-5 text-muted-foreground">使用飞书自建应用完成本机扫码绑定。App Secret、用户令牌和绑定信息只保存在 Electron Main 的 safeStorage，不会进入 Renderer、SQLite、日志或 Agent。</p>
+      <div className="grid gap-3 sm:grid-cols-2">
+        <Field htmlFor="feishu-app-id" label="App ID"><Input autoComplete="off" id="feishu-app-id" onChange={(event) => setAppId(event.target.value)} placeholder="cli_xxx" value={appId} /></Field>
+        <Field hint={status.data?.appId ? '已保存凭据；重新填写可替换。' : '不会在页面回显已保存的 Secret。'} htmlFor="feishu-app-secret" label="App Secret"><Input autoComplete="new-password" id="feishu-app-secret" onChange={(event) => setAppSecret(event.target.value)} placeholder="填写后保存" type="password" value={appSecret} /></Field>
+      </div>
+      <p className="rounded-md border border-border bg-muted/20 p-3 text-xs leading-5 text-muted-foreground"><strong className="text-foreground">重定向 URL：</strong>http://127.0.0.1:35231/feishu/callback。请将该地址加入飞书应用后台的安全设置；本机回调只监听 loopback。</p>
+      <div className="flex flex-wrap items-center gap-2">
+        <Button disabled={busy || !appId.trim() || !appSecret.trim()} loading={save.isPending} onClick={() => { setFeedback(null); save.mutate() }} size="sm"><Save aria-hidden="true" className="size-3.5" />保存应用</Button>
+        <Button disabled={busy || !status.data?.appId} loading={bind.isPending} onClick={() => { setFeedback(null); bind.mutate() }} size="sm" variant="secondary">扫码绑定</Button>
+        <Button disabled={busy || !status.data?.bound} loading={sendTest.isPending} onClick={() => { setFeedback(null); sendTest.mutate() }} size="sm" variant="secondary">发送测试</Button>
+        <Button disabled={busy || !status.data?.bound && !status.data?.appId} loading={unbind.isPending} onClick={() => { if (window.confirm('解除飞书绑定并删除本机安全存储中的应用凭据？')) unbind.mutate() }} size="sm" variant="ghost">解除绑定</Button>
+      </div>
+      {status.isLoading ? <p className="text-xs text-muted-foreground">正在读取飞书绑定状态…</p> : null}
+      {status.error ? <p className="form-feedback form-feedback-error" role="alert">{getErrorMessage(status.error)}</p> : null}
+      {status.data ? <p className="text-xs text-muted-foreground" role="status">状态：{status.data.message}</p> : null}
+      {feedback ? <p className="form-feedback" role="status">{feedback}</p> : null}
+    </div>
+  </ResearchPanel>
+}
+
 function SettingInfoPanel({ eyebrow, title, children }: { eyebrow: string; title: string; children: React.ReactNode }): React.JSX.Element {
   return <ResearchPanel eyebrow={eyebrow} title={title}><div className="grid gap-3 p-5 text-sm leading-6 text-muted-foreground">{children}</div></ResearchPanel>
 }
@@ -1201,5 +1268,5 @@ export function IntegrationsSettingsPage({ projects: _projects }: { projects: Pr
     pendingSection = null
     return requested
   })
-  return <div className="page-scroll"><PageHeader description="管理工作区、外部工具、代理、模型认证与知识引擎映射；页面仅显示后端真实状态。" eyebrow="SETTINGS / WORKSPACE" title="设置" /><div className="mt-4"><ResearchTabs items={[{ value: 'general', label: '通用' }, { value: 'workspace', label: '工作区与数据' }, { value: 'literature', label: '文献检索' }, { value: 'proxy', label: '代理' }, { value: 'connectors', label: '工具连接' }, { value: 'rss', label: 'RSS 来源' }, { value: 'agent', label: '模型与 Agent' }, { value: 'engines', label: '知识引擎' }, { value: 'mcp', label: 'MCP Server' }, { value: 'security', label: '安全与审计' }, { value: 'about', label: '关于与更新' }]} label="设置分区" onChange={setTab} value={tab} /></div><div className="mt-4">{tab === 'general' ? <GeneralSettingsPanel /> : null}{tab === 'workspace' ? <WorkspaceSettingsPanel /> : null}{tab === 'literature' ? <LiteratureSettingsPanel /> : null}{tab === 'proxy' ? <ProxySettingsPanel /> : null}{tab === 'connectors' ? <ConnectorsPanel /> : null}{tab === 'rss' ? <RssSourceSettings /> : null}{tab === 'agent' ? <AgentModelSettingsPanel authFeedback={authFeedback} authState={authState} onLoginAttempt={(provider) => { expectedLoginProvider.current = provider; setAuthFeedback(null) }} onLoginCancelled={(loginId) => { expectedLoginProvider.current = null; ownedLoginIds.current.delete(loginId); activeLoginId.current = null; setAuthState({ login: null, promptValue: '' }) }} onLoginPromptAnswered={(loginId) => setAuthState((current) => current.login?.loginId === loginId ? { ...current, promptValue: '', login: { ...current.login, prompt: null } } : current)} onLoginStarted={(loginId) => { ownedLoginIds.current.add(loginId); activeLoginId.current = loginId; expectedLoginProvider.current = null }} onPromptValueChange={(value) => setAuthState((current) => ({ ...current, promptValue: value }))} /> : null}{tab === 'engines' ? <EnginesPanel /> : null}{tab === 'mcp' ? <McpSettingsPanel /> : null}{tab === 'security' ? <SecuritySettingsPanel /> : null}{tab === 'about' ? <UpdatesSettingsPanel /> : null}</div></div>
+  return <div className="page-scroll"><PageHeader description="管理工作区、外部工具、代理、模型认证与知识引擎映射；页面仅显示后端真实状态。" eyebrow="SETTINGS / WORKSPACE" title="设置" /><div className="mt-4"><ResearchTabs items={[{ value: 'general', label: '通用' }, { value: 'workspace', label: '工作区与数据' }, { value: 'literature', label: '文献检索' }, { value: 'proxy', label: '代理' }, { value: 'connectors', label: '工具连接' }, { value: 'rss', label: 'RSS 来源' }, { value: 'agent', label: '模型与 Agent' }, { value: 'engines', label: '知识引擎' }, { value: 'mcp', label: 'MCP Server' }, { value: 'security', label: '安全与审计' }, { value: 'about', label: '关于与更新' }]} label="设置分区" onChange={setTab} value={tab} /></div><div className="mt-4">{tab === 'general' ? <GeneralSettingsPanel /> : null}{tab === 'workspace' ? <WorkspaceSettingsPanel /> : null}{tab === 'literature' ? <LiteratureSettingsPanel /> : null}{tab === 'proxy' ? <ProxySettingsPanel /> : null}{tab === 'connectors' ? <><ConnectorsPanel /><FeishuBindingPanel /><RssSourceSettings /></> : null}{tab === 'rss' ? <RssSourceSettings /> : null}{tab === 'agent' ? <AgentModelSettingsPanel authFeedback={authFeedback} authState={authState} onLoginAttempt={(provider) => { expectedLoginProvider.current = provider; setAuthFeedback(null) }} onLoginCancelled={(loginId) => { expectedLoginProvider.current = null; ownedLoginIds.current.delete(loginId); activeLoginId.current = null; setAuthState({ login: null, promptValue: '' }) }} onLoginPromptAnswered={(loginId) => setAuthState((current) => current.login?.loginId === loginId ? { ...current, promptValue: '', login: { ...current.login, prompt: null } } : current)} onLoginStarted={(loginId) => { ownedLoginIds.current.add(loginId); activeLoginId.current = loginId; expectedLoginProvider.current = null }} onPromptValueChange={(value) => setAuthState((current) => ({ ...current, promptValue: value }))} /> : null}{tab === 'engines' ? <EnginesPanel /> : null}{tab === 'mcp' ? <McpSettingsPanel /> : null}{tab === 'security' ? <SecuritySettingsPanel /> : null}{tab === 'about' ? <UpdatesSettingsPanel /> : null}</div></div>
 }
