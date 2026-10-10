@@ -1,0 +1,476 @@
+"""「论文翻译」这一页的后端：PDF 文件、元数据抽取、BabelDOC 翻译任务、中文笔记。
+
+三件事各自独立，都不动业务库结构（只读 papers 表 + 复用 md_notes）：
+  · pdf_path(db, pid)        -> 找到那篇 PDF 的真实路径（来源是我们自己的入库记录）
+  · paper_meta(db, pid)      -> DOI / 题目 / 关键词 / 发表时间，取不到给 ""（前端显示「暂无信息」）
+  · start(db, ...)           -> 后台跑 BabelDOC（默认输出**同页左右对照**），进度写进进程内状态表
+  · note_from_translation()  -> 把译文（mono.pdf）逐页文字抽出来，建成**绑定到项目**的笔记
+"""
+from __future__ import annotations
+
+import json
+import os
+import re
+import shutil
+import subprocess
+import threading
+import time
+import urllib.parse
+import urllib.request
+from pathlib import Path
+from typing import Any
+
+# BabelDOC 实测：模型/字体走本机缓存，只有 tiktoken 小文件首次要联网（已灌进缓存）
+BABELDOC_CMD = ["uv", "tool", "run", "babeldoc"]
+ZHIPU_BASE = "https://open.bigmodel.cn/api/paas/v4"
+ZHIPU_MODEL = "glm-4-flash"
+QPS = os.environ.get("RW_TRANS_QPS", "8")     # 翻译并发上限（原来 4，太保守；不满意就设这个环境变量）
+JOBS: dict[str, dict[str, Any]] = {}          # paper_id -> 翻译任务状态（进程内，够用）
+_LOCK = threading.Lock()
+
+DOI_RE = re.compile(r"\b10\.\d{4,9}/[-._;()/:A-Za-z0-9]+")
+KW_RE = re.compile(r"(?i)key\s?words?\s*[:：]?\s*(.{5,240})")
+
+
+# ---------------- PDF 文件 ----------------
+def pdf_path(db: Any, paper_id: str) -> Path | None:
+    row = db.db.execute("SELECT source_path FROM papers WHERE id=?", (paper_id,)).fetchone()
+    if not row:
+        return None
+    p = Path(row["source_path"])
+    return p if p.is_file() and p.suffix.lower() == ".pdf" else None
+
+
+def _fitz(path: Path):
+    import fitz                                                # PyMuPDF（py -3.10 里有）
+    return fitz.open(path)
+
+
+# ---------------- 元数据 ----------------
+def _biggest_title(doc) -> str:
+    """首页字号最大的那几行当标题（跳过期刊页眉/DOI 行）。"""
+    try:
+        page = doc[0]
+        best: list[tuple[float, str]] = []
+        for block in page.get_text("dict").get("blocks", []):
+            for line in block.get("lines", []):
+                txt = "".join(s.get("text", "") for s in line.get("spans", [])).strip()
+                size = max((s.get("size", 0) for s in line.get("spans", [])), default=0)
+                if len(txt) >= 12 and size > 0:
+                    best.append((size, txt))
+        if not best:
+            return ""
+        best.sort(key=lambda x: -x[0])
+        top = best[0][0]
+        return " ".join(t for s, t in best if s >= top * 0.92)[:300]
+    except Exception:
+        return ""
+
+
+def _crossref(doi: str, timeout: float = 12) -> dict[str, Any]:
+    """按 DOI 反查 Crossref 补全题目/时间/关键词/作者（直连；代理关着也能用）。"""
+    env = {k: v for k, v in os.environ.items() if not k.lower().endswith("_proxy")}
+    req = urllib.request.Request(f"https://api.crossref.org/works/{urllib.parse.quote(doi)}",
+                                 headers={"User-Agent": "research-workbench/1.0 (mailto:local)"})
+    opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+    with opener.open(req, timeout=timeout) as r:                # 显式不走代理
+        return json.load(r).get("message", {}) or {}
+
+
+_META_CACHE: dict[str, tuple[float, dict[str, Any]]] = {}   # 同一篇别反复去 Crossref（笔记模式也用它取短名）
+
+
+def paper_meta(db: Any, paper_id: str) -> dict[str, Any]:
+    path = pdf_path(db, paper_id)
+    if not path:
+        return {"error": "找不到这篇 PDF 的文件"}
+    try:
+        mt = path.stat().st_mtime
+    except OSError:
+        mt = 0.0
+    hit = _META_CACHE.get(str(path))
+    if hit and hit[0] == mt and len(hit[1]) > 1:
+        return dict(hit[1])
+    out: dict[str, Any] = {"filename": path.name, "doi": "", "title": "", "keywords": "",
+                           "published": "", "authors": "", "pages": 0, "source": ""}
+    with _fitz(path) as doc:
+        out["pages"] = doc.page_count
+        text = "\n".join(doc[i].get_text() for i in range(min(3, doc.page_count)))
+        out["title"] = (doc.metadata or {}).get("title", "").strip() or _biggest_title(doc)
+        out["published"] = ((doc.metadata or {}).get("creationDate") or "")[:10].replace("D:", "")
+    m = DOI_RE.search(text)
+    if m:
+        out["doi"] = m.group(0).rstrip(".,;)")
+    kw = KW_RE.search(text)
+    if kw:
+        out["keywords"] = re.sub(r"\s+", " ", kw.group(1)).strip()[:200]
+    if out["doi"]:                                              # 有 DOI 就再去 Crossref 补全
+        try:
+            msg = _crossref(out["doi"])
+            out["source"] = "crossref"
+            out["title"] = (msg.get("title") or [out["title"]])[0][:300]
+            subs = msg.get("subject") or []
+            if subs and len(out["keywords"]) < 5:
+                out["keywords"] = "，".join(subs[:8])
+            dp = (msg.get("published-print") or msg.get("published-online") or msg.get("issued") or {}).get("date-parts") or []
+            if dp and dp[0]:
+                out["published"] = "-".join(f"{x:02d}" if i else f"{x}" for i, x in enumerate(dp[0]))
+            names = [f"{a.get('given','')} {a.get('family','')}".strip() for a in (msg.get("author") or [])[:6]]
+            out["authors"] = "、".join(n for n in names if n)
+        except Exception as exc:
+            out["source"] = f"crossref 失败：{type(exc).__name__}"
+    if len(_META_CACHE) > 64:
+        _META_CACHE.clear()
+    _META_CACHE[str(path)] = (mt, dict(out))
+    return out
+
+
+# ---------------- 翻译任务（BabelDOC） ----------------
+def _llm_cfg(db: Any) -> dict[str, str]:
+    """优先用应用里配好的模型；没有就退回环境里的智谱（实测可用）。"""
+    try:
+        m = db.active_model() or {}
+    except Exception:
+        m = {}
+    base = (m.get("base_url") or "").strip()
+    key = (m.get("api_key") or "").strip()
+    if base and key:
+        return {"base": base, "key": key, "model": (m.get("model") or ZHIPU_MODEL).strip()}
+    return {"base": ZHIPU_BASE, "key": os.environ.get("ZHIPUAI_API_KEY", "").strip(), "model": ZHIPU_MODEL}
+
+
+def out_paths(pdf: Path, out_dir: Path) -> tuple[Path, Path]:
+    """babeldoc 的产物名：<name>.no_watermark.zh.{dual,mono}.pdf"""
+    return (out_dir / f"{pdf.stem}.no_watermark.zh.dual.pdf",
+            out_dir / f"{pdf.stem}.no_watermark.zh.mono.pdf")
+
+
+def _state_path(out_dir: Path, paper_id: str) -> Path:
+    return out_dir / f"trans_{paper_id[:8]}.json"
+
+
+def _save_state(out_dir: Path, paper_id: str, pages_done: int, total: int, done: bool) -> None:
+    """译文是边翻边落盘的，所以「文件在不在」不等于「翻完了」—— 单独记一份状态，靠它判断缓存/续翻。"""
+    try:
+        _state_path(out_dir, paper_id).write_text(
+            json.dumps({"pages_done": pages_done, "total": total, "done": done}, ensure_ascii=False),
+            encoding="utf-8")
+    except OSError:
+        pass
+
+
+def _read_state(out_dir: Path, paper_id: str) -> dict[str, Any]:
+    try:
+        return json.loads(_state_path(out_dir, paper_id).read_text(encoding="utf-8"))
+    except Exception:
+        return {}
+
+
+def status(paper_id: str) -> dict[str, Any]:
+    with _LOCK:
+        return dict(JOBS.get(paper_id) or {"state": "idle"})
+
+
+def _env() -> dict[str, str]:
+    env = {k: v for k, v in os.environ.items() if not k.lower().endswith("_proxy")}
+    env["HF_HUB_OFFLINE"] = "1"                                 # 版式模型本机已有缓存
+    env["HF_HUB_DISABLE_TELEMETRY"] = "1"
+    env["TIKTOKEN_CACHE_DIR"] = os.path.expanduser("~/.cache/babeldoc/tiktoken")
+    env["NO_PROXY"] = "*"
+    env["PYTHONUNBUFFERED"] = "1"                               # 不然日志/progress 全憋在缓冲区里，UI 看不出进度
+    env["PYTHONIOENCODING"] = "utf-8"
+    env["COLUMNS"] = "220"                                      # rich 按 80 列换行会把 "12/40" 截成 "12/…"
+    return env
+
+
+def _parse_pages(s: str) -> list[tuple[int, int]]:
+    out: list[tuple[int, int]] = []
+    for part in (s or "").split(","):
+        part = part.strip()
+        if not part:
+            continue
+        if "-" in part:
+            a, b = part.split("-", 1)
+            out.append((int(a), int(b)))
+        else:
+            out.append((int(part), int(part)))
+    return out
+
+
+def _plan(n: int) -> list[tuple[int, int]]:
+    """分批顺序：先单独翻第 1 页（他要「第一页好了先展示第一页」），往后按批推。
+    页多了就均分成 6 段 —— 每段都要重跑一次版式模型，段数太多反而更慢。"""
+    if n <= 0:
+        return []
+    if n == 1:
+        return [(1, 1)]
+    if n > 12:
+        size = -(-n // 6)
+    else:
+        size = 3
+    parts, a = [(1, 1)], 2
+    while a <= n:
+        b = min(n, a + size - 1)
+        parts.append((a, b))
+        a = b + 1
+    return parts
+
+
+def start(db: Any, paper_id: str, out_dir: Path, pages: str = "", force: bool = False) -> dict[str, Any]:
+    path = pdf_path(db, paper_id)
+    if not path:
+        return {"error": "找不到这篇 PDF 的文件"}
+    out_dir.mkdir(parents=True, exist_ok=True)
+    dual, mono = out_paths(path, out_dir)
+    cfg = _llm_cfg(db)
+    if not cfg["key"]:
+        return {"error": "没有可用的翻译模型：先去「模型」页配一家，或让环境里有 ZHIPUAI_API_KEY"}
+    st = _read_state(out_dir, paper_id)
+    with _LOCK:
+        job = JOBS.get(paper_id)
+        if job and job.get("state") == "running":
+            return {"ok": True, "already": True, **job}
+        if mono.is_file() and st.get("done") and not force:     # 只有状态文件说翻完了才算缓存
+            JOBS[paper_id] = {"state": "done", "pct": 100, "msg": "已有译文（缓存）", "mono": str(mono),
+                              "dual": str(dual) if dual.is_file() else "", "cached": True,
+                              "pages_done": st.get("total") or 0, "total_pages": st.get("total") or 0}
+            return {"ok": True, "cached": True, **JOBS[paper_id]}
+        JOBS[paper_id] = {"state": "running", "pct": 0, "msg": "启动中…", "mono": str(mono) if mono.is_file() else "",
+                          "dual": "", "pages_done": 0, "total_pages": 0}
+    n = 0
+    try:
+        with _fitz(path) as doc:
+            n = doc.page_count
+    except Exception:
+        pass
+    plan = _parse_pages(pages) or _plan(n)
+    if not pages and mono.is_file():
+        keep = int(st.get("pages_done") or 0)                # 上次翻到一半：从没翻的那段接着来
+        if 0 < keep < n:
+            plan = [c for c in plan if c[0] > keep] or _plan(n)
+            with _LOCK:
+                JOBS[paper_id] = {**JOBS[paper_id], "pages_done": keep, "total_pages": n,
+                                  "pct": int(keep * 100 / max(1, n)),
+                                  "msg": f"接着翻（第 1-{keep} 页已翻好）"}
+    _save_state(out_dir, paper_id, int(st.get("pages_done") or 0) if mono.is_file() else 0, n, False)
+    threading.Thread(target=_run, args=(paper_id, path, out_dir, cfg, plan, mono, _env()), daemon=True).start()
+    return {"ok": True, "state": "running", "chunks": len(plan), "total_pages": n}
+
+
+_PROG = re.compile(r"(\d+)\s*/\s*(\d+)")
+_PHASES = (("doclayout", "识别版式"), ("parse page layout", "识别版式"), ("term extractor", "抽术语表"),
+           ("glossary", "抽术语表"), ("translating", "翻译正文"), ("translate", "翻译正文"),
+           ("save", "写回 PDF"), ("write", "写回 PDF"))
+
+
+def _phase(line: str) -> str:
+    low = line.lower()
+    for k, v in _PHASES:
+        if k in low:
+            return v
+    return ""
+
+
+def _spawn(paper_id: str, cmd: list[str], env: dict[str, str], fh: Any, a: int, b: int) -> int:
+    """跑一段 babeldoc：日志边写边刷新，状态里同步进度"""
+    proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                            text=True, encoding="utf-8", errors="replace", env=env)
+    phase, done, tot = "", 0, 0
+    for line in proc.stdout or []:
+        fh.write(line)
+        fh.flush()
+        ph = _phase(line)
+        if ph:
+            phase = ph
+        if "translate" in line.lower() or "-----" in line or "━" in line:
+            for cand in _PROG.finditer(line):        # 只认 "已完成/总数"（时间戳 0:00:10/0:00:06 会被 done>total 挡掉）
+                x, y = int(cand.group(1)), int(cand.group(2))
+                if 0 < x <= y:
+                    done, tot = x, y
+                    break
+        msg = f"第 {a}-{b} 页 · {phase or '准备中'}" + (f" {done}/{tot}" if tot else "")
+        with _LOCK:
+            JOBS[paper_id] = {**JOBS.get(paper_id, {}), "state": "running", "msg": msg}
+    return proc.wait()
+
+
+def _splice(dest: Path, part: Path, a: int, b: int) -> None:
+    """把 part 里的第 a..b 页拼进累积译文：读旧 + 写新 + 替换（页序始终跟原文一一对应）。"""
+    if not dest.is_file():
+        shutil.copy2(part, dest)
+        return
+    with _fitz(dest) as old, _fitz(part) as new:
+        import fitz                                              # 空文档得用模块的 open()，_fitz 是"开已有文件"的帮手
+        out = fitz.open()
+        for i in range(old.page_count):
+            src = new if (a - 1) <= i <= (b - 1) and i < new.page_count else old
+            out.insert_pdf(src, from_page=i, to_page=i)
+        tmp = dest.with_name(dest.name + ".tmp.pdf")
+        out.save(str(tmp))
+        out.close()
+    for _ in range(3):
+        try:
+            tmp.replace(dest)
+            return
+        except OSError:                              # 前端可能正读着这个文件，等一下再换
+            time.sleep(0.4)
+
+
+def _run(paper_id: str, path: Path, out_dir: Path, cfg: dict[str, str],
+         plan: list[tuple[int, int]], mono: Path, env: dict[str, str]) -> None:
+    log = mono.parent / f"trans_{paper_id[:8]}.log"
+    total = plan[-1][1] if plan else 0
+    try:
+        with log.open("w", encoding="utf-8", errors="replace") as fh:
+            for idx, (a, b) in enumerate(plan, 1):
+                part_dir = out_dir / "_parts" / f"p{a}-{b}"
+                part_dir.mkdir(parents=True, exist_ok=True)
+                fh.write(f"\n===== 第 {a}-{b} 页（第 {idx}/{len(plan)} 段）=====\n")
+                fh.flush()
+                with _LOCK:
+                    JOBS[paper_id] = {**JOBS.get(paper_id, {}), "state": "running",
+                                      "msg": f"正在翻第 {a}-{b} 页（第 {idx}/{len(plan)} 段）",
+                                      "pages_done": a - 1, "total_pages": total, "log": str(log)}
+                cmd = BABELDOC_CMD + ["--files", str(path), "--lang-in", "en", "--lang-out", "zh",
+                                      "--openai", "--openai-model", cfg["model"],
+                                      "--openai-base-url", cfg["base"], "--openai-api-key", cfg["key"],
+                                      "--watermark-output-mode", "no_watermark", "--qps", QPS,
+                                      "--no-dual",                    # UI 只用单语译文，省掉对照版的生成
+                                      "--no-auto-extract-glossary",   # 省掉一整趟全篇术语抽取的 LLM 调用
+                                      "--pages", f"{a}-{b}",
+                                      "--working-dir", str(out_dir / "_work" / f"p{a}-{b}"),
+                                      "--output", str(part_dir)]
+                code = _spawn(paper_id, cmd, env, fh, a, b)
+                part_mono = part_dir / mono.name
+                if code != 0 or not part_mono.is_file():
+                    fh.write(f"!!! 这段失败：退出码 {code}\n")
+                    with _LOCK:
+                        JOBS[paper_id] = {**JOBS.get(paper_id, {}),
+                                          "state": "partial" if mono.is_file() else "error",
+                                          "msg": f"翻到第 {a}-{b} 页时失败（退出码 {code}）",
+                                          "pages_done": a - 1, "total_pages": total,
+                                          "mono": str(mono) if mono.is_file() else "", "log": str(log)}
+                    return
+                _splice(mono, part_mono, a, b)
+                _save_state(out_dir, paper_id, b, total, False)
+                with _LOCK:
+                    JOBS[paper_id] = {**JOBS.get(paper_id, {}), "state": "running",
+                                      "pct": int(b * 100 / max(1, total)),
+                                      "msg": f"已翻好第 1-{b} 页 / 共 {total} 页",
+                                      "pages_done": b, "total_pages": total,
+                                      "mono": str(mono), "log": str(log)}
+        _save_state(out_dir, paper_id, total, total, True)
+        with _LOCK:
+            JOBS[paper_id] = {**JOBS.get(paper_id, {}), "state": "done", "pct": 100, "msg": "完成",
+                              "pages_done": total, "total_pages": total,
+                              "mono": str(mono), "log": str(log)}
+    except Exception as exc:
+        with _LOCK:
+            cur = JOBS.get(paper_id, {})
+            JOBS[paper_id] = {**cur, "state": "partial" if mono.is_file() else "error",
+                              "msg": f"{type(exc).__name__}: {exc}", "log": str(log)}
+            _save_state(out_dir, paper_id, int(cur.get("pages_done") or 0), total, False)
+
+
+# ---------------- 译文 → 中文笔记 ----------------
+def pdf_words(path: Path, max_pages: int = 0) -> dict[str, Any]:
+    """每页的词 + 坐标（PDF 点，fitz 原点在左上），前端按缩放比铺文字层：
+    自己能控、离线可用，还能让荧光笔的选区对准（pdf.js 的 renderTextLayer 在 WebView2 里会挂）。"""
+    pages: list[dict[str, Any]] = []
+    with _fitz(path) as doc:
+        n = doc.page_count if not max_pages else min(doc.page_count, max_pages)
+        for i in range(n):
+            page = doc[i]
+            r = page.rect
+            words = [{"x": round(w[0], 1), "y": round(w[1], 1), "w": round(w[2] - w[0], 1),
+                      "h": round(w[3] - w[1], 1), "t": w[4]} for w in page.get_text("words")]
+            pages.append({"n": i + 1, "w": round(r.width, 1), "h": round(r.height, 1), "words": words})
+    return {"pages": pages}
+
+
+def mono_pages(mono: Path) -> list[str]:
+    with _fitz(mono) as doc:
+        return [doc[i].get_text().strip() for i in range(doc.page_count)]
+
+
+_CJK = re.compile(r"[\u3400-\u9fff]")
+
+
+def only_chinese(text: str) -> str:
+    """只留含中文的段落（部分翻译时未翻的页还是英文，用户要「光要中文」）。"""
+    keep = [p.strip() for p in re.split(r"\n{2,}", text) if _CJK.search(p)]
+    return "\n\n".join(keep)
+
+
+def short_name(title: str, stem: str = "") -> str:
+    """「阅读笔记」后面跟的论文短名：中文取前 10 字，英文取前 3 个词；取不到就用文件名（去哈希前缀）。"""
+    t = re.sub(r"\s+", " ", (title or "").strip())
+    if not t:
+        t = re.sub(r"^[0-9a-f]{8,}_", "", stem or "").rsplit(".", 1)[0]
+    if _CJK.search(t):
+        head = t[:10]
+    else:
+        words = t.split(" ")
+        head = " ".join(words[:3]) if len(words) > 3 else t
+    head = head.strip(" .,:;-–—")
+    if head and len(head) < len(t):
+        head += "…"
+    return head[:26]
+
+
+def reading_note(db: Any, task_id: str, paper_id: str, out_dir: Path) -> dict[str, Any]:
+    """点「笔记模式」调它：给这篇论文**复用或新建一篇「阅读笔记」**（空白、绑论文 + 绑项目），
+    左边那份中文全文单独返回（不塞进笔记正文 —— 正文是他自己随记随写的地方）。"""
+    path = pdf_path(db, paper_id)
+    if not path:
+        return {"error": "找不到这篇 PDF 的文件"}
+    name = "阅读笔记 · " + (short_name(paper_meta(db, paper_id).get("title", ""), path.stem) or "未命名")
+    note = db.md_note_by_paper(paper_id)
+    if not note:
+        note = db.save_md_note("", name, "", task_id, paper_id)
+    else:                                              # 已有：补项目绑定 + 刷新自动名（他自己改过名就不动）
+        t = note.get("title") or ""
+        if (task_id and not note.get("task_id")) or (t.startswith("阅读笔记") and t != name):
+            note = db.save_md_note(note["id"], name if t.startswith("阅读笔记") else t,
+                                   note.get("content") or "", task_id, paper_id)
+    _, mono = out_paths(path, out_dir)
+    text, pages = "", 0
+    if mono.is_file():
+        kept = [only_chinese(t) for t in mono_pages(mono)]
+        kept = [t for t in kept if t]
+        pages = len(kept)
+        text = "\n\n".join(kept)
+    return {"note": note, "text": text, "pages": pages, "has_mono": mono.is_file()}
+
+
+if __name__ == "__main__":                                     # 自带小样：不联网的那部分
+    from datetime import datetime
+    assert DOI_RE.search("see 10.1038/s41524-025-01554-0 for details").group(0) == "10.1038/s41524-025-01554-0"
+    assert KW_RE.search("Keywords: machine learning, NLP, materials").group(1).startswith("machine learning")
+    assert out_paths(Path("a/b/x.pdf"), Path("o"))[0].name == "x.no_watermark.zh.dual.pdf"
+    assert _PROG.search("translate 12/100 0:01:42").groups() == ("12", "100")
+
+    def prog(line: str) -> tuple[int, int]:            # _run 里那段挑 N/M 的逻辑，抽出来单独验
+        if "translate" not in line.lower() and "-----" not in line and "━" not in line:
+            return 0, 0
+        for c in _PROG.finditer(line):
+            a, b = int(c.group(1)), int(c.group(2))
+            if 0 < a <= b:
+                return a, b
+        return 0, 0
+
+    assert prog("translate ----- 37/94  0:01:42 0:00:11") == (37, 94)
+    assert prog("translate ----- 10/6 0:00:10/0:00:06") == (0, 0)   # 时间戳冒名顶替的那种，丢掉
+    assert prog("INFO doclayout:Loading ONNX model...") == (0, 0)
+    assert _plan(1) == [(1, 1)] and _plan(2) == [(1, 1), (2, 2)]
+    assert _plan(9) == [(1, 1), (2, 4), (5, 7), (8, 9)]            # 先给第 1 页，然后每 3 页一段
+    p30 = _plan(30)
+    assert sum(b - a + 1 for a, b in p30) == 30 and p30[0] == (1, 1) and len(p30) <= 8
+    assert all(p30[i][1] + 1 == p30[i + 1][0] for i in range(len(p30) - 1))   # 段与段之间不留缝
+    assert _parse_pages("2") == [(2, 2)] and _parse_pages("3-5") == [(3, 5)]
+    assert short_name("Deep learning design of nanoscale polariton propagations") == "Deep learning design…"
+    assert short_name("扭曲范德华多层结构中纳米尺度极化子传播") == "扭曲范德华多层结构中…"
+    assert short_name("", "6bdd7f0c47bd_s41563-026-02723-2.pdf") == "s41563-026-02723-2"
+    assert short_name("Short") == "Short"
+    assert status("nope")["state"] == "idle"
+    print("papertran.py 自检通过", datetime.now().strftime("%H:%M"))
