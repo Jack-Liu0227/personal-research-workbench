@@ -143,6 +143,16 @@ class ResearchDB:
         self.db.commit()
         return self.chat(cid)
 
+    def bind_chat(self, cid: str, task_id: str | None = None) -> dict[str, Any]:
+        """把这个对话绑到一个项目上（传空 = 解绑成随意对话）。历史留在对话自己身上，视野与产出跟项目走。"""
+        self.chat(cid)
+        tid = (task_id or "").strip()
+        if tid and not self.db.execute("SELECT 1 FROM research_tasks WHERE id=?", (tid,)).fetchone():
+            raise ValueError("没有这个项目")
+        self.db.execute("UPDATE chats SET task_id=?, updated_at=? WHERE id=?", (tid, now(), cid))
+        self.db.commit()
+        return self.chat(cid)
+
     def delete_chat(self, cid: str) -> dict[str, Any]:
         row = self.db.execute("DELETE FROM chats WHERE id=?", (cid,)).rowcount
         self.db.commit()

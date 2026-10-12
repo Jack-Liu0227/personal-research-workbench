@@ -15,7 +15,10 @@ a = Analysis(
         ('build/icon.ico', 'build'),
         ('providers_catalog.json', '.'),
     ],
-    hiddenimports=['pymupdf', 'webview'],
+    hiddenimports=['pdfplumber', 'pypdf', 'cryptography', 'PIL', 'pypdfium2', 'webview'],
+    # 说明：pdfminer.six / pdfplumber 里有条件导入（cryptography 处理加密 PDF、PIL/pypdfium2 渲染），
+    # 静态分析看不到，必须显式列出；PyMuPDF(AGPL) 已弃用，见 pdfio.py。
+   # cryptography: pdfminer.six 里是条件导入，静态分析看不到   # PyMuPDF(AGPL) 已弃用，见 pdfio.py / requirements.txt
     hookspath=['hooks'],       # hooks/hook-workflow.py 用来顶掉同名 contrib 钩子（见该文件注释）
     hooksconfig={},
     runtime_hooks=[],
@@ -25,7 +28,9 @@ a = Analysis(
         'torch', 'torchvision', 'torchaudio',
         'onnxruntime', 'rapidocr_onnxruntime', 'cv2', 'shapely', 'pyclipper',
         'numba', 'llvmlite', 'h5py', 'pandas', 'matplotlib', 'scipy', 'sklearn',
-        'google', 'cryptography', 'yaml', 'pyreadline3', 'win32com',
+        'google', 'pyreadline3', 'win32com',
+        # 注意：cryptography（pdfminer.six 加密 PDF）和 yaml（server.py 读配置）不能排，
+        # excludes 优先级高于 hiddenimports，排了就是 Startup 崩溃（已踩）。
     ],
     noarchive=False,
     optimize=0,

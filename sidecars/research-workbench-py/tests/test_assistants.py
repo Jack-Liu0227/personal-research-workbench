@@ -30,14 +30,21 @@ class AssistantTest(unittest.TestCase):
 
     def test_01_builtin_seeded_and_idempotent(self):
         a = self.db.assistants()
-        self.assertEqual(len(a), 5)                                   # 4 个业务助手 + Pony 模式
+        N = len(workflow.BUILTIN_ASSISTANTS)
+        self.assertGreaterEqual(N, 20)                                # 装了就有 ≥20 个可用助手
+        self.assertEqual(len(a), N)
         self.assertTrue(all(x["source"] == "builtin" for x in a))
         names = [x["name"] for x in a]
         self.assertIn("文献检索员", names)
         self.assertIn("Pony 模式", names)
         self.assertTrue([x for x in a if x["name"] == "Pony 模式"][0]["rules"])   # pony 规则非空
+        for b in workflow.BUILTIN_ASSISTANTS:                         # 名册自检：别漏键/漏规则
+            self.assertTrue(b.get("rules", "").strip(), b["id"])
+            self.assertTrue(b.get("description", "").strip(), b["id"])
+            self.assertGreaterEqual(len(b.get("prompts") or []), 1, b["id"])
+        self.assertEqual(len({b["id"] for b in workflow.BUILTIN_ASSISTANTS}), N)   # id 不重复
         self.db.assistant_seed(workflow.BUILTIN_ASSISTANTS)          # 再播一次
-        self.assertEqual(len(self.db.assistants()), 5)                # 不重复
+        self.assertEqual(len(self.db.assistants()), N)                # 不重复
         self.assertTrue(all(json.loads(x["prompts"] or "[]") for x in a))   # 每个都有推荐问题
 
     def test_02_builtin_immutable_and_undeletable(self):

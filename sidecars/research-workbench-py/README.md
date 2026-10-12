@@ -1,132 +1,95 @@
 # 科研工作 1.0
 
-面向高校科研人员/课题组的**证据优先**科研工作台：从选题到投稿的全链条，AI 只出草稿，每一步都留证据、都能被人工复核。
+面向科研人员/课题组的**证据优先**科研工作台：选题 → 检索 → 精读 → 梳理 → 写作 → 投稿一条链，AI 只出草稿，每一步都留证据、都能人工复核。
 
-## 安装（Windows，一分钟）
-
-在 PowerShell 里跑一行：
-
-```powershell
-irm https://raw.githubusercontent.com/3276166289-code/research-workbench/main/install.ps1 | iex
-```
-
-它会从 [Releases](https://github.com/3276166289-code/research-workbench/releases/latest) 拉最新版，装到 `%LOCALAPPDATA%\Programs\ResearchWorkbench`，在桌面建好快捷方式并启动。**重装不会动你的数据**（库、PDF、笔记都在 `data\` 里）。
-
-> **给 AI 助手的说明**：把本仓库地址交给任何能在本机执行命令的助手（Hermes / Claude Code / Cursor 等），它读到这里就知道该跑上面那一行。
-> 第一次打开需在「模型」页填**自己的** API key（不内置任何人的 key）。
-
-手动装（不想用脚本）：下载 Releases 里的 `ResearchWorkbench.zip` → 解压 → 双击 `ResearchWorkbench.exe`；想要桌面快捷方式就跑 `install.ps1 -Source <解压目录>`。
-
-## 源码运行（开发）
-
-```powershell
-python -m PyInstaller ResearchWorkbench.spec --noconfirm --clean   # 或双击 build.bat
-.\install.ps1 -Source .\dist\ResearchWorkbench
-```
+形态：**本机 Python + 本地网页界面**（无边框桌面窗，WebView2）。全部数据在自己机器上的 `data/research.sqlite3`，不内置任何人的 API key。
 
 ---
 
-独立于 Hermes 源码的科研工作台。Hermes 保持上游可更新；本目录负责**科研工作流 + 材料数据的证据链**。
+## 一、安装（Windows）
 
-## 两种用法
+**直发（现在这条路）**：拿 `科研工作1.0-安装程序.exe`（单文件安装器）双击即可 —— 装到 `%LOCALAPPDATA%\Programs\ResearchWorkbench`，桌面建快捷方式并启动。**重装不动数据**（库/PDF/笔记都在 `data\`）。
 
-**Agent（默认页）**：直接说目标，模型自己去调工具。左中右三栏 = 会话流 + 工具调用卡片 + 检查器（概览/文献/笔记/证据/步骤）。
-**工作流页**：同一批能力做成 7 个按钮，手动一步步走，不依赖模型规划。
-两者写的是同一套 SQLite，混用不会打架。
+**从源码跑（开发）**：
 
-## 七步工作流（每个任务一条流水线）
-
-| # | 步骤 | 做什么 | 谁在做 |
-|---|---|---|---|
-| 1 | 创新点审查 | 模型给新颖性/可行性/证据充分度打分 + 风险 + 待答问题 | 模型 |
-| 2 | 论文搜索 | OpenAlex / Crossref / arXiv 三源检索，去重入库 | 开放接口 |
-| 3 | 下载精读 | 只对**开放获取(OA)**链接下载 PDF，入库后按页精读（要点带 p.页码） | 网络 + 模型 |
-| 4 | 知识库笔记 | 精读 → 结构化笔记 + 证据表（页码/原文走严格闸门）+ 可选写 Obsidian | 本地 + 模型 |
-| 5 | 文章撰写 | 用笔记 + 已登记证据起草章节，结论处带（文献 p.页码） | 模型 |
-| 6 | 审查 | 审稿人视角：结论/评分/问题清单/证据缺口 | 模型 |
-| 7 | 格式转换 | 稿件导出 md / html / docx | python-docx |
-
-外加：**任务体系**（研究任务表）、**日历**（里程碑/截止/会议，可关联任务）、**模型切换**（多档案 OpenAI 兼容，右上角随时切）、**主题色**（7 套，本地记忆）。
-
-## 运行
-
-双击桌面「科研工作 1.0」，或：
-
-```bash
+```powershell
 cd C:\Users\24410\Desktop\科研agent\research-workbench
-python server.py            # 默认 http://127.0.0.1:8765，自动开 Edge 应用窗口
-python server.py --no-open  # 只起服务
-python app.py               # 旧的 Tk 界面（仍可用）
+启动科研工作1.0.bat                  # 或 python server.py（自动开窗，满屏无边框）
+python server.py --port 8765 --no-open   # 只起服务，自己开浏览器
 ```
 
-依赖：Python 3.10（`py -3.10`）+ PyMuPDF、python-docx（均已装）。搜索/模型走系统代理设置。
+依赖：**Python 3.10**（`py -3.10`，只有它的 site-packages 里有 pywebview）。第三方依赖见 `requirements.txt`（全部 BSD/MIT/PSF，无 AGPL）。
 
-## 命令行（核心库）
+**自己打包**：双击 `build.bat`（用 `ResearchWorkbench.spec`，入口 `server.py`）→ `dist\ResearchWorkbench\`；要单文件安装器再打 `ResearchWorkbench-Setup.spec`（入口 `installer.py`）。**必须用 3.10 打包**，否则运行时会静默退回带黑标题栏的 Edge 窗口。
+
+---
+
+## 二、十步工作流（每一步一个独立功能区）
+
+| # | 步骤 | 做什么 | 左边 | 右边 |
+|---|---|---|---|---|
+| 1 | 🔍 创新点审查 | 受限对话，注入本机博导 skill 做 F1-F10 审计 + 五维评分 | — | 对话 + 轨迹 |
+| 2 | 📚 论文搜索 | OpenAlex / Crossref / arXiv 三源检索，去重、排序、年份区间筛选 | 结果表（可勾选） | — |
+| 3 | ⬇️ 下载精读 | 只下 OA 全文 → 入库；下不到的进「待手动下载清单」；一键精读（后台任务、可停） | 清单 + 计数 | — |
+| 4 | 🌐 论文翻译 | PDF 文字层 + 缩放/页码/荧光笔；中英互译、笔记模式（全屏 2/3 中文 + 1/3 笔记） | PDF / 双语 / 笔记 | — |
+| 5 | 🗂 确认大纲 | 框架 markdown（大标题 + 小标题 + 一句说明）就地改 | 框架 | 框架 agent |
+| 6 | 🧩 梳理精读 | **谱系图**：每个小标题 → 精读结论 / 笔记 / 实验数据（脑图，实时） | 谱系图（可拖文件上传数据） | 结构 agent |
+| 7 | ✍️ 文章撰写 | 按框架写正文，缺数据写「待补」；注入本机 paper-spine / paper-writer | 正文 | 写作 agent |
+| 8 | 🧐 稿件审查 | 审稿人视角；左边可荧光笔标细节，标完一键发给 agent | 正文（可标注） | 审查 agent |
+| 9 | 🌍 中译英 | md→md 分片并发 | 英文（可改可存） | 中文 |
+| 10 | 🔄 格式转换 | Word / LaTeX(.tex→PDF，本机 MiKTeX) / Markdown / HTML | 文件区 | 代码区 + PDF 预览 |
+
+其余页面：**Agent**（全局 Leader，不绑项目）、**助手**（我的/公开，规则进 system）、**团队**（2 固定 + 3 机动，成员从助手里选，一轮一个自动接力）、**日历**、**项目**、**项目空间**（概览/团队/文献/笔记/日程）、**定时任务**、**知识库**（接 Obsidian，只改 frontmatter）、**笔记**（Markdown 编辑器 + 专注/窄栏）、**情报日报**（RSS）、**邮箱**、**设置**（主题色 / 模型列表 / Tool / Skill / MCP）。
+
+**引用方式**：正文里**不写** `[1]` 标号；引用位置 + 文献信息记在后台的 `<项目>/论文正文/引用台账.md`（工具 `cite_add` 登记，随正文改动同步状态）。
+
+---
+
+## 三、怎么验（改完必跑）
 
 ```bash
-python research_core.py data/research.sqlite3 create-task "O3 钠电掺杂" "哪种掺杂元素值得验证" "O3-NaNi1/3Fe1/3Mn1/3O2"
-python research_core.py data/research.sqlite3 ingest TASK_ID paper.pdf
-python research_core.py data/research.sqlite3 extract PAPER_ID
-python research_core.py data/research.sqlite3 summary TASK_ID
+自检.bat                                       # 一条命令跑完：Python 自检 + 前端主题自检 + JS 语法
+py -3.10 -m unittest discover -s tests -t .    # 108 项自检（等价的第一条）
+node web/theme.test.mjs                        # 主题配色（HSL 往返 / 明暗推导 / 对比度 ≥ AA）
 ```
 
-## 测试
+改完 `.py` **必须关窗重开**（窗口就是服务进程，关窗即退）；只改 `web/` 按 F5 即可。
 
-```bash
-python -m unittest discover -s tests -t .   # 全部自检（含 workflow / 团队 / 翻译）
-node web/theme.test.mjs          # 前端主题配色自检
-```
+验 UI 的套路（不碰真库）：起临时实例 `RESEARCH_WORKBENCH_DB="$TEMP/x.sqlite3" py -3.10 server.py --port 8799 --no-open`，再用无头 Edge + CDP 驱动页面读数/截图。
 
-## 边界（1.0 的诚实标注）
+---
 
-- 证据抽取结果是**候选**，不是自动确认的事实；页码或原文对不上的一律拒绝，仍需人工审查。
-- **只下载开放获取全文**，不绕过付费墙；没有 OA 链接就如实返回「无 OA 全文」。
-- 模型产出（审查/撰写）是**草稿**，不是结论。
-- 打包：`ResearchWorkbench.spec` 目前仍指向旧 Tk 入口；要出独立 exe 需把入口改成 `server.py` 并把 `web/` 加入 `datas`。当前交付形态 = 桌面快捷方式 → `启动科研工作1.0.bat`。
+## 四、模型与 Agent
 
-## 与「功能块」的对应
+- **40 家 Provider 目录**（`providers_catalog.json`，从科研工作台的 pi-ai SDK 导出）：卡片制，填 Key → 发现模型/手填 → 采用 → 点 chip 设为默认。Key 不回显（服务端只回 `key_present`）。
+- 本机只实现 **`openai-completions`** 这一条协议；另 20 家能配置、能测、卡片标「协议未接」，设默认会被拦住。
+- **助手 = 一个接进来的模型**：绑了助手就用它接的模型（Agent 页 / 十步 / 团队接力全认）。
+- **Agent 工具**：`library_overview` `knowledge_query` `calendar_add` `idea_review` `paper_search` `paper_download` `paper_read` `notes_compose` `draft_write` `draft_review` `format_convert` + 团队 `team_board` `team_assign`；另有按步限定的作用域工具（大纲/撰写/审查的 `doc_write`/`doc_read`/`cite_add`，梳理精读的 `map_write`/`map_read`/`map_sources`）。
+- 「OAuth / 订阅登录」只做**打开厂商控制台 + 回贴凭据**，不做自动设备码流（各家要自己的 client_id）。
 
-| 功能块索引 | 在 1.0 里的落点 |
+---
+
+## 五、边界（诚实标注）
+
+- 证据抽取是**候选**不是事实：页码或原文对不上的一律拒收，仍需人工审查。
+- 只下**开放获取**全文，不绕付费墙；出版社的 OA 直链（Wiley/RSC 等）实测 403，要人工。
+- 模型产出（审查/撰写/精读）都是**草稿**。
+- 定时任务**依赖进程**：关掉应用期间不跑，重开最多补跑一次；预检不过标「阻断」，不产产物、不伪装成功。
+- 团队接力是**串行**（一轮一个成员），不是真并行。
+- 知识库只碰授权库里的 `.md`，**永不写** `.obsidian/`，只改 frontmatter 那几个键。
+
+---
+
+## 六、目录
+
+| 文件 | 干什么 |
 |---|---|
-| 01 文献检索（多源） | 步骤² 论文搜索：OpenAlex + Crossref + arXiv |
-| 02 文献库与 AI 解析 | 步骤³ 入库（哈希去重/逐页文本）+ 步骤⁴ 证据闸门 |
-| 03/04 PDF 精读·全文翻译 | 步骤³ 精读（翻译引擎留在 A 侧，未并入） |
-| 15 Obsidian 集成 | 步骤⁴ 可选写 Vault（`integrations.py` 预览→令牌确认→写入） |
-| 22 任务·项目·日历 | 任务表 + 日历表 + 界面「任务」「日历」页 |
-| 10/11 模型配置与发现 | 「模型」页多档案 + 右上角切换（OpenAI 兼容） |
-| 25 安全与凭据 | 仅本地 SQLite、只走 OA、Obsidian 写入需令牌确认 |
-
-主题色与日历控件是 1.0 自己加的，功能块里没有对应项。
-
-## 界面
-
-外壳照抄「科研工作台」的骨架：侧栏（**模型** / Agent / 日历 / **项目** + 可折叠「研究」组 + 主题切换 + 连接指示）、顶栏（日期 / 任务选择 / Ctrl+K 全局搜索）、工作区标签页、底部状态栏（本地服务 / SQLite / 模型 / 工具数）。
-Agent 页是工具调用式会话：每条消息、每个 tool_call 都有卡片，失败的工具显示红色而不中断整轮。
-
-## 模型与 Agent（侧栏第一项）
-
-对齐科研工作台的「设置 → 模型与 Agent」：**Provider 卡片制**，不再是一张平铺的档案表。
-
-- **内置目录 40 家，每家一张卡片**（`providers_catalog.json`，直接从科研工作台内嵌的 pi-ai SDK 导出，不是手抄）：Amazon Bedrock、Anthropic、Azure OpenAI、Baseten、Cerebras、Cloudflare、DeepSeek、Fireworks、GitHub Copilot、Google / Vertex、Groq、Hugging Face、Kimi、MiniMax / CN、Mistral、Moonshot / CN、NVIDIA、OpenAI、OpenAI Codex、OpenCode、OpenRouter、Qwen Token Plan ×3、Radius、Together、Vercel AI Gateway、xAI、Xiaomi ×4、Z.AI ×2、Ant Ling。每家带真实 base URL、接入协议徽标、模型数和模型 id 清单（点一下即采用）。库里没有行也照样出卡片 —— 用到哪家就填哪家，不必先「添加」。
-- 每家的**可选模型列表默认折叠**（原生 `<details>`，点开才铺开按钮；展开状态在采用/刷新后不塌回去），一张卡片默认只占四五行的空间。
-- 卡片顶部可**过滤**（按名字/域名）、「只看已配置」「只看本机可调用」；已配置的卡片左边框转绿。
-- 加自定义 Provider：名称 / 接口地址（填到 `/v1`）/ 接入方式 / Key
-- 凭据：`已保存 | 未配置` 状态徽标，**Key 不回显**（页面只送、服务端只回 `key_present`，原文不进任何响应）；可更换、可清除
-- 一键**发现模型**：打 `GET {base_url}/models`，候选列出来后点「采用」才写进列表，× 可撤销
-- **测试连接**：真发一条最小消息（`max_tokens=16`），证明 地址 + Key + 模型名 三者能打通
-- **设为默认**：点已采用的模型 chip，落成 `model_profiles` 的当前行 —— 下游 Agent / 七步工作流不用改一行
-
-**已知边界（没装样子）**：「OAuth / 订阅登录」只做**打开厂商控制台 + 回贴凭据**，不做自动设备码流——各家 RFC 8628 要各自的 `client_id`，本机无法凭空拿到；真给你 client_id 再把轮询加进来。另外本机调用只实现了 `openai-chat` 这条线，选其它接入方式能从网关列到模型，但真正调用前会提醒。
-
-**主题**：抄 zotero-lit-tool 的做法 —— 选一个「主色」，其余配色全部由它推导（深色底自动提亮主色并配深色文字，浅色底用本色配白字，侧栏底色吃主色色相）。8 个命名预设（研究蓝 / 松柏绿 / 群青蓝 / 珊瑚红 / 琥珀金 / 莓果红 / 理性紫 / 石墨灰）+ 自定义色号（取色器或直接输 `#176B87`）+ 恢复默认。侧栏底部和设置页都能一键切，选择存在 localStorage。
-
-```bash
-node web/theme.test.mjs   # 颜色数学自检（HSL 往返 / 明暗推导 / 对比度 ≥ AA）
-```
-
-## Agent 工具（11 个）
-
-`library_overview` `knowledge_query` `calendar_add` `idea_review` `paper_search` `paper_download`
-`paper_read` `notes_compose` `draft_write` `draft_review` `format_convert`
-
-模型走 OpenAI 兼容的 `/chat/completions` + `tools`；不支持 function calling 的模型会退化成只答不调工具。
+| `server.py` | 纯标准库 HTTP 服务（ThreadingHTTPServer）：静态页 + JSON API + `/api/agent` 等 SSE；启动即开无边框窗 |
+| `workflow.py` | 十步工作流、三源检索、OA 下载、精读、翻译、大纲/撰写/审查/谱系、引用台账、中译英、格式转换、日历、模型档案、Agent 工具循环、项目记忆与六子目录 |
+| `research_core.py` | 核心库：SQLite、任务、PDF 入库（SHA256 去重/逐页文本）、证据闸门、导出 |
+| `team.py` / `schedule.py` / `rss.py` / `vault.py` / `zotero.py` / `mail.py` / `papertran.py` / `pdfio.py` / `guards.py` / `integrations.py` | 团队、定时任务、情报日报、Obsidian、Zotero（只读本地 API）、邮箱、论文翻译、PDF 适配层、出站脱敏+引用核验、Obsidian 预览写入 |
+| `web/` | 单文件前端 `index.html`（CSS/JS 全内联）+ `vendor/`（marked / DOMPurify / KaTeX / pdf.js / lunar / splash / kb3d）+ 主题自检 |
+| `tests/` | 自检 13 个文件（108 项） |
+| `providers_catalog.json` / `requirements.txt` / `*.spec` / `build.bat` / `install.ps1` / `installer.py` | 目录与打包 |
+| `data/` | 全部数据（`research.sqlite3` + `papers/` `notes/` `out/` `uploads/`） |
+| `交接.md` | 给下一个会话的交接（现状 / 坑 / 待办） |
