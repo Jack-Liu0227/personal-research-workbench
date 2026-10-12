@@ -134,6 +134,11 @@ details.mods>summary b{color:var(--fg);font-weight:600}
 .ah-new:hover{border-color:var(--accent);background:color-mix(in srgb,var(--accent) 12%,transparent);color:var(--fg)}
 
 .ah-list{min-height:0;flex:1;overflow-y:auto;padding:8px}
+.ah-filter{display:flex;gap:5px;padding:0 3px 7px}
+.ah-fbtn{flex:1;background:transparent;border:1px solid var(--line);border-radius:7px;padding:4px 0;font-size:11.5px;color:var(--muted);cursor:pointer;font-family:inherit}
+.ah-fbtn:hover{background:var(--panel2)}
+.ah-fbtn.on{background:color-mix(in srgb,var(--accent) 16%,transparent);border-color:transparent;color:var(--fg);font-weight:600}
+.ah-bind{font-style:normal;color:var(--accent)}
 .ah-bar{display:flex;min-height:32px;align-items:center;justify-content:space-between;gap:7px;margin-bottom:5px;border-bottom:1px solid var(--line);padding:0 3px 7px;color:var(--muted);font-size:11px}
 .ah-bar label{display:flex;align-items:center;gap:6px;cursor:pointer}
 .ah-bar input,.ah-check input{width:15px;height:15px;cursor:pointer;accent-color:var(--accent)}
@@ -186,6 +191,8 @@ details.mods>summary b{color:var(--fg);font-weight:600}
 .msg-meta{display:flex;align-items:center;gap:7px;color:var(--muted);font-size:10px}
 .msg-meta strong{color:var(--fg);font-weight:700}
 .msg-ava{display:grid;width:20px;height:20px;place-items:center;border-radius:6px;background:var(--panel2);font-size:11px}
+.q-av{background:transparent;border:0}
+.q-av img{width:100%;height:100%;display:block;object-fit:cover;border-radius:inherit}
 .msg-chip{border-radius:999px;background:var(--panel2);padding:1px 7px;font-size:9px}
 .msg-err{border:1px solid color-mix(in srgb,var(--err) 30%,var(--line));border-radius:10px;background:color-mix(in srgb,var(--err) 10%,transparent);padding:10px 12px;color:var(--err);font-size:12px}
 .tool-card{border:1px solid var(--line);border-left:3px solid var(--accent);border-radius:8px;background:var(--panel);font-size:12px}
@@ -373,34 +380,71 @@ details.mods>summary b{color:var(--fg);font-weight:600}
 
 .page-head{display:flex;align-items:flex-start;justify-content:space-between;gap:12px;flex-wrap:wrap}
 .ph-acts{display:flex;gap:8px;align-items:center;flex-wrap:wrap}
-.tc-bar{display:flex;flex-wrap:wrap;gap:8px;align-items:center}
-.tc-chip{display:inline-flex;align-items:center;gap:7px;border:1px solid color-mix(in srgb,var(--mc,var(--accent)) 45%,var(--line));border-radius:999px;background:color-mix(in srgb,var(--mc,var(--accent)) 10%,var(--panel));padding:4px 10px 4px 4px;font-size:12px}
-.tc-chip b{font-weight:600}
-.tc-chip i{font-style:normal;color:var(--muted);font-size:11px}
-.tc-chip .tc-av{width:22px;height:22px;border-radius:50%;background:color-mix(in srgb,var(--mc,var(--accent)) 26%,var(--panel2));display:inline-flex;align-items:center;justify-content:center;font-size:11px}
-.tc-chip .tc-x{border:0;background:transparent;color:var(--muted);cursor:pointer;font-size:11px;padding:0 2px}
-.tc-chip .tc-x:hover{color:var(--err)}
-.tc-add select{max-width:190px}
-.tc-teams{display:flex;flex-wrap:wrap;gap:6px;align-items:center}
-.tc-team{display:inline-flex;align-items:center;gap:6px;border:1px solid var(--line);border-radius:999px;background:var(--panel2);color:var(--fg);padding:5px 12px;font-size:12px;cursor:pointer}
-.tc-team:hover{border-color:color-mix(in srgb,var(--accent) 45%,var(--line))}
-.tc-team.on{background:color-mix(in srgb,var(--accent) 18%,transparent);border-color:transparent;box-shadow:inset 2px 0 0 var(--accent);font-weight:600}
+/* ================= 团队页（方案 C · 流水线）：三列 = 团队 | 群聊时间线 | 本轮 ================= */
+.tc-page{display:flex;flex-direction:column;gap:12px;height:100%;min-height:0}
+.tc-page .page-head{flex:none}
+.tc-cols{flex:1;min-height:0;display:grid;grid-template-columns:256px minmax(0,1fr) 232px;gap:12px}
+.tc-panel{min-width:0;min-height:0;display:flex;flex-direction:column;background:var(--panel);border:1px solid var(--line);border-radius:12px;overflow:hidden}
+.tc-ct{font-size:11px;letter-spacing:.14em;font-weight:700;color:var(--muted);margin:0;padding:11px 13px 8px}
+.tc-cb{min-height:0;flex:1;overflow:auto;padding:0 11px 11px}
+.tc-teams{display:flex;flex-direction:column;gap:5px}
+.tc-team{display:flex;align-items:center;gap:9px;width:100%;text-align:left;background:transparent;border:1px solid transparent;border-radius:10px;padding:9px 10px;color:var(--fg);font-size:13px;cursor:pointer}
+.tc-team:hover{background:var(--panel2)}
+.tc-team.on{background:color-mix(in srgb,var(--accent) 14%,transparent);box-shadow:inset 3px 0 0 var(--accent);font-weight:600}
 .tc-team.done{opacity:.6}
-.tc-team i{font-style:normal;color:var(--muted);font-size:11px}
-.tc-team.add{border-style:dashed}
-.btn.stop{background:color-mix(in srgb,var(--err) 16%,var(--panel));border-color:color-mix(in srgb,var(--err) 45%,var(--line));color:var(--err)}
-.as-mdl{display:block;margin-top:2px;font-size:11px;font-style:normal;color:var(--muted)}
-.tc-chat{max-height:46vh;overflow:auto;display:flex;flex-direction:column;gap:10px}
-.tc-msg{display:flex;gap:8px;align-items:flex-start;max-width:88%}
-.tc-msg.me{align-self:flex-end;flex-direction:row-reverse}
-.tc-msg .tc-av{flex:none;width:26px;height:26px;border-radius:50%;background:color-mix(in srgb,var(--mc,var(--accent)) 24%,var(--panel2));display:inline-flex;align-items:center;justify-content:center;font-size:12px;border-left:3px solid var(--mc,var(--accent))}
-.tc-body{min-width:0}
-.tc-who{font-size:11px;color:var(--muted);margin-bottom:2px}
-.tc-who .tc-at{margin-left:6px;opacity:.7}
-.tc-text{white-space:pre-wrap;overflow-wrap:anywhere;border:1px solid var(--line);background:var(--panel2);border-radius:12px;padding:8px 10px;font-size:13px}
-.tc-msg.me .tc-text{background:color-mix(in srgb,var(--accent) 14%,var(--panel));border-color:color-mix(in srgb,var(--accent) 35%,var(--line))}
-.tc-sys{align-self:center;color:var(--muted);font-size:12px;border:1px dashed var(--line);border-radius:999px;padding:3px 12px}
-.tc-empty{color:var(--muted);font-size:13px;text-align:center;padding:18px 6px}
+.tc-team b{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-weight:600}
+.tc-team i{margin-left:auto;font-style:normal;font-size:10.5px;color:var(--muted);background:var(--panel2);border-radius:999px;padding:1px 8px;font-variant-numeric:tabular-nums}
+.tc-team.add{border:1px dashed var(--line);color:var(--muted);justify-content:center}
+.tc-cnt{color:var(--muted);font-size:11px;margin:9px 2px 8px;padding-bottom:8px;border-bottom:1px dashed var(--line)}
+.tc-row2{display:flex;gap:6px;margin:0 0 10px}
+.tc-row2 .btn{flex:1;height:30px;padding:0 10px;font-size:12px}
+.tc-chip{display:flex;align-items:center;gap:9px;width:100%;box-sizing:border-box;border:0;border-radius:9px;background:transparent;padding:6px 7px;font-size:12.5px}
+.tc-chip:hover{background:var(--panel2)}
+.tc-chip .tc-av{flex:none;width:26px;height:26px;border-radius:50%;display:inline-flex;align-items:center;justify-content:center;font-size:12px;background:color-mix(in srgb,var(--mc,var(--accent)) 24%,var(--panel2));border:1px solid color-mix(in srgb,var(--mc,var(--accent)) 45%,transparent)}
+.tc-chip .tc-main{min-width:0;flex:1;line-height:1.25}
+.tc-chip b{display:block;font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.tc-chip i{display:block;font-style:normal;color:var(--muted);font-size:10.5px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.tc-chip .tc-x{margin-left:auto;border:0;background:none;color:var(--muted);cursor:pointer;font-size:11px;padding:0 3px}
+.tc-chip .tc-x:hover{color:var(--err)}
+.tc-add{margin-top:8px;display:block}
+.tc-add select{width:100%;box-sizing:border-box;max-width:none}
+.tc-tl{min-height:0;flex:1;overflow:auto;padding:2px 14px 10px}
+.tc-msg{position:relative;display:flex;flex-direction:row;align-self:stretch;gap:12px;max-width:none;padding:0 0 14px}
+.tc-msg::before{content:"";position:absolute;left:13px;top:30px;bottom:0;width:1px;background:var(--line)}
+.tc-msg:last-child::before{display:none}
+.tc-msg .tc-av{flex:none;width:27px;height:27px;border-radius:50%;display:inline-flex;align-items:center;justify-content:center;font-size:12px;z-index:1;background:var(--panel);border:2px solid var(--mc,var(--accent))}
+.tc-msg .tc-body{min-width:0;flex:1}
+.tc-msg .tc-who{display:flex;align-items:baseline;gap:8px;font-size:12px;color:var(--muted);margin:0}
+.tc-msg .tc-who b{color:var(--mc,var(--accent));font-weight:700;font-size:12.5px}
+.tc-msg .tc-idx{font-size:10.5px;color:var(--muted);background:var(--panel2);border-radius:4px;padding:0 5px;font-variant-numeric:tabular-nums}
+.tc-msg .tc-at{margin-left:auto;font-size:10.5px;font-variant-numeric:tabular-nums}
+.tc-msg .tc-text{margin-top:5px;white-space:pre-wrap;overflow-wrap:anywhere;font-size:13px;line-height:1.7;background:var(--panel2);border:1px solid var(--line);border-radius:10px;padding:9px 11px}
+.tc-msg.me .tc-text{background:color-mix(in srgb,var(--accent) 12%,var(--panel));border-color:color-mix(in srgb,var(--accent) 35%,var(--line))}
+.tc-sys{position:relative;display:flex;gap:12px;align-items:flex-start;padding:0 0 14px}
+.tc-sys::before{content:"";position:absolute;left:13px;top:30px;bottom:0;width:1px;background:var(--line)}
+.tc-sys:last-child::before{display:none}
+.tc-sys .tc-av{flex:none;width:27px;height:27px;border-radius:50%;display:inline-flex;align-items:center;justify-content:center;font-size:12px;z-index:1;background:var(--panel);border:2px solid color-mix(in srgb,var(--warn) 60%,transparent);color:var(--warn)}
+.tc-sys .tc-body{min-width:0;flex:1}
+.tc-sys .tc-who{display:flex;align-items:baseline;gap:8px;font-size:12px;color:var(--muted);margin:0}
+.tc-sys .tc-who b{color:var(--warn);font-weight:700;font-size:12.5px}
+.tc-sys .tc-text{margin-top:5px;white-space:pre-wrap;overflow-wrap:anywhere;font-size:12px;color:var(--muted);border:1px dashed var(--line);border-radius:10px;padding:8px 11px}
+.tc-empty{color:var(--muted);font-size:12.5px;text-align:center;padding:26px 10px;line-height:1.8}
+.tc-composer{flex:none;display:flex;gap:10px;align-items:flex-end;border-top:1px solid var(--line);padding:10px 11px}
+.tc-composer textarea{flex:1;min-height:38px}
+.tc-composer .btn{flex:none;height:38px;padding:0 14px;background:var(--accent);color:var(--accent-ink);border:0;font-weight:700}
+.tc-foot{flex:none;margin:0;padding:0 13px 10px;font-size:11px}
+.tc-prog{flex:none;height:4px;border-radius:999px;background:var(--panel2);overflow:hidden;margin:0 13px 10px}
+.tc-prog i{display:block;height:100%;background:var(--accent);transition:width .3s}
+.tc-step{display:flex;align-items:center;gap:8px;padding:6px 3px;font-size:12px;border-top:1px dashed color-mix(in srgb,var(--line) 70%,transparent)}
+.tc-step:first-child{border-top:0}
+.tc-step .d{flex:none;width:7px;height:7px;border-radius:50%;background:var(--muted)}
+.tc-step.now .d{background:var(--ok);box-shadow:0 0 0 3px color-mix(in srgb,var(--ok) 20%,transparent)}
+.tc-step.idle{opacity:.5}
+.tc-step b{font-weight:600;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.tc-step em{margin-left:auto;font-style:normal;font-size:10.5px;color:var(--muted)}
+.tc-kv{font-size:11.5px;color:var(--muted);padding:3px 3px}
+.tc-kv b{color:var(--fg);font-weight:600}
+@media (max-width:1080px){.tc-cols{grid-template-columns:minmax(0,1fr)}.tc-panel{min-height:200px}}
 .hello-avatar{display:grid;width:48px;height:48px;flex:none;place-items:center;border-radius:50%;background:var(--panel2);border:1px solid var(--line);font-size:24px}
 .avatar-img{width:100%;height:100%;border-radius:50%;object-fit:cover;display:block}
 .prof-photo-prev{width:44px;height:44px;border-radius:50%;object-fit:cover;border:1px solid var(--line);display:none}
@@ -469,7 +513,7 @@ details.mods>summary b{color:var(--fg);font-weight:600}
 .field-inline > span { flex-shrink: 0; white-space: nowrap; }
 .field-inline .tb-input, .field-inline .tb-select { flex: 1; min-width: 120px; }
 .btn {
-  display: inline-flex; align-items: center; gap: 6px;
+  display: inline-flex; align-items: center; justify-content: center; gap: 6px;   /* 内容居中：inline-flex 默认是 flex-start，被拉宽的按键（三等分/定宽）文字会贴左（2026-10-12 他定的规矩：功能键一律居中） */
   padding: 8px 14px; border: 1px solid var(--line); background: var(--panel);
   color: inherit; border-radius: 8px; cursor: pointer; font-size: 13px;
   transition: all .15s; white-space: nowrap;
@@ -798,7 +842,7 @@ details.mods>summary b{color:var(--fg);font-weight:600}
 .md-view { display: grid; grid-template-columns: 238px minmax(0, 1fr); min-height: 0; background: var(--panel); }
 .md-note-side { min-width: 0; border-right: 1px solid var(--line); background: var(--panel2); padding: 12px; display: flex; flex-direction: column; gap: 10px; }
 .md-note-side-head { display: flex; gap: 7px; }
-.md-note-side-head .btn { flex: 1; }
+.md-note-side-head .btn { flex: 1 1 0; min-width: 0; padding: 8px 6px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }   /* 三个挤 213px：只 flex:1 会被各自 min-content 顶住 → 第三个按钮被右边界切掉（2026-10-12 修） */
 .md-note-list { min-height: 0; flex: 1; overflow-y: auto; display: flex; flex-direction: column; gap: 4px; }
 .md-note-item { border: 1px solid transparent; border-radius: 6px; padding: 9px 10px; cursor: pointer; min-width: 0; }
 .md-note-item:hover { background: var(--panel); border-color: var(--line); }
@@ -902,11 +946,21 @@ body.md-narrow .wctl button:hover { background: #eee; }
 
 /* ---- 论文翻译（工作流第 4 步：添加论文 → 元数据 → PDF 阅读器 → 中英互译 / 笔记模式 / 荧光笔） ---- */
 .tr{display:flex;flex-direction:column;gap:10px;height:100%;min-height:0}
-.tr-bar{display:flex;align-items:center;gap:10px;flex:none;height:40px}
-.tr-bar>.btn,.tr-bar>.tr-sel,.tr-bar>.tr-pageno,.tr-bar>.tr-ib,.tr-bar>.tr-zoom{height:34px;display:inline-flex;align-items:center;justify-content:center;line-height:1;box-sizing:border-box;margin:0}
-.tr-bar>.btn{padding:0 13px;font-size:13px}
-.tr-bar>.tr-ib{width:34px}
-.tr-bar>.tr-zoom{gap:6px}
+.tr-bar{display:flex;align-items:center;gap:10px;flex:none;height:44px}
+.tr-bar>.btn,.tr-bar>.tr-sel,.tr-bar>.tr-pageno,.tr-bar>.tr-zoom,.tr-bar>.tr-seg,.tr-bar>.tr-grp{height:36px;display:inline-flex;align-items:center;justify-content:center;line-height:1;box-sizing:border-box;margin:0}
+.tr-bar>.btn{padding:0 14px;font-size:13px}
+.tr-bar>.tr-zoom{gap:2px;padding:0 3px;border:1px solid var(--line);border-radius:9px;background:var(--panel)}
+.tr-bar>.tr-zoom>button{width:30px;height:30px;border:0;background:transparent;color:var(--fg);border-radius:7px;display:inline-flex;align-items:center;justify-content:center;cursor:pointer;font:inherit;font-size:15px;line-height:1}
+.tr-bar>.tr-zoom>button:hover{background:color-mix(in srgb,var(--accent) 16%,transparent);color:var(--accent)}
+.tr-zoomv{min-width:44px;text-align:center;font-size:12px;color:var(--muted);font-variant-numeric:tabular-nums}
+.tr-seg,.tr-grp{display:inline-flex;padding:3px;gap:3px;border:1px solid var(--line);border-radius:10px;background:var(--panel)}
+.tr-seg-b{height:30px;padding:0 11px;border:0;border-radius:7px;background:transparent;color:var(--muted);font:inherit;font-size:12.5px;display:inline-flex;align-items:center;justify-content:center;gap:6px;white-space:nowrap;cursor:pointer}
+.tr-seg-b:hover{background:color-mix(in srgb,var(--accent) 14%,transparent);color:var(--accent)}
+.tr-seg-b.active{background:var(--accent);color:var(--accent-ink);font-weight:600}
+.tr-seg-b:disabled{opacity:.55;cursor:default}
+.tr-grp>.tr-ib{width:32px;height:30px;border:0;border-radius:7px;background:transparent;color:var(--muted);font-size:15px}
+.tr-grp>.tr-ib:hover{background:color-mix(in srgb,var(--accent) 14%,transparent);color:var(--accent)}
+.tr-grp>.tr-ib.active{background:color-mix(in srgb,var(--accent) 20%,transparent);color:var(--accent)}
 .tr-status{flex:none;min-height:16px;font-size:12px;color:var(--muted);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .tr-spacer{flex:1}
 .tr-bar .btn-teal{background:var(--accent);color:var(--accent-ink,#0d1218);font-weight:600}
@@ -1033,7 +1087,16 @@ body.dw-pen-on .ol-body{cursor:text}
 body.dw-pen-on .ol-body ::selection{background:color-mix(in srgb,var(--accent) 40%,transparent)}
 @media (max-width:1150px){ .ol-grid{grid-template-columns:minmax(0,1fr)} .ol-right{display:none} }
 
-.tr-note{display:grid;grid-template-columns:minmax(0,3fr) minmax(300px,1fr);gap:12px;height:100%;padding:10px;box-sizing:border-box}
+.tr-note{position:absolute;inset:0;z-index:12;display:flex;flex-direction:column;padding:10px;box-sizing:border-box}
+.tr-note-grid{display:grid;grid-template-columns:minmax(0,3fr) minmax(300px,1fr);gap:12px;flex:1;min-height:0}
+.tr-note-bar{display:flex;align-items:center;gap:8px;flex:none;height:42px;padding:0 2px}
+.tr-note-bar .tr-ib,.tr-zen-zoom .tr-ib{width:34px;height:34px;display:inline-flex;align-items:center;justify-content:center;box-sizing:border-box;border:1px solid var(--line);border-radius:8px;background:var(--panel);color:var(--fg);font-size:15px;line-height:1;cursor:pointer}
+.tr-note-bar .tr-ib:hover,.tr-zen-zoom .tr-ib:hover{border-color:var(--accent);color:var(--accent)}
+.tr-zoomv{color:var(--muted);font-size:12px;min-width:46px;text-align:center;font-variant-numeric:tabular-nums}
+.tr-note-exit{width:auto !important;padding:0 12px;gap:6px;font-size:13px}
+.tr-zen-zoom{display:none;position:absolute;left:14px;top:12px;z-index:20;align-items:center;gap:6px;padding:4px;border-radius:10px;background:color-mix(in srgb,var(--panel) 88%,transparent);border:1px solid var(--line)}
+.tr-stage.zen .tr-zen-zoom{display:flex}
+.tr-stage.note .tr-zen-zoom,.tr-stage.note .tr-zen-exit{display:none}
 .tr-note-l,.tr-note-r{border:1px solid var(--line);border-radius:10px;background:var(--panel);display:flex;flex-direction:column;min-width:0;overflow:hidden}
 .tr-note-h{flex:none;padding:8px 12px;border-bottom:1px solid var(--line);color:var(--muted);font-size:12px}
 .tr-note-body{flex:1;min-height:0;overflow:auto;padding:12px 18px;font-size:13.5px}
@@ -1211,6 +1274,59 @@ body.dw-pen-on .ol-body ::selection{background:color-mix(in srgb,var(--accent) 4
 .kb-caption b{color:#eaf2ee;margin-left:5px}
 @media (prefers-reduced-motion:reduce){.kb-orbit-core,.kb-orbit-core::before,.kb-orbit-core::after{animation:none}}
 
+
+/* ============ 笔记页 · 方案②（莫兰迪静谧）· 全走主题变量，2026-10-11 ============ */
+.md-view{ --r-md: 10px; }
+.md-view .md-note-item{ border-radius: var(--r-md); }
+.md-view .md-note-item.active{ background: color-mix(in srgb,var(--accent) 15%,var(--panel)); border-color: color-mix(in srgb,var(--accent) 34%,transparent); }
+.md-view .md-bind{ background: color-mix(in srgb,var(--accent) 18%,var(--panel)); }
+.md-view .md-tool-btn, .md-view .md-tool-select, .md-view .md-task-select, .md-view .md-drop-zone{ border-radius: var(--r-md); }
+/* 阅读/预览：字号与行高走 ② 档；底色一律从 --accent 混出来（本页再无硬编码色） */
+.md-view .md-render{ font-size: 15px; line-height: 1.9; }
+.md-view .md-render blockquote{ margin: 15px 0; padding: 10px 15px; border-radius: 0 var(--r-md) var(--r-md) 0; background: color-mix(in srgb,var(--accent) 6%,var(--panel)); }
+.md-view .md-render th{ background: color-mix(in srgb,var(--accent) 8%,var(--panel)); }
+.md-view .md-render th, .md-view .md-render td{ padding: 9px 11px; }
+.md-view .md-render :not(pre) > code{ background: color-mix(in srgb,var(--accent) 8%,var(--panel)); }
+.md-view .md-render pre{ background: var(--panel2); border: 1px solid var(--line); border-radius: var(--r-md); }
+.mp-grid{display:grid;grid-template-columns:minmax(0,2fr) minmax(320px,1fr);gap:12px;height:100%;min-height:0}
+.mp-left,.mp-right{border:1px solid var(--line);border-radius:10px;background:var(--panel);display:flex;flex-direction:column;min-width:0;overflow:hidden}
+.mp-head{flex:none;display:flex;align-items:center;gap:8px;height:44px;padding:0 12px;border-bottom:1px solid var(--line)}
+.mp-head>b{font-size:14px;font-weight:600}
+.mp-meta{color:var(--muted);font-size:12px}
+.mp-spacer{flex:1}
+.mp-canvas-wrap{position:relative;flex:1;min-height:0;overflow:auto;background:
+  radial-gradient(circle at 1px 1px,color-mix(in srgb,var(--fg) 7%,transparent) 1px,transparent 0) 0 0/22px 22px}
+.mp-canvas-wrap.dragging{outline:2px dashed var(--accent);outline-offset:-6px}
+.mp-canvas{position:relative;min-width:100%;min-height:100%}
+.mp-svg{position:absolute;left:0;top:0;pointer-events:none}
+.mp-edge{fill:none;stroke:var(--line);stroke-width:1.4}
+.mp-edge.on{stroke:var(--accent);stroke-width:2}
+.mp-edge.dash{stroke-dasharray:4 4}
+.mp-elabel{fill:var(--muted);font-size:10.5px}
+.mp-node{position:absolute;border-radius:10px;border:1px solid var(--line);background:var(--panel2);cursor:pointer;
+  padding:8px 10px;box-sizing:border-box;overflow:hidden;transition:border-color .12s,transform .12s}
+.mp-node:hover{border-color:color-mix(in srgb,var(--accent) 55%,var(--line))}
+.mp-node.on{border-color:var(--accent);box-shadow:0 0 0 1px var(--accent) inset}
+.mp-node.sec{background:color-mix(in srgb,var(--accent) 9%,var(--panel2));border-left:3px solid var(--accent)}
+.mp-node .t{font-size:12.5px;font-weight:600;line-height:1.35;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden}
+.mp-node .d{font-size:11.5px;color:var(--muted);line-height:1.4;margin-top:4px;display:-webkit-box;-webkit-line-clamp:3;-webkit-box-orient:vertical;overflow:hidden}
+.mp-node .k{position:absolute;right:7px;top:6px;font-size:10px;color:var(--muted)}
+.mp-node.ref{display:flex;align-items:center;padding:0 9px;height:34px}
+.mp-node.ref .t{-webkit-line-clamp:1;font-weight:400;font-size:12px;display:flex;align-items:center;min-width:0}
+.mp-node.ref .t>span.lbl{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.mp-pill{flex:none;font-size:10px;color:var(--muted);border:1px solid var(--line);border-radius:999px;padding:0 6px;margin-left:auto}
+.mp-node.sec .d{-webkit-line-clamp:2;margin-top:2px}
+.mp-dot{width:7px;height:7px;border-radius:50%;display:inline-block;margin-right:5px;vertical-align:1px}
+.mp-empty{position:absolute;left:0;right:0;top:0;bottom:0;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:10px;text-align:center;padding:0 28px}
+.mp-empty .big{font-size:34px}
+.mp-empty .t1{font-size:14px;font-weight:600}
+.mp-empty .t2{font-size:12px;color:var(--muted);line-height:1.8}
+.mp-card{position:absolute;right:14px;bottom:14px;width:300px;border:1px solid var(--line);border-radius:10px;background:var(--panel);box-shadow:var(--shadow);padding:12px 14px}
+.mp-card h4{margin:0 0 6px;font-size:13px}
+.mp-card p{margin:0 0 8px;font-size:12px;color:var(--muted);line-height:1.7;white-space:pre-wrap}
+.mp-card .row{display:flex;gap:8px;align-items:center}
+.mp-src{display:flex;flex-wrap:wrap;gap:6px;padding:8px 12px 0}
+.mp-chip{font-size:11px;color:var(--muted);border:1px solid var(--line);border-radius:999px;padding:2px 8px;background:var(--panel2)}
 </style>
 </head>
 <body>
@@ -1636,57 +1752,82 @@ async function renderTeam(m){
   const inTeam = new Set(picks.map(x=>x.assistant_id));
   const pool = (S.assistants||[]).filter(a=>a.enabled!==0 && !inTeam.has(a.id));
   const run = D.running;
+  const tr = D.transcript||[];
+  let lastUser = -1; tr.forEach((r,i)=>{ if(r.role==="user") lastUser = i; });
+  const spoken = new Set(tr.slice(lastUser+1).map(r=>r.sender).filter(Boolean));   // 这一轮里已经说过话的成员
+  let seq = 0;
   const bubble = (r)=>{
     const who = r.sender || (r.role==="user" ? "你" : "成员");
     const mm = picks.find(x=>x.name===who);
-    if(who==="系统") return `<div class="tc-sys">${esc(r.content||"")}</div>`;
+    const at = esc((r.at||"").replace("T"," ").slice(5,16));
+    if(who==="系统") return `<div class="tc-sys"><span class="tc-av">!</span><div class="tc-body"><div class="tc-who"><b>系统</b><span class="tc-at">${at}</span></div><div class="tc-text">${esc(r.content||"")}</div></div></div>`;
     const mine = r.role==="user";
-    return `<div class="tc-msg ${mine?"me":"them"}">
-      <span class="tc-av" style="${mm?`--mc:${tcColor(mm.color)}`:""}">${mine?"🙋":esc((mm&&mm.name||"?").slice(0,1))}</span>
-      <div class="tc-body"><div class="tc-who">${esc(who)}<span class="tc-at">${esc((r.at||"").replace("T"," ").slice(5,16))}</span></div>
+    const n = mine ? 0 : ++seq;
+    return `<div class="tc-msg ${mine?"me":"them"}" style="--mc:${mine?"var(--accent)":tcColor(mm&&mm.color)}">
+      <span class="tc-av">${mine?"🙋":esc((mm&&mm.name||"?").slice(0,1))}</span>
+      <div class="tc-body"><div class="tc-who"><b>${esc(who)}</b>${n?`<span class="tc-idx">#${n}</span>`:""}<span class="tc-at">${at}</span></div>
         <div class="tc-text">${esc(r.content||"")}</div></div></div>`;
   };
-  m.innerHTML = `<div class="page-head">
+  m.innerHTML = `<div class="tc-page">
+  <div class="page-head">
     <div><p class="inst-label">TEAM</p><h3>${esc(curT?curT.name:"团队")} <span class="pill">${picks.length}/${D.max||5}</span>
       <span class="pill">${curT&&curT.kind==="temp"?"机动":"固定"}</span>${curT&&curT.status==="done"?'<span class="pill">已收工</span>':""}</h3>
-      <p class="hint">最多 5 个团队：<b>3 个固定</b>（常驻）+ <b>2 个机动</b>（用完自动释放）。成员从「助手」里选（一个团队最多 ${D.max||5} 人，助手背后接的是哪个模型，就用那个模型说话）。你发一句，成员之间互相 @ 派活、一轮轮推进；谁说「完成」就散会。</p></div>
-    <div class="ph-acts">${run?`<span class="pill">${esc(run.phase||"跑着")}</span><button class="btn ghost" id="tcStop">停止</button>`:""}
+      <p class="hint">最多 5 个团队：<b>2 个固定</b>（论文精读 / 论文写作，常驻）+ <b>3 个机动</b>（用完自动释放）。成员从「助手」里选（一个团队最多 ${D.max||5} 人，助手背后接的是哪个模型，就用那个模型说话）。你发一句，成员之间互相 @ 派活、一轮轮推进；谁说「完成」就散会。</p></div>
+    <div class="ph-acts">${run?`<span class="pill">${esc(run.phase||"跑着")}</span><span class="pill">第 ${run.turn||0}/${run.total||6} 轮</span><button class="btn ghost" id="tcStop">停止</button>`:""}
       <button class="btn ghost" id="tcRefresh">刷新</button></div></div>
-  <div class="card" style="margin-top:12px">
-    <div class="tc-teams">
-      ${TL.map(x=>`<button class="tc-team ${x.id===teamScope?"on":""} ${x.status==="done"?"done":""}" data-tc-team="${x.id}" title="${x.kind==="fixed"?"固定团队":"机动团队"}">
-        ${x.kind==="fixed"?"📌":"⏳"} ${esc(x.name)}<i>${x.picks||0}</i></button>`).join("")}
-      ${(teamList.temp||0) < (teamList.max_temp||2) ? `<button class="tc-team add" id="tcNewTeam">＋ 机动团队</button>`
-        : `<span class="hint" style="margin-left:6px">机动位满了（用完会自动释放）</span>`}
-      <span style="flex:1"></span>
-      <button class="btn ghost" id="tcRename" title="改当前团队的名字">改名</button>
-      ${curT&&curT.kind==="temp"?`<button class="btn ghost" id="tcDissolve" style="color:var(--err)" title="解散这个机动团队">解散</button>`:""}
-    </div>
-    <div class="hint" style="margin-top:6px">共 ${TL.length}/${teamList.max||5} 个团队（固定 ${teamList.fixed||0}/${teamList.max_fixed||3} · 机动 ${teamList.temp||0}/${teamList.max_temp||2}）</div>
-  </div>
-  <div class="card" style="margin-top:12px">
-    <div class="tc-bar">
-      ${leader?`<div class="tc-chip on"><span class="tc-av" style="--mc:var(--brand)">🧭</span><b>${esc(leader.name)}</b><i>Leader</i></div>`:""}
-      ${picks.map(x=>`<div class="tc-chip" style="--mc:${tcColor(x.color)}"><span class="tc-av">${esc((x.name||"?").slice(0,1))}</span>
-        <b>${esc(x.name)}</b><i>${esc((x.model?x.model+" · ":"")+(x.prompt?x.prompt.slice(0,8):"成员"))}</i>
-        <button class="tc-x" data-tc-del="${x.id}" title="移出">✕</button></div>`).join("")}
-      ${picks.length < (D.max||5) ? `<span class="tc-add">
-        <select class="control" id="tcPick"><option value="">＋ 从助手里选…</option>
-          ${pool.map(a=>`<option value="${a.id}">${esc(a.name)}${a.source==="builtin"?"（公开）":""}${a.model_id?" · "+esc(modelName(a.model_id)||"?"):" · 用当前激活模型"}</option>`).join("")}</select>
-        </span>` : `<span class="hint">已满 ${D.max||5} 人</span>`}
-    </div>
-    <div class="hint" style="margin-top:6px">${picks.length?esc(picks.map(x=>x.name).join(" · ")):"还没有成员 —— 先从右边选几个助手进来。"}</div>
-  </div>
-  <div class="card tc-chat" id="tcChat" style="margin-top:12px">
-    ${(D.transcript||[]).length ? (D.transcript||[]).map(bubble).join("")
-      : `<div class="tc-empty">🧭 团队群在这里。先选成员，然后说一句你要做的事 —— 比如「帮我挑一个钠电正极掺杂方向，产出候选表」。</div>`}
-  </div>
-  <div class="card" style="margin-top:12px">
-    <div style="display:grid;grid-template-columns:1fr auto;gap:8px;align-items:start">
-      <textarea class="control" id="tcSay" rows="2" placeholder="跟团队说一句话…（Enter 发送，Shift+Enter 换行）"></textarea>
-      <button class="btn" id="tcSend">${run?"继续追一句":"发送并让团队推进"}</button></div>
-    <div class="hint" style="margin-top:6px">${run?`当前：${esc(run.current||"")}（第 ${run.turn||0}/${run.total||6} 轮）`: "没有在跑的轮次。"}</div>
-  </div>`;
+  <div class="tc-cols">
+    <section class="tc-panel">
+      <p class="tc-ct">团队</p>
+      <div class="tc-cb">
+        <div class="tc-teams">
+          ${TL.map(x=>`<button class="tc-team ${x.id===teamScope?"on":""} ${x.status==="done"?"done":""}" data-tc-team="${x.id}" title="${x.kind==="fixed"?"固定团队":"机动团队"}">
+            <span>${x.kind==="fixed"?"📌":"⏳"}</span><b>${esc(x.name)}</b><i>${x.picks||0}</i></button>`).join("")}
+          ${(teamList.temp||0) < (teamList.max_temp||3) ? `<button class="tc-team add" id="tcNewTeam">＋ 机动团队</button>`
+            : `<p class="hint" style="margin:4px 2px">机动位满了（用完会自动释放）</p>`}
+        </div>
+        <p class="tc-cnt">共 ${TL.length}/${teamList.max||5} 个团队（固定 ${teamList.fixed||0}/${teamList.max_fixed||2} · 机动 ${teamList.temp||0}/${teamList.max_temp||3}）</p>
+        <div class="tc-row2">
+          <button class="btn ghost" id="tcRename" title="改当前团队的名字">改名</button>
+          ${curT&&curT.kind==="temp"?`<button class="btn ghost" id="tcDissolve" style="color:var(--err)" title="解散这个机动团队">解散</button>`:""}
+        </div>
+        <p class="tc-ct" style="padding:4px 3px 6px">成员 ${picks.length}/${D.max||5}</p>
+        ${leader?`<div class="tc-chip" style="--mc:var(--brand)"><span class="tc-av">🧭</span><span class="tc-main"><b>${esc(leader.name)}</b><i>Leader · 主持派活</i></span></div>`:""}
+        ${picks.map(x=>`<div class="tc-chip" style="--mc:${tcColor(x.color)}"><span class="tc-av">${esc((x.name||"?").slice(0,1))}</span>
+          <span class="tc-main"><b>${esc(x.name)}</b><i>${esc((x.model?x.model+" · ":"")+(x.prompt?x.prompt.slice(0,8):"成员"))}</i></span>
+          <button class="tc-x" data-tc-del="${x.id}" title="移出">✕</button></div>`).join("")}
+        ${picks.length < (D.max||5) ? `<span class="tc-add"><select class="control" id="tcPick"><option value="">＋ 从助手里选…</option>
+            ${pool.map(a=>`<option value="${a.id}">${esc(a.name)}${a.source==="builtin"?"（公开）":""}${a.model_id?" · "+esc(modelName(a.model_id)||"?"):" · 用当前激活模型"}</option>`).join("")}</select></span>`
+          : `<p class="hint" style="margin:8px 3px">已满 ${D.max||5} 人</p>`}
+        <p class="hint" style="margin:8px 3px 0">${picks.length?esc(picks.map(x=>x.name).join(" · ")):"还没有成员 —— 先从下面选几个助手进来。"}</p>
+      </div>
+    </section>
+    <section class="tc-panel">
+      <p class="tc-ct">团队群 · 接力记录</p>
+      <div class="tc-tl" id="tcChat">
+        ${tr.length ? tr.map(bubble).join("")
+          : `<div class="tc-empty">🧭 团队群在这里。先选成员，然后说一句你要做的事 —— 比如「帮我挑一个钠电正极掺杂方向，产出候选表」。</div>`}
+      </div>
+      <div class="tc-composer">
+        <textarea class="control" id="tcSay" rows="2" placeholder="跟团队说一句话…（Enter 发送，Shift+Enter 换行）"></textarea>
+        <button class="btn" id="tcSend">${run?"继续追一句":"发送并让团队推进"}</button>
+      </div>
+      <p class="hint tc-foot">${run?`当前：${esc(run.current||"")}（第 ${run.turn||0}/${run.total||6} 轮）`:"没有在跑的轮次。"}</p>
+    </section>
+    <section class="tc-panel">
+      <p class="tc-ct">本轮${run?` · 第 ${run.turn||0}/${run.total||6} 轮`:""}</p>
+      <div class="tc-prog"><i style="width:${run&&run.total?Math.round((run.turn||0)/run.total*100):0}%"></i></div>
+      <div class="tc-cb">
+        ${picks.length?picks.map(x=>{ const now = !!(run&&run.current===x.name);
+          return `<div class="tc-step ${now?"now":(spoken.has(x.name)?"":"idle")}"><span class="d"></span><b>${esc(x.name)}</b><em>${now?"在跑":(spoken.has(x.name)?"已说":"待命")}</em></div>`; }).join("")
+          :`<p class="hint" style="margin:6px 3px">还没有成员。</p>`}
+        <p class="tc-ct" style="padding:14px 3px 6px">本轮口径</p>
+        <div class="tc-kv">状态：<b>${run?esc(run.phase||"跑着"):"没有在跑的轮次"}</b></div>
+        <div class="tc-kv">当前：<b>${esc((run&&run.current)||"—")}</b></div>
+        <div class="tc-kv">轮次：<b>${run?`${run.turn||0} / ${run.total||6}`:"—"}</b></div>
+        <div class="tc-kv">成员：<b>${picks.length} / ${D.max||5}</b></div>
+      </div>
+    </section>
+  </div></div>`;
   const box = $("tcChat"); if(box) box.scrollTop = box.scrollHeight;
   m.querySelectorAll("[data-tc-team]").forEach(b=>b.onclick = ()=>{
     if(b.dataset.tcTeam === teamScope) return;
@@ -1845,9 +1986,9 @@ const outName = (p)=> (p||"").replace(/[\\/]+$/,"").split(/[\\/]/).pop() || "默
 const assistantKey = ()=> localStorage.getItem("rw-assist") || "researcher";
 const emptyState = (icon,title,text)=>`<div class="at-empty"><div class="at-empty-ico">${icon}</div><h2>${title}</h2><p>${text}</p></div>`;
 
-function historyGroups(){
+function historyGroups(pool){
   const g = {"今天":[],"昨天":[],"更早":[]};
-  const list = S.chats || [];
+  const list = pool || S.chats || [];
   for(const t of list){
     const d = new Date(t.updated_at || t.created_at || ""); const n = new Date();
     const dist = Math.floor((Date.UTC(n.getFullYear(),n.getMonth(),n.getDate()) - Date.UTC(d.getFullYear(),d.getMonth(),d.getDate()))/86400000);
@@ -1855,13 +1996,21 @@ function historyGroups(){
   }
   return g;
 }
+function projName(id){ return ((S.tasks||[]).find(x=>x.id===id)||{}).title || ""; }
+let ahFilter = localStorage.getItem("rw-ah-filter") || "all";     // all | free | proj
+function histChats(){
+  const all = (S.chats||[]).filter(c=>ahFilter==="free" ? !c.task_id : ahFilter==="proj" ? !!c.task_id : true);
+  return all;
+}
 function renderHistory(){
-  const groups = historyGroups();
+  const all = histChats();
+  const groups = historyGroups(all);
   const item = (t)=>`<div class="ah-item-wrap ${t.id===curChat?"on":""}">
       <label class="ah-check" title="选择"><input type="checkbox" data-sel="${t.id}" ${ahSel.has(t.id)?"checked":""}></label>
       <button class="ah-item ${t.id===curChat?"on":""}" data-open="${t.id}">
-        <span class="ah-ico">💬</span>
-        <span class="ah-copy"><strong>${esc(t.title)}</strong><span>${esc(outName(t.out_dir))} · ${fmtDate(t.updated_at)}</span></span>
+        <span class="ah-ico">${t.task_id?"🧭":"💬"}</span>
+        <span class="ah-copy"><strong>${esc(t.title)}</strong>
+          <span>${t.task_id?`<em class="ah-bind">📁 ${esc(projName(t.task_id)||"项目")}</em> · `:""}${esc(outName(t.out_dir))} · ${fmtDate(t.updated_at)}</span></span>
         <span class="ah-dot ${t.id===curChat?"run":""}"></span></button>
       <button class="ah-del" data-del="${t.id}" title="删除对话">🗑</button></div>`;
   const list = Object.entries(groups).map(([k,v])=> v.length?`<div class="ah-group"><p class="ah-group-label">${k}</p>${v.map(item).join("")}</div>`:"").join("");
@@ -1869,18 +2018,23 @@ function renderHistory(){
     <div class="ah-head"><div><p class="eyebrow">WORKSPACE</p><h2>对话</h2></div>
       <button class="ah-new" id="ah-new" title="新建对话">＋</button></div>
     <div class="ah-list">
-      <div class="ah-bar"><label><input type="checkbox" id="ah-all" ${ahSel.size&&ahSel.size===(S.chats||[]).length?"checked":""}>全选 ${(S.chats||[]).length} 个对话</label>
+      <div class="ah-bar"><label><input type="checkbox" id="ah-all" ${ahSel.size&&ahSel.size===(S.chats||[]).length?"checked":""}>全选 ${all.length} 个对话</label>
         <button class="ah-del-sel" id="ah-del-sel" ${ahSel.size?"":"disabled"}>删除选中 ${ahSel.size}</button></div>
-      ${list || `<p class="hint" style="margin:14px 5px">还没有对话，点右上角 ＋ 新建。</p>`}</div>
+      <div class="ah-filter">
+        ${[["all","全部"],["free","随意对话"],["proj","项目对话"]].map(([k,l])=>
+          `<button class="ah-fbtn ${ahFilter===k?"on":""}" data-f="${k}">${l}</button>`).join("")}</div>
+      ${list || `<p class="hint" style="margin:14px 5px">${ahFilter==="proj"?"还没有绑定项目的对话 —— 在输入条上用「🧭 绑定项目」新建一个。":ahFilter==="free"?"还没有随意对话，点右上角 ＋ 新建。":"还没有对话，点右上角 ＋ 新建。"}</p>`}</div>
     <div class="ah-foot">🕒 一个对话一份记忆 · 输出目录各自独立</div></aside>`;
 }
 
+const Q_AV = "/vendor/img/agent-q.png";     // 对话区的 agent 形象（Q 版小人，透明底，512²）
+const qAvatar = (px, r)=>`<span class="as-av q-av" style="width:${px}px;height:${px}px;${r?`border-radius:${r};`:""}"><img src="${Q_AV}" alt=""></span>`;
 function asEmpty(){                       // 照 AionUi SingleChatEmptyState：头像 + 名字 + 一行说明 + 推荐问题
   const a = (S.assistants||[]).find(x=>x.id === (((S.chats||[]).find(c=>c.id===curChat)||{}).assistant_id||"")) || null;
   let ps = []; try{ ps = JSON.parse((a&&a.prompts)||"[]"); }catch(e){ ps = []; }
   const chips = document.getElementById("msgs");
-  return `<div style="display:flex;flex-direction:column;align-items:center;gap:20px;padding:0 24px;text-align:center;max-width:560px;margin:0 auto">
-    ${asAvatarOf(a, 48)}
+  return `<div class="at-empty-wrap" style="display:flex;flex-direction:column;align-items:center;gap:20px;padding:0 24px;text-align:center;max-width:560px;margin:auto">
+    ${qAvatar(56, "14px")}
     <div style="display:flex;flex-direction:column;gap:6px">
       <span style="font-size:16px;font-weight:600">${esc(a?a.name:"AI 助手")}</span>
       <span style="font-size:13px;color:var(--muted)">${esc(a&&a.description ? a.description : "有什么可以帮你的？直接说你要做什么。")}</span></div>
@@ -1901,9 +2055,9 @@ function renderAgent(m){
     ${renderHistory()}
     <section class="at" aria-label="对话主线">
       <header class="at-head">
-        <div class="at-heading"><span class="at-idwrap" id="at-who" title="这个对话绑的助手（去「助手」页管理）">${asAvatarOf(boundA, 26)}</span>
+        <div class="at-heading"><span class="at-idwrap" id="at-who" title="这个对话绑的助手（去「助手」页管理）">${qAvatar(32, "50%")}</span>
           <div><h1 id="at-title" class="at-title" title="点击改名">${esc(cur?cur.title:"Hi，今天有什么安排？")}</h1>
-          <p id="at-sub">${esc(boundA?boundA.name:(assistantKey()+"（未绑助手）"))} · 全局 Leader · 跨项目 · 产出 ${esc(cur?outName(cur.out_dir):"默认产出目录")}</p></div></div>
+          <p id="at-sub">${esc(boundA?boundA.name:(assistantKey()+"（未绑助手）"))} · ${cur&&cur.task_id?`Partner · 绑定《${esc(projName(cur.task_id)||"项目")}》`:"全局 Leader · 跨项目"} · 产出 ${esc(cur?outName(cur.out_dir):"默认产出目录")}</p></div></div>
         <button class="at-profile" id="at-profile" title="在「设置」里改模型与权限">
           <span>⚙</span><b>${esc(S.active? (S.active.name+" · "+S.active.model) : "未选择模型")}</b><em>自动批准</em></button>
       </header>
@@ -1939,6 +2093,9 @@ function renderAgent(m){
                   <div class="tip">提示：把文件直接拖到输入框也能附加。</div>
                 </div>
               </div>
+              <label class="at-sel" title="把当前对话绑到一个项目上（绑了就是「项目对话」：记忆/文献/产出都跟项目走；不绑就是随意对话）">🧭<select id="projbind">
+                <option value="">不绑项目（随意对话）</option>
+                ${(S.tasks||[]).map(t=>`<option value="${t.id}" ${cur&&cur.task_id===t.id?"selected":""}>${esc(t.title)}</option>`).join("")}</select></label>
               <button class="at-sel at-outbtn" id="outpick" title="选择这个对话的产出文件夹（原生文件夹选择框）">📁
                 <span id="outdir-txt">${esc(cur?outName(cur.out_dir):"默认产出目录")}</span></button>
               <label class="at-sel" title="这个对话用哪个模型档案">🔌<select id="modpick"><option value="">未配置模型</option>
@@ -2021,6 +2178,15 @@ function renderAgent(m){
        try{ await api("/api/chat/assistant", {id:curChat, assistant_id:e.target.value}); }catch(err){ return alert("绑定失败："+err.message); }
        await refreshState(false); render();
      };
+  const pb = $("projbind");
+  if(pb) pb.onchange = async ()=>{
+    if(!curChat){ const r = await api("/api/chat/create", {}); curChat = r.id || (r.chat&&r.chat.id); localStorage.setItem("rw-chat", curChat); }
+    try{ await api("/api/chat/bind", {id:curChat, task_id:pb.value}); }catch(e){ return alert("绑定失败："+e.message); }
+    await refreshState(false); render();
+  };
+  document.querySelectorAll("[data-f]").forEach(b=>b.onclick=()=>{
+    ahFilter = b.dataset.f; localStorage.setItem("rw-ah-filter", ahFilter); render();
+  });
   // 输入区（我们自己的：＋ 菜单 / 拖放 / 粘贴 / 自动长高）
   $("send").onclick = send;
   $("ask").onkeydown = (e)=>{ if(e.key==="Enter"&&!e.shiftKey){e.preventDefault();send();} };
@@ -2084,7 +2250,7 @@ function appendOne(box,ev){
   }
   else if(ev.type==="assistant"){
     el.className="msg-row msg-assistant";
-    el.innerHTML=`<div class="msg-meta"><span class="msg-ava">🤖</span><strong>Pi</strong><span class="msg-chip">${esc(assistantKey())}</span><span class="msg-chip">完成</span></div><div class="md">${md(ev.content||"…")}</div>`;
+    el.innerHTML=`<div class="msg-meta">${qAvatar(24, "6px")}<strong>Pi</strong><span class="msg-chip">${esc(assistantKey())}</span><span class="msg-chip">完成</span></div><div class="md">${md(ev.content||"…")}</div>`;
   }
   else if(ev.type==="error"){ el.className="msg-err"; el.textContent="⚠ "+(ev.message||"出错了"); }
   else if(ev.type==="tool_call"){
@@ -2266,7 +2432,7 @@ function loadAgentMeta(){                            // 从已存的对话里回
   if(room){                                            // 首次提问后标题会变，顺手同步抬头
     const h=$("at-title"), s=$("at-sub");
     if(h) h.textContent = room.title;
-    if(s) s.textContent = `${assistantKey()} · 全局 Leader · 跨项目 · 产出 ${outName(room.out_dir)}`;
+    if(s) s.textContent = `${assistantKey()} · ${room.task_id?`Partner · 绑定《${projName(room.task_id)||"项目"}》`:"全局 Leader · 跨项目"} · 产出 ${outName(room.out_dir)}`;
   }
   stPaint();
 }
@@ -2281,10 +2447,10 @@ function stEvent(ev){                                // SSE 过程中实时刷�
 }
 
 /* ---------------- 工作流 ---------------- */
-const STAGE={idea:"🔍 创新点审查",search:"📚 论文搜索",download:"⬇️ 下载精读",notes:"🌐 论文翻译",outline:"🗂 确认大纲",write:"✍️ 文章撰写",review:"🧐 稿件审查",entrans:"🌍 中译英",convert:"🔄 格式转换"};
-const WF_ORDER=["idea","search","download","notes","outline","write","review","entrans","convert"];
+const STAGE={idea:"🔍 创新点审查",search:"📚 论文搜索",download:"⬇️ 下载精读",notes:"🌐 论文翻译",outline:"🗂 确认大纲",map:"🧩 梳理精读",write:"✍️ 文章撰写",review:"🧐 稿件审查",entrans:"🌍 中译英",convert:"🔄 格式转换"};
+const WF_ORDER=["idea","search","download","notes","outline","map","write","review","entrans","convert"];
 const PANELS = { idea: ideaPanelHTML, search: searchPanelHTML, download: downloadPanelHTML, notes: trPanelHTML,
-  outline: (a)=>docPanelHTML("outline", a), write: (a)=>docPanelHTML("write", a), review: (a)=>docPanelHTML("review", a), convert: convPanelHTML, entrans: enPanelHTML };   // 有专门功能区的步骤；其余留白卡
+  map: mapPanelHTML, outline: (a)=>docPanelHTML("outline", a), write: (a)=>docPanelHTML("write", a), review: (a)=>docPanelHTML("review", a), convert: convPanelHTML, entrans: enPanelHTML };   // 有专门功能区的步骤；其余留白卡
 let wfStep=localStorage.getItem("rw-wf-step")||"idea";
 
 /* ==== 创新点审查（这一步 = 100% 绑项目的受限对话页，记忆分长期/短期两区）==== */
@@ -2349,6 +2515,12 @@ const DOC_UI = {
     empty: ["🧐", "这是项目的「稿件审查」", "直接说「审一遍」，或把具体担心抛过来。左边可以用 🖍 荧光笔标出想改的细节，标完点「把标注发给 agent」，我会逐条回应；大的思路问题我会先列出来。"],
     ph: "说「审一遍」/ 问某处逻辑 / 让 agent 改…（Enter 发送）",
     hint: "Enter 发送 · 左边 🖍 标细节 → 「把标注发给 agent」逐条回应" },
+  map: { ico: "🧩", file: "谱系", who: "结构",
+    sub: "与项目绑定 · 左边那张谱系图就是这一步的产物：把大纲每个小标题挂上精读结论 / 实验数据",
+    seed: "", pull: "", post: "/api/map", scope: "map", hl: false,
+    empty: ["🧩", "这是项目的「梳理精读」", "左边是谱系图的画布。跟我说要怎么改，比如「按大纲建一版谱系图」「把 Left2025 挂到 2.1 下面，标成反例」——改完左边立刻重画。实验数据直接拖到画布上就上传。"],
+    ph: "说「按大纲建一版谱系图」/ 让它把某篇挂到某一节下面 / 讨论怎么归类…（Enter 发送）",
+    hint: "Enter 发送 · 说「更新谱系」→ 画布立刻换成新版（谱系.json 就地覆盖）" },
 };
 const DOCS = {};                                   // 每一步一份状态
 function docState(k){
@@ -2454,7 +2626,7 @@ function docShow(k, d){
       : `<div class="ol-empty">${DOC_UI[k].empty[1]} 还没有内容。<br>右边跟 agent 说一句，或点上面「${DOC_UI[k].seed || "让 agent 写"}」。</div>`;
     if(DOC_UI[k].hl) docPaintMarks(k);                    // 标注按文本重新贴回去
   }
-  docEl(k, "meta").textContent = md.trim() ? `${d.sections || 0} 个大标题 · ${d.subs || 0} 个小标题 · ${d.chars || 0} 字` : "";
+  const mb = docEl(k, "meta"); if(mb) mb.textContent = md.trim() ? `${d.sections || 0} 个大标题 · ${d.subs || 0} 个小标题 · ${d.chars || 0} 字` : "";
 }
 async function docLoad(k){
   const st = docState(k);
@@ -2495,7 +2667,7 @@ function docCandidate(text){
 }
 function docShowCand(k){
   const b = docEl(k, "pull"); if(!b) return;
-  const cur = (docEl(k, "src").value || "").trim();
+  const srcEl = docEl(k, "src"); const cur = (srcEl ? srcEl.value : "").trim();
   b.classList.toggle("hidden", !docState(k).cand || docState(k).cand === cur);
 }
 
@@ -2579,7 +2751,7 @@ function docBind(k, m){
   docEl(k, "assist").oninput = (e)=>localStorage.setItem("rw-assist", e.target.value.trim() || "researcher");
   if(DOC_UI[k].seed) docEl(k, "seed").onclick = async ()=>{ try{ docShow(k, await api("/api/doc/seed", { task_id: curTask, step: k }));
     docMsg(k, k === "write" ? "已按框架搭好骨架（标题层级照抄框架）" : "已按模板起稿"); }catch(e){ docMsg(k, "起稿失败：" + e.message); } };
-  docEl(k, "pull").onclick = async ()=>{
+  if(docEl(k, "pull")) docEl(k, "pull").onclick = async ()=>{
     const st = docState(k); if(!st.cand) return;
     try{ const r = await api("/api/doc/save", { task_id: curTask, step: k, markdown: st.cand });
          st.cand = ""; docShow(k, r); docShowCand(k); docMsg(k, `已用这条回复更新（${r.chars || 0} 字）`); }
@@ -2587,9 +2759,9 @@ function docBind(k, m){
   };
   if(DOC_UI[k].cite) docEl(k, "cite").onclick = ()=>{
     if(docState(k).showCite) docLoad(k); else docShowCite(k); };
-  docEl(k, "reload").onclick = ()=>docLoad(k);
-  docEl(k, "edit").onclick = ()=>docEdit(k, true);
-  docEl(k, "edit-save").onclick = ()=>docSaveEdit(k);
+  if(docEl(k, "reload")) docEl(k, "reload").onclick = ()=>docLoad(k);
+  if(docEl(k, "edit")) docEl(k, "edit").onclick = ()=>docEdit(k, true);
+  if(docEl(k, "edit-save")) docEl(k, "edit-save").onclick = ()=>docSaveEdit(k);
   if(DOC_UI[k].hl){
     docEl(k, "pen").onclick = ()=>docPen(k);
     docEl(k, "penpanel").querySelector(".dw-x").onclick = ()=>docPen(k, false);
@@ -2698,11 +2870,12 @@ async function docSend(k){
   }catch(e){ errMsg = e.message; appendOne(box, { type: "error", message: e.message }); }
   st.msgs.push({ role: "assistant", content: final, events: evs });
   st.events = st.events.concat(evs);
-  const wrote = evs.some(e => e.type === "tool_call" && (e.name === "doc_write" || e.name === "outline_write"));
+  const wrote = evs.some(e => e.type === "tool_call" && (e.name === "doc_write" || e.name === "outline_write" || e.name === "map_write"));
   st.cand = wrote ? "" : docCandidate(final);            // 模型没调工具就把回复里那段收着，给个一键落盘
   btn.disabled = false; btn.textContent = "↑";
   box.scrollTop = box.scrollHeight;
   await docLoad(k);                                      // 重拉：文件可能刚被 doc_write 改过 → 左边跟着更新
+  if(k === "map") await mpLoad();                          // 谱系图：聊天改完立刻重画画布
   docShowCand(k);
   if(!wrote && !st.cand) docMsg(k, `这轮没有改${DOC_UI[k].file} —— 说「更新${DOC_UI[k].file}」或让它「写进文件」`);
   if(errMsg) appendOne(box, { type: "error", message: errMsg });
@@ -2981,6 +3154,7 @@ function renderWorkflow(m){
     if(wfStep==="search") wsBind(m);
     if(wfStep==="download") dlBind(m);
     if(wfStep==="notes") trBind(m);
+    if(wfStep==="map") mpBind(m);
     if(DOC_UI[wfStep]) docBind(wfStep, m);
     if(wfStep==="convert") cvBind();
     if(wfStep==="entrans") enBind();
@@ -2990,6 +3164,7 @@ function renderWorkflow(m){
   if(wfStep==="search") wsBind(m);
   if(wfStep==="download") dlBind(m);
   if(wfStep==="notes") trBind(m);
+  if(wfStep==="map") mpBind(m);
   if(DOC_UI[wfStep]) docBind(wfStep, m);
   if(wfStep==="convert") cvBind();
   if(wfStep==="entrans") enBind();
@@ -3355,60 +3530,8 @@ async function wsRun(){
 async function loadTaskState(){
   try{ const d=await api(`/api/task?id=${encodeURIComponent(curTask)}`);
     const sm=d.stage_map||{}; Object.keys(STAGE).forEach(s=>{ const el=$("st-"+s); if(el&&sm[s]) el.className="pill ok"; });
-    pickers(d);
   }catch(e){}
 }
-function pickers(d){
-  const dl=$("pick-download");
-  if(dl){ const rs=(d.results||[]).filter(r=>r.pdf_url);
-    dl.innerHTML=rs.length?rs.slice(0,12).map(r=>`<div class="steprow"><span style="flex:1;min-width:0">${esc(r.title.slice(0,80))}</span><button class="btn ghost" data-dl="${r.id}">下载</button></div>`).join(""):"没有 OA 结果（先跑②，或该检索没有开放获取全文）";
-    dl.querySelectorAll("[data-dl]").forEach(b=>b.onclick=()=>runStage("download",b,{result_id:b.dataset.dl}));
-  }
-  const nt=$("pick-notes");
-  if(nt){ const ns=(d.notes||[]);
-    nt.innerHTML=ns.length?ns.slice(0,12).map(n=>`<div class="steprow"><span style="flex:1;min-width:0">${esc(n.title.slice(0,80))}</span><button class="btn ghost" data-note="${n.id}">整理</button></div>`).join(""):"还没有精读笔记";
-    nt.querySelectorAll("[data-note]").forEach(b=>b.onclick=()=>runStage("notes",b,{note_id:b.dataset.note})); }
-}
-async function runStage(stage,btn,extra){
-  const out=$("out-"+stage)||$("out-download");
-  const body={task_id:curTask,...(extra||{})};
-  if(stage==="idea") body.idea=$("in-idea").value.trim();
-  if(stage==="search"){ body.query=$("in-query").value.trim(); body.sources=[...document.querySelectorAll(".src:checked")].map(c=>c.value); }
-  if(stage==="write"){ body.section=$("in-sec").value; body.title=$("in-title").value; }
-  if(stage==="convert") body.format=$("in-fmt").value;
-  if(btn){btn.disabled=true;const o=btn.textContent;btn.textContent="运行中…";btn.dataset.o=o;}
-  out.className=""; out.innerHTML=`<div class="hint">正在执行…（模型步骤可能较久）</div>`;
-  try{
-    const r=await api("/api/workflow/"+stage,body);
-    out.innerHTML=resultHtml(stage,r);
-    if(stage==="download" && (r.paper?.id)){          // 下载即精读，少点一次
-      out.insertAdjacentHTML("beforeend",`<div class="hint" style="margin-top:8px">自动精读…</div>`);
-      const rd=await api("/api/workflow/read",{task_id:curTask,paper_id:r.paper.id});
-      out.insertAdjacentHTML("beforeend", resultHtml("read",rd));
-    }
-    await refreshState(false);
-    if(stage!=="download") await loadTaskState();
-  }catch(e){ out.innerHTML=`<div class="msg error" style="margin-top:8px">⚠ ${esc(e.message)}</div>`; }
-  if(btn){btn.disabled=false;btn.textContent=btn.dataset.o;}
-}
-function resultHtml(stage,r){
-  if(stage==="idea"){ const v=r.verdict||{};
-    return `<div class="card" style="margin-top:8px"><div class="grid2"><div><b>判定</b><div>${esc(v.verdict||"")}</div></div>
-      <div><b>评分</b><div>新颖性 ${esc(v.novelty_score??"")} · 可行性 ${esc(v.feasibility_score??"")}</div></div></div>
-      ${(v.risks||[]).length?`<div style="margin-top:8px"><b>风险</b><ul>${v.risks.map(x=>`<li>${esc(x)}</li>`).join("")}</ul></div>`:""}
-      ${(v.questions||[]).length?`<div><b>待答问题</b><ul>${v.questions.map(x=>`<li>${esc(x)}</li>`).join("")}</ul></div>`:""}</div>`; }
-  if(stage==="search") return `<div class="hint" style="margin-top:8px">共 ${r.found} 条，新增 ${r.saved.length} 条</div>
-    <table style="margin-top:6px"><tr><th>标题</th><th>来源</th><th>OA</th></tr>${r.results.slice(0,25).map(x=>`<tr><td>${esc(x.title)}</td><td>${esc(x.source)} ${esc(x.year)}</td><td>${x.pdf_url?"✔":""}</td></tr>`).join("")}</table>`;
-  if(stage==="download") return `<div class="hint" style="margin-top:8px">已入库，${r.pages||r.paper?.pages||"?"} 页。下面自动精读。</div>`;
-  if(stage==="notes"||stage==="read") return `<div class="hint" style="margin-top:8px">笔记 ${esc(r.note_id||"")}，证据 ${r.evidence??0} 条</div><div class="md">${md(r.markdown||"")}</div>`;
-  if(stage==="write") return `<div class="hint" style="margin-top:8px">已写入 ${esc(r.path||"")}</div><div class="md">${md((r.markdown||"").slice(0,4000))}</div>`;
-  if(stage==="review"){ const v=r.review||{}; return `<div class="card" style="margin-top:8px"><b>结论：${esc(v.verdict||"")}</b> ${esc(v.score??"")}
-    ${(v.major||[]).length?`<div style="margin-top:6px"><b>主要问题</b><ul>${v.major.map(x=>`<li>${esc(x)}</li>`).join("")}</ul></div>`:""}
-    ${(v.gaps||[]).length?`<div><b>证据缺口</b><ul>${v.gaps.map(x=>`<li>${esc(x)}</li>`).join("")}</ul></div>`:""}</div>`; }
-  if(stage==="convert") return `<div class="hint" style="margin-top:8px">已导出 ${esc(r.path||"")}（${r.bytes||0} 字节）</div>`;
-  return `<pre>${esc(JSON.stringify(r,null,2))}</pre>`;
-}
-
 /* ---------------- 项目 ---------------- */
 function renderTasks(m){
   // 卡片色带 2026-10-08：原来按顺序轮换莫兰迪六色（豆沙/米驼那组偏暖），与主题脱节 → 撤掉，统一吃 --accent。
@@ -3479,7 +3602,6 @@ function renderTasks(m){
     if(r.dirs && r.dirs.length) alert(`项目已创建，并在项目位置里建好：\n${r.dirs.join(" / ")}\n（每个子文件夹里都写了 README.md）`);
   };
 }
-async function createTask(){ openTab("tasks"); }
 
 /* ---------------- 日历：版式/类名照 lit（app.js 的 calendarDateInfo/renderCalendar/renderCalDayEvents + index.html 的 home-mid/home-bottom），只多了年/月下拉 ---------------- */
 let calY = new Date().getFullYear(), calM = new Date().getMonth();   // calM 0-11
@@ -5958,7 +6080,7 @@ async function renderIntel(m){
    照用户草图：左上「＋ 添加论文」（文件对话框 / 拖进来）→ 自动解析 DOI/题目/发表时间/关键词
    → 大框里是可滚动的 PDF（缩放 / 页码 / 荧光笔）→ 底部三个功能键：中英互译 / 笔记模式 / 荧光笔。
    PDF 渲染用 vendor 的 pdf.js 3.11（能选中文字，荧光笔才有依据）；译文用 BabelDOC（后端）。 */
-const TR = { pid: "", meta: null, view: "read", scale: 1.15, hlOn: false, hlColor: "#FFE066", hlWidth: 14,
+const TR = { pid: "", meta: null, view: "read", scale: 1.15, noteScale: 1, noteZen: false, hlOn: false, hlColor: "#FFE066", hlWidth: 14,
              pdf: null, pages: 0, sel: new Set(), hl: [], job: null, poll: 0, note: null, dual: false };
 const TR_MAX = 3.0, TR_MIN = 0.5;
 
@@ -5968,13 +6090,17 @@ function trPanelHTML(active){
       <button class="btn btn-teal" id="trAdd">＋ 添加论文</button>
       <select id="trPick" class="tr-sel" title="这个项目文献库里已有的 PDF"><option value="">文献库已有…</option></select>
       <span class="tr-spacer"></span>
-      <span class="tr-zoom"><button class="tr-ib" id="trOut" title="缩小">−</button><button class="tr-ib" id="trIn" title="放大">＋</button></span>
+      <span class="tr-seg" id="trSeg">
+        <button class="tr-seg-b active" id="trBtnBack" title="只看原文（返回阅读器）">原文</button>
+        <button class="tr-seg-b" id="trBtnT" title="左边原文、右边中文">🌐 中英互译</button>
+        <button class="tr-seg-b" id="trBtnN" title="全屏：左边中文、右边随记随写">📝 笔记模式</button>
+      </span>
+      <span class="tr-grp">
+        <button class="tr-ib" id="trPenTop" title="荧光笔" aria-label="荧光笔">🖍</button>
+        <button class="tr-ib" id="trZenTop" title="全屏，左原文右中文，可拖分栏；左上角有缩放加减号（Esc 退出）" aria-label="专注模式">⛶</button>
+      </span>
+      <span class="tr-zoom"><button id="trOut" title="缩小" aria-label="缩小">−</button><span class="tr-zoomv" id="trZoomV">115%</span><button id="trIn" title="放大" aria-label="放大">＋</button></span>
       <span class="tr-pageno" id="trPageNo">0 / 0</span>
-      <button class="btn ghost" id="trPenTop">🖍 荧光笔</button>
-      <button class="btn ghost" id="trZenTop" title="全屏，左原文右中文，可拖分栏 / Ctrl+滚轮缩放（Esc 退出）">⛶ 专注模式</button>
-      <button class="btn" id="trBtnT">🌐 中英互译</button>
-      <button class="btn" id="trBtnN">📝 笔记模式</button>
-      <button class="btn ghost hidden" id="trBtnBack">↩ 还原</button>
     </div>
     <div class="tr-status"><span id="trMsg"></span></div>
     <div class="tr-meta" id="trMeta">
@@ -5985,6 +6111,7 @@ function trPanelHTML(active){
     </div>
     <div class="tr-stage" id="trStage">
       <button class="tr-zen-exit" id="trZenExit" title="退出专注模式（Esc）">✕ 退出专注</button>
+      <span class="tr-zen-zoom" id="trZenZoom"><button class="tr-ib" id="trZenOut" title="缩小" aria-label="缩小">−</button><button class="tr-ib" id="trZenIn" title="放大" aria-label="放大">＋</button><span class="tr-zoomv" id="trZenZoomV">100%</span></span>
       <div class="tr-drop" id="trDrop">
         <div class="tr-drop-in">
           <div class="tr-drop-ico">📄</div>
@@ -5996,11 +6123,20 @@ function trPanelHTML(active){
       <div class="tr-split hidden" id="trSplit" title="拖动调整两栏宽度"></div>
       <div class="tr-pane hidden" id="trPaneB" data-pane="b"><div class="tr-pane-tag">中文</div><div class="tr-scroll"></div></div>
       <div class="tr-note hidden" id="trNote">
+        <div class="tr-note-bar">
+          <button class="tr-ib" id="trNoteOut" title="缩小字号" aria-label="缩小字号">−</button>
+          <button class="tr-ib" id="trNoteIn" title="放大字号" aria-label="放大字号">＋</button>
+          <span class="tr-zoomv" id="trNoteZoomV">100%</span>
+          <span class="tr-spacer"></span>
+          <button class="tr-ib tr-note-exit" id="trNoteExit" title="退出笔记模式（Esc）">✕ 退出</button>
+        </div>
+        <div class="tr-note-grid">
         <div class="tr-note-l"><div class="tr-note-h">中文全文（只读）<span id="trNotePages"></span></div><div class="tr-note-body md-render" id="trNoteBody"></div></div>
         <div class="tr-note-r">
           <input id="trNoteTitle" class="tr-note-title" placeholder="笔记名">
           <div class="tr-note-hint"><span id="trNoteBind">阅读笔记</span> · 自动保存<span id="trNoteState"></span></div>
           <textarea id="trNoteSrc" class="tr-note-src" spellcheck="true" placeholder="在这里随记随写…"></textarea>
+        </div>
         </div>
       </div>
     </div>
@@ -6033,7 +6169,7 @@ function trMsg(t){ const el=$("trMsg"); if(el) el.textContent = t || ""; }
 async function trOpen(pid){
   TR.pid = pid; TR.dual = false; TR.note = null;
   trView("read");
-  $("trBtnBack")?.classList.add("hidden");
+  trSegActive("read");
   $("trPen")?.classList.add("hidden"); TR.hlOn = false;
   trDualOff();
   TR.job = null; TR.words = {}; TR.prog = 0; trStopPoll();
@@ -6169,9 +6305,9 @@ function trZen(on){
   st.classList.toggle("zen", show);
   TR.zen = show;
   $("trZenTop")?.classList.toggle("active", show);
-  trMsg(show ? "专注模式：中间那条线照样能拖，Ctrl+滚轮 / 双指缩放，Esc 退出"
+  trMsg(show ? "专注模式：中间那条线照样能拖；缩放用左上角那对加减号，Esc 退出"
              : "");
-  if(show) trPaintNear(TR.active === "b" ? "b" : "a");
+  if(show){ trPaintNear(TR.active === "b" ? "b" : "a"); trZoomLabel(); }
 }
 function trZoom(d){
   TR.scale = Math.min(TR_MAX, Math.max(TR_MIN, Math.round((TR.scale + d) * 100) / 100));
@@ -6179,6 +6315,29 @@ function trZoom(d){
   if(TR.dual){ trMount("a", `/api/pdf?id=${encodeURIComponent(TR.pid)}`);
                if(TR.monoUrl) trMount("b", TR.monoUrl); }
   else trReader(TR.pid);
+  trZoomLabel();
+}
+function trZoomLabel(){
+  const t = Math.round(TR.scale * 100) + "%";
+  const v = $("trZenZoomV"); if(v) v.textContent = t;      // 专注模式左上角那个
+  const w = $("trZoomV");    if(w) w.textContent = t;      // 工具栏缩放组里那个
+}
+function trExitFull(){
+  /* ✕ / Esc 的统一出口：笔记模式先退回阅读器，再把全屏收掉 */
+  if(TR.view === "note") trBack();
+  trZen(false);
+}
+function trNoteZoom(d){
+  TR.noteScale = Math.min(1.8, Math.max(0.7, Math.round((TR.noteScale + d) * 10) / 10));
+  trNoteApply();
+}
+function trNoteApply(){
+  /* 笔记模式里没有 PDF 可缩放 —— 顶栏那对加减号管的是中文/笔记两栏的字号 */
+  const px = (13.5 * TR.noteScale).toFixed(1) + "px";
+  const b = $("trNoteBody"), s = $("trNoteSrc");
+  if(b) b.style.fontSize = px;
+  if(s) s.style.fontSize = px;
+  const v = $("trNoteZoomV"); if(v) v.textContent = Math.round(TR.noteScale*100) + "%";
 }
 
 /* ---------------- 荧光笔 ---------------- */
@@ -6304,9 +6463,7 @@ async function trReloadB(v){
 function trDualOpen(v){
   TR.dual = true;
   trView("dual");
-  $("trBtnBack")?.classList.remove("hidden");
-  $("trBtnN")?.classList.remove("active");
-  $("trBtnT")?.classList.add("active");
+  trSegActive("dual");
   $("trStage").classList.add("dual");
   $("trPaneB").classList.remove("hidden");
   $("trSplit").classList.remove("hidden");
@@ -6322,11 +6479,24 @@ function trDedent(md){
   /* PDF 抽出来的正文常带缩进 —— markdown 会把 ≥4 空格的整段当代码块渲染成黑框，先去掉行首空白 */
   return (md || "").split("\n").map(l => l.replace(/^[ \t]+/, "")).join("\n");
 }
+function trSegActive(v){
+  /* 原文 / 中英互译 / 笔记模式 三个视图键的选中态只有这一处说了算 */
+  $("trBtnBack")?.classList.toggle("active", v === "read");
+  $("trBtnT")?.classList.toggle("active", v === "dual");
+  $("trBtnN")?.classList.toggle("active", v === "note");
+}
 function trView(v){
   /* 阅读器 / 双栏 / 笔记 三个视图的可见性只有这一处说了算 —— 免得异步加载回来把当前视图盖掉 */
   TR.view = v;
   $("trNote")?.classList.toggle("hidden", v !== "note");
   $("trDrop")?.classList.toggle("hidden", v !== "empty");
+  /* 笔记模式 = 全屏（和专注模式共用同一个 fixed 舞台）；离开笔记模式时自动收掉全屏 */
+  const st = $("trStage");
+  if(st){
+    st.classList.toggle("note", v === "note");
+    if(v === "note"){ st.classList.add("zen"); TR.zen = true; TR.noteZen = true; }
+    else if(TR.noteZen){ st.classList.remove("zen"); TR.zen = false; TR.noteZen = false; }
+  }
 }
 async function trNoteMode(){
   /* 笔记模式：左边 3/4 中文全文（只读），右边 1/4 「阅读笔记」随记随写。
@@ -6339,17 +6509,16 @@ async function trNoteMode(){
     TR.note = r.note; TR.noteText = r.text || "";
     trDualOff();
     trView("note");
-    $("trBtnBack")?.classList.remove("hidden");
-    $("trBtnT")?.classList.remove("active");
-    $("trBtnN")?.classList.add("active");
+    trSegActive("note");
     $("trNoteTitle").value = TR.note.title || "阅读笔记";
     $("trNoteSrc").value = TR.note.content || "";                 // 空白：他自己写
+    trNoteApply();
     $("trNoteBody").innerHTML = r.text ? renderMarkdown(trDedent(r.text))
                                        : `<div class="tr-load">还没有中文全文 —— 先点上面「🌐 中英互译」，翻好一段这里就有一段。</div>`;
     $("trNotePages").textContent = r.pages ? ` · ${r.pages} 页` : "";
     const pname = (TR.meta && TR.meta.title) ? trShort(TR.meta.title) : (TR.pid || "").slice(0, 8);
     $("trNoteBind").textContent = `已绑定论文：${pname}${curTask ? " · 项目" : ""} · 自动保存`;
-    trMsg(`「阅读笔记」已绑到这篇论文（论文绑项目）；左边中文、右边随记随写${r.pages ? "" : "（暂无中文全文）"}`);
+    trMsg(`「阅读笔记」已绑到这篇论文；左边中文、右边随记随写，顶栏加减号调字号、✕ 退出（Esc）${r.pages ? "" : "（暂无中文全文）"}`);
   }catch(e){ trMsg("笔记打开失败：" + e.message + (/(not found|404)/i.test(e.message) ? "（服务端是旧版本，重启一次）" : "")); }
 }
 function trShort(s, n){ s = String(s || ""); return s.length > n ? s.slice(0, n) + "…" : s; }
@@ -6381,8 +6550,7 @@ function trBack(){
   trStopPoll();
   trDualOff();
   trView("read");
-  $("trBtnBack")?.classList.add("hidden");
-  $("trBtnT")?.classList.remove("active"); $("trBtnN")?.classList.remove("active");
+  trSegActive("read");
   TR.hlOn = false; $("trPen")?.classList.add("hidden");
   $("trBtnT").textContent = "🌐 中英互译"; $("trBtnT").disabled = false;
   if(TR.pid){ $("trDrop")?.classList.add("hidden"); trReader(TR.pid); } else $("trDrop")?.classList.remove("hidden");
@@ -6410,10 +6578,10 @@ function trBind(){
   $("trBtnT").onclick = ()=>trTranslate();
   $("trBtnN").onclick = ()=>trNoteMode();
   $("trBtnBack").onclick = ()=>trBack();
-  trPenInit(); trNoteBind(); trFillPick();
+  trPenInit(); trNoteBind(); trFillPick(); trZoomLabel();
   if(!TR.hlBound){ TR.hlBound = 1;                     // 文档级监听只挂一次（renderWorkflow 会反复调 trBind）
     document.addEventListener("mouseup", (e)=>{ if($("trStage")?.contains(e.target)) trHlOnMouseUp(e); });
-    document.addEventListener("keydown", (e)=>{ if(e.key === "Escape"){ trPenPanel(false); trZen(false); } });
+    document.addEventListener("keydown", (e)=>{ if(e.key === "Escape"){ trPenPanel(false); trExitFull(); } });
   }
   // 拖进来（整页都能接）
   const st = $("trStage"); let depth = 0;
@@ -6434,13 +6602,15 @@ function trBind(){
   });
   ["pointerup","pointercancel"].forEach(t=>sp.addEventListener(t,()=>{ dragging = false; }));
   $("trZenTop").onclick = () => trZen();
-  $("trZenExit").onclick = () => trZen(false);
-  // Ctrl+滚轮 / 双指捏合 = 缩放（触屏上浏览器把捏合报成 ctrl+wheel）
-  $("trStage").addEventListener("wheel",(e)=>{
-    if(!e.ctrlKey) return;
-    e.preventDefault();
-    trZoom(e.deltaY < 0 ? 0.1 : -0.1);
-  },{passive:false});
+  $("trZenExit").onclick = () => trExitFull();
+  $("trZenIn").onclick = () => trZoom(0.15);
+  $("trZenOut").onclick = () => trZoom(-0.15);
+  $("trNoteIn").onclick = () => trNoteZoom(0.1);
+  $("trNoteOut").onclick = () => trNoteZoom(-0.1);
+  $("trNoteExit").onclick = () => trExitFull();
+  // 缩放只认左上角那对加减号：触屏捏合（浏览器报成 ctrl+wheel）/ Ctrl+滚轮 一律吞掉，
+  // 不吞的话浏览器本体缩放会把 PDF 文字层带偏（文字层是按缩放比例铺的绝对定位）
+  $("trStage").addEventListener("wheel",(e)=>{ if(e.ctrlKey) e.preventDefault(); },{passive:false});
   // 点哪一栏，工具栏就管哪一栏
   $("trStage").addEventListener("mousedown",(e)=>{
     const p = e.target.closest(".tr-pane"); if(!p) return;
@@ -6450,7 +6620,271 @@ function trBind(){
     trPageNo(TR.active);
   });
 }
-async function transPanelHTMLWait(){ return trPanelHTML(); }
+
+
+/* ==== 梳理精读（第 5 步）：左 2/3 谱系图（大纲小标题 → 精读结论 / 实验数据）+ 右 1/3 结构 agent ==== */
+const MP = { nodes:[], edges:[], sel:"", src:null, busy:false, poll:0, outline:"" };
+const MP_COL = { section:"var(--muted)", paper:"var(--accent)", note:"#8f7fb5", data:"#4ade80" };
+const MP_TAG = { section:"小节", paper:"论文", note:"笔记", data:"数据" };
+const MP_W = { sec:250, ref:196, gapx:92, gapy:14, padx:34, pady:26 };
+
+function mapPanelHTML(active){
+  const proj = (S.tasks||[]).find(t=>t.id===curTask);
+  return `<section class="at" id="panel-map"${active?"":' style="display:none"'}>
+    <div class="mp-grid">
+      <div class="mp-left">
+        <div class="mp-head">
+          <b>🧩 谱系图</b><span class="ol-tag" id="mp-file">谱系.json</span>
+          <span class="mp-meta" id="mp-meta"></span>
+          <span class="mp-spacer"></span>
+          <button class="btn ghost" id="mp-refresh" title="从磁盘重新读">↻ 刷新</button>
+          <button class="btn ghost" id="mp-edit" title="直接改那份 JSON">✎ 手改</button>
+          <button class="btn ghost hidden" id="mp-save">保存</button>
+        </div>
+        <div class="mp-src" id="mp-src"></div>
+        <div class="mp-canvas-wrap" id="mp-wrap">
+          <div class="mp-canvas" id="mp-canvas"></div>
+        </div>
+      </div>
+      <div class="mp-right">
+        <div class="at-head">
+          <div class="at-heading"><span style="color:var(--accent);font-size:15px">🧩</span>
+            <div><h1 id="map-title">${esc(proj ? proj.title : "梳理精读")}</h1>
+            <p id="map-sub">与项目绑定 · 左边那张谱系图就是这一步的产物</p></div></div>
+        </div>
+        <div class="at-tabs">
+          <button class="at-tab on" data-dv="map|conversation">对话</button>
+          <button class="at-tab" data-dv="map|trajectory">轨迹 <span id="map-trail-n">0</span></button></div>
+        <div class="at-msgs" id="map-msgs" role="log" aria-label="结构 agent 对话"></div>
+        <div class="at-dock">
+          <div class="at-panel">
+            <div class="st-box st-counts">
+              <div class="st-row"><span>对话轮数</span><b id="map-turns">0</b></div>
+              <div class="st-row"><span>调用工具数</span><b id="map-calls">0</b></div>
+              <div class="st-row"><span>消耗 token</span><b id="map-tok">0</b></div></div>
+            <div class="st-box"><p>工具名称</p><div class="st-log" id="map-tools"></div></div>
+            <div class="st-box"><p>产出目录</p><div class="st-log" id="map-outs"></div></div>
+          </div>
+          <div class="atts" id="map-atts"></div>
+          <div class="composer" id="map-composer">
+            <textarea id="map-ask" rows="1" placeholder="说「按大纲建一版谱系图」/ 让它把某篇挂到某一节下面…（Enter 发送，Shift+Enter 换行）"></textarea>
+            <div class="at-tools">
+              <div class="at-tools-l"><button class="icon-btn" id="map-plus" title="附加文件">＋</button>
+                <label class="at-sel" title="这一步用哪个模型档案">🔌<select id="map-modpick"><option value="">未配置模型</option>
+                  ${S.models.map(mm => `<option value="${mm.id}" ${S.active && mm.id === S.active.id ? "selected" : ""}>${esc(mm.name)}</option>`).join("")}</select></label></div>
+              <div class="at-tools-r">
+                <label class="at-sel" title="助手署名">🤖<input id="map-assist" placeholder="researcher" value="${esc(assistantKey())}"></label>
+                <button class="send-btn" id="map-send" title="发送" aria-label="发送">↑</button></div>
+            </div>
+            <input type="file" id="map-filepick" multiple style="display:none">
+          </div>
+          <p class="at-hint">Enter 发送 · 说「更新谱系」→ 画布立刻换成新版（谱系.json 就地覆盖）</p>
+        </div>
+      </div>
+    </div>
+    <textarea class="ol-src hidden" id="mp-json" spellcheck="false"></textarea>
+  </section>`;
+}
+
+async function mpLoad(){
+  if(!curTask) return;
+  try{
+    const d = await api(`/api/map/state?id=${encodeURIComponent(curTask)}`);
+    MP.nodes = d.nodes||[]; MP.edges = d.edges||[]; MP.src = d.sources||null; MP.outline = (d.outline&&d.outline.markdown)||"";
+    MP.sig = JSON.stringify([MP.nodes, MP.edges]);
+    $("mp-file").textContent = (d.path||"谱系.json").split(/[\\/]/).pop();
+    $("mp-meta").textContent = `${d.sections||0} 小节 · ${d.refs||0} 关联${d.exists?"":" · 还没有图"}${d.broken?" · JSON 坏了":""}`;
+    const chips = [];
+    if(MP.src){
+      chips.push(`<span class="mp-chip">大纲小节 ${MP.src.sections.length}</span>`);
+      chips.push(`<span class="mp-chip">精读笔记 ${MP.src.notes.length}</span>`);
+      chips.push(`<span class="mp-chip">文献库 ${MP.src.papers.length}</span>`);
+      chips.push(`<span class="mp-chip">实验数据 ${MP.src.data.length}</span>`);
+      chips.push(`<span class="mp-chip">拖文件到画布 = 上传数据</span>`);
+    }
+    $("mp-src").innerHTML = chips.join("");
+    mpPaint();
+    mpMsgs(d.messages||[]);
+  }catch(e){
+    $("mp-meta").textContent = "读取失败：" + e.message;
+  }
+}
+
+function mpLayout(){
+  /* 小节竖着一列，右挂它们的关联节点；同一小节下的关联分列排（每列最多 3 个） */
+  const secs = MP.nodes.filter(n=>n.type==="section");
+  const rest = MP.nodes.filter(n=>n.type!=="section");
+  const bySec = {};
+  MP.edges.forEach(e=>{ if(!bySec[e.from]) bySec[e.from]=[]; bySec[e.from].push(e.to); });
+  rest.forEach(n=>{ const hit = MP.edges.find(e=>e.to===n.id); (bySec[hit?hit.from:"__free__"] = bySec[hit?hit.from:"__free__"]||[]).push(n.id); });
+  const pos = {}; let y = MP_W.pady, maxy = y;
+  const rowH = 34, colH = rowH + MP_W.gapy;                 /* 关联节点单行 34px（方案 A） */
+  secs.forEach(sec=>{
+    const kids = (bySec[sec.id]||[]).filter((v,i,a)=>a.indexOf(v)===i);
+    const rows = Math.max(1, Math.ceil(kids.length/2));
+    const h = Math.max(58, rows*colH - MP_W.gapy + 16);
+    pos[sec.id] = {x:MP_W.padx, y, w:MP_W.sec, h, t:"section"};
+    const x1 = MP_W.padx + MP_W.sec;
+    kids.forEach((kid,i)=>{ pos[kid] = {x:x1 + MP_W.gapx + (i%2)*(MP_W.ref+28), y: y + 8 + Math.floor(i/2)*colH, w:MP_W.ref, h:rowH, t:"ref"}; });
+    y += h + 26; maxy = y;
+  });
+  const free = (bySec["__free__"]||[]).filter((v,i,a)=>a.indexOf(v)===i);
+  free.forEach((id,i)=>{ pos[id] = {x:MP_W.padx, y: maxy + i*colH, w:MP_W.sec, h:40, t:"ref"}; });
+  return {pos, h: maxy + free.length*colH + MP_W.pady, w: MP_W.padx*2 + MP_W.sec + MP_W.gapx*2 + MP_W.ref*2 + 28};
+}
+
+function mpOutlineNote(label){
+  /* 方案 A：小节节点下面那行「说明」——直接取大纲里 `### 小节` 后面那句 `- 说明：…` */
+  const md = MP.outline || ""; if(!md || !label) return "";
+  const key = String(label).replace(/[\s　]+/g, "");
+  const lines = md.split(/\r?\n/);
+  for(let i=0;i<lines.length;i++){
+    const h = lines[i].match(/^\s*#{2,4}\s+(.+?)\s*$/);
+    if(!h || h[1].replace(/[\s　]+/g,"") !== key) continue;
+    for(let j=i+1;j<Math.min(i+4,lines.length);j++){
+      const t = lines[j].trim();
+      if(/^#{2,4}\s/.test(t)) break;
+      const m = t.match(/^[-*]?\s*说明[：:]\s*(.+)$/);
+      if(m) return m[1].trim();
+    }
+  }
+  return "";
+}
+function mpPaint(){
+  const box = $("mp-canvas"); if(!box) return;
+  if(!MP.nodes.length){
+    box.style.width = ""; box.style.height = "";
+    box.innerHTML = `<div class="mp-empty"><span class="big">🧩</span>
+      <span class="t1">还没有谱系图</span>
+      <span class="t2">右边跟 agent 说一句「按大纲建一版谱系图」，<br>它会把每个小标题挂上项目的精读结论；<br>实验数据直接拖到这块画布上。</span></div>`;
+    return;
+  }
+  const L = mpLayout(), pos = L.pos;
+  box.style.width = L.w + "px"; box.style.height = L.h + "px";
+  const NEG = /反例|反驳|冲突|不支持|反证|相左|相反/;
+  const paths = [], labels = [];
+  MP.edges.forEach(e=>{
+    const a = pos[e.from], b = pos[e.to]; if(!a||!b) return;
+    const x1 = a.x + a.w, y1 = a.y + a.h/2, x2 = b.x, y2 = b.y + b.h/2, mx = (x1+x2)/2;
+    const on = (MP.sel === e.from || MP.sel === e.to);
+    paths.push(`<path class="mp-edge${on ? " on" : ""}${NEG.test(e.label || "") ? " dash" : ""}" d="M${x1} ${y1} C${mx} ${y1} ${mx} ${y2} ${x2} ${y2}"/>`);
+    if(e.label) labels.push(`<text class="mp-elabel" x="${mx-16}" y="${(y1+y2)/2-6}">${esc(e.label)}</text>`);
+  });
+  const cards = MP.nodes.map(n=>{
+    const p = pos[n.id]; if(!p) return "";
+    const dot = `<span class="mp-dot" style="background:${MP_COL[n.type]||"var(--muted)"}"></span>`;
+    if(n.type === "section"){
+      const d = n.detail || mpOutlineNote(n.label);
+      return `<div class="mp-node sec${MP.sel===n.id?" on":""}" data-mp="${esc(n.id)}"
+        style="left:${p.x}px;top:${p.y}px;width:${p.w}px;height:${p.h}px">
+        <div class="t">${dot}${esc(n.label)}</div>
+        ${d?`<div class="d">${esc(d)}</div>`:""}
+      </div>`;
+    }
+    return `<div class="mp-node ref${MP.sel===n.id?" on":""}" data-mp="${esc(n.id)}"
+      style="left:${p.x}px;top:${p.y}px;width:${p.w}px;height:${p.h}px">
+      <div class="t" title="${esc(n.detail||"")}">${dot}<span class="lbl">${esc(n.label)}</span></div>
+      <span class="mp-pill">${MP_TAG[n.type]||""}</span>
+    </div>`;
+  }).join("");
+  box.innerHTML = `<svg class="mp-svg" width="${L.w}" height="${L.h}">${paths.join("")}${labels.join("")}</svg>${cards}`;
+  if(MP.sel) mpCard(MP.sel);
+}
+
+function mpCard(id){
+  const n = MP.nodes.find(x=>x.id===id); if(!n) return;
+  const old = document.querySelector(".mp-card"); if(old) old.remove();
+  const kids = MP.edges.filter(e=>e.from===id).map(e=>(MP.nodes.find(x=>x.id===e.to)||{}).label).filter(Boolean);
+  const par = MP.edges.filter(e=>e.to===id).map(e=>(MP.nodes.find(x=>x.id===e.from)||{}).label).filter(Boolean);
+  const wrap = $("mp-wrap");
+  const div = document.createElement("div");
+  div.className = "mp-card";
+  div.innerHTML = `<h4><span class="mp-dot" style="background:${MP_COL[n.type]||"var(--muted)"}"></span>${esc(n.label)}</h4>
+    <p>${esc(n.detail||"（没有说明）")}${n.ref?`\n来源：${esc(n.ref)}`:""}</p>
+    ${par.length?`<p>挂在小节：${esc(par.join("、"))}</p>`:""}
+    ${kids.length?`<p>它挂出去的：${esc(kids.join("、"))}</p>`:""}
+    <div class="row"><button class="btn ghost" id="mp-cx">关闭</button>
+      <button class="btn ghost" id="mp-cdel">删掉这个节点</button></div>`;
+  wrap.appendChild(div);
+  $("mp-cx").onclick = ()=>{ MP.sel=""; div.remove(); mpPaint(); };
+  $("mp-cdel").onclick = async ()=>{
+    MP.nodes = MP.nodes.filter(x=>x.id!==id);
+    MP.edges = MP.edges.filter(e=>e.from!==id && e.to!==id);
+    MP.sel = "";
+    await mpSave(); docMsg("map", "已删掉这个节点（谱系.json 已更新）");
+  };
+}
+
+async function mpSave(){
+  try{
+    const d = await api("/api/map/save", {task_id: curTask, data: {nodes: MP.nodes, edges: MP.edges}});
+    if(d.error) throw new Error(d.error);
+    MP.nodes = d.nodes; MP.edges = d.edges;
+    $("mp-meta").textContent = `${d.sections} 小节 · ${d.refs} 关联`;
+    mpPaint();
+  }catch(e){ docMsg("map", "保存失败：" + e.message); }
+}
+
+function mpBind(m){
+  docBind("map", m);                                  /* 右栏＝「确认大纲」那套（对话/轨迹/统计/附件），post 走 /api/map */
+  $("mp-refresh").onclick = ()=>mpLoad();
+  $("mp-edit").onclick = ()=>{
+    const ta = $("mp-json"), show = ta.classList.contains("hidden");
+    ta.classList.toggle("hidden", !show);
+    $("mp-save").classList.toggle("hidden", !show);
+    if(show){ ta.value = JSON.stringify({nodes:MP.nodes, edges:MP.edges}, null, 1); $("mp-wrap").classList.add("hidden"); }
+    else { $("mp-wrap").classList.remove("hidden"); }
+  };
+  $("mp-save").onclick = async ()=>{
+    try{ const d = JSON.parse($("mp-json").value || "{}");
+      const r = await api("/api/map/save", {task_id: curTask, data: d});
+      if(r.error) throw new Error(r.error);
+      MP.nodes = r.nodes; MP.edges = r.edges;
+      $("mp-json").classList.add("hidden"); $("mp-save").classList.add("hidden"); $("mp-wrap").classList.remove("hidden");
+      mpPaint();
+    }catch(e){ docMsg("map", "JSON 有问题：" + e.message); }
+  };
+  // 画布：点节点出信息卡；拖文件进来 = 上传实验数据
+  const wrap = $("mp-wrap");
+  wrap.onclick = (e)=>{ const n = e.target.closest("[data-mp]"); if(!n) return; MP.sel = n.dataset.mp; mpPaint(); };
+  let depth = 0;
+  ["dragenter","dragover"].forEach(t=>wrap.addEventListener(t,(e)=>{ e.preventDefault(); e.stopPropagation();
+    if(t === "dragenter") depth++; wrap.classList.add("dragging"); }));
+  ["dragleave","drop"].forEach(t=>wrap.addEventListener(t,(e)=>{ e.preventDefault(); e.stopPropagation();
+    if(t === "drop"){ depth = 0; wrap.classList.remove("dragging"); mpUpload(e.dataTransfer && e.dataTransfer.files); }
+    else if(--depth <= 0){ depth = 0; wrap.classList.remove("dragging"); } }));
+  mpLoad();
+  if(!MP.poll) MP.poll = setInterval(()=>{             /* 实时：别的窗口/agent 改了图，这里 3 秒跟上（只在这一步可见时问） */
+    if(wfStep !== "map" || document.hidden) return;
+    const p = $("panel-map"); if(!p || p.style.display === "none") return;
+    mpReloadQuiet();
+  }, 3000);
+}
+async function mpReloadQuiet(){
+  if(MP.busy || !curTask) return;
+  try{
+    const d = await api(`/api/map/state?id=${encodeURIComponent(curTask)}`);
+    const sig = JSON.stringify([d.nodes, d.edges]);
+    if(sig === MP.sig) return;
+    MP.sig = sig; MP.nodes = d.nodes||[]; MP.edges = d.edges||[]; mpPaint();
+    $("mp-meta").textContent = `${d.sections||0} 小节 · ${d.refs||0} 关联`;
+  }catch(_){}
+}
+async function mpUpload(files){
+  if(!files || !files.length) return;
+  for(const f of files){
+    try{
+      const buf = await f.arrayBuffer();
+      const r = await fetch(`/api/upload?filename=${encodeURIComponent(f.name)}&task=${encodeURIComponent(curTask||"")}`,
+                            {method:"POST", headers:{"Content-Type":"application/octet-stream"}, body: buf});
+      const d = await r.json();
+      if(d.error) throw new Error(d.error);
+      docMsg("map", `📎 已上传 ${f.name} → ${d.path||""}`);
+    }catch(e){ docMsg("map", "上传失败：" + e.message); }
+  }
+  await mpLoad();
+  docMsg("map", "数据文件进来了 —— 跟 agent 说一句「把刚上传的这份挂到某一节下面」它就会画进谱系图。");
+}
 
 </script>
 </body>

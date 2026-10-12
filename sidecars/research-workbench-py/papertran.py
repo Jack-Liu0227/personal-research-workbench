@@ -12,7 +12,6 @@ import pdfio            # PDF 读写（pypdf/pdfplumber，见 pdfio.py）
 import json
 import os
 import re
-import shutil
 import subprocess
 import threading
 from concurrent.futures import ThreadPoolExecutor, as_completed

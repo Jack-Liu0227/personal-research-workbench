@@ -1,20 +1,23 @@
-"""科研工作 1.0 · 自检（不联网、不调模型）
-
-    py -3.10 test_workflow.py
-
-只跑确定性的部分：DB 新表、日历、模型档案、笔记、检索去重、格式转换、
-以及「没有 OA 链接就不下载」这条法律/合规红线。
-"""
+# 科研工作 1.0 · 自检（不联网、不调模型）
+# 
+# py -3.10 test_workflow.py
+# 只跑确定性的部分：DB 新表、日历、模型档案、笔记、检索去重、格式转换、
+# 以及「没有 OA 链接就不下载」这条法律/合规红线。
 from __future__ import annotations
-
 import tempfile
 import unittest
 from pathlib import Path
-
 import workflow
 from workflow import SOURCES, WorkflowDB, download_pdf, run_agent, stage_convert, stage_notes
+# 精读相关纯函数自检：非论文过滤 + 检索相关度粗筛。
+# python -m unittest test_deepread -v
+import os
+import sys
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+import pathlib
 
 
+# ---------------- 来自 test_workflow.py ----------------
 class WorkflowTest(unittest.TestCase):
     def setUp(self) -> None:
         self.td = tempfile.TemporaryDirectory()
@@ -370,5 +373,102 @@ class WorkflowTest(unittest.TestCase):
         self.assertTrue(workflow._wants_draft("重写整篇", True, True))
 
 
+    def test_agent_chat_bind_project(self) -> None:
+        """对话绑项目：chats.task_id 落库；上下文变 Partner + 带项目名；工具按「项目 id」干活；解绑回 Leader。"""
+        self.db.add_model("假模型9", "http://127.0.0.1:1/v1", "fake9", "sk", activate=True)
+        proj = self.db.create_task("绑项目测试", "选一种金属掺杂", "NFM", "")
+        chat = self.db.create_chat("随意对话")
+        seen: dict = {}
+        ids: list = []        # 每次工具调用收到的 task_id（看作用域切没切）
+
+        def fake_chat_raw(profile, messages, tools=None, **kw):
+            seen["ctx"] = messages[1]["content"]
+            if not any(m.get("role") == "tool" for m in messages):      # 第一轮：发一个工具调用
+                return {"role": "assistant", "content": "", "tool_calls": [
+                    {"id": "c1", "type": "function",
+                     "function": {"name": "library_overview", "arguments": "{}"}}]}
+            return {"role": "assistant", "content": "好。", "tool_calls": []}
+
+        def fake_tool_impl(name, db, task_id, args, scope=""):
+            ids.append(task_id)
+            return {"ok": True}
+
+        old_raw, old_impl = workflow.chat_raw, workflow._tool_impl
+        workflow.chat_raw, workflow._tool_impl = fake_chat_raw, fake_tool_impl
+        try:
+            self.db.bind_chat(chat, proj)
+            self.assertEqual(self.db.chat(chat)["task_id"], proj)       # 落库
+            workflow.run_agent(self.db, chat, "这个项目现在有什么")
+            bound_ctx = seen["ctx"]
+            self.db.bind_chat(chat, "")                                 # 解绑成随意对话
+            self.assertEqual(self.db.chat(chat)["task_id"], "")
+            workflow.run_agent(self.db, chat, "不带项目问一句")
+            free_ctx = seen["ctx"]
+        finally:
+            workflow.chat_raw, workflow._tool_impl = old_raw, old_impl
+        self.assertIn("Partner Agent", bound_ctx)
+        self.assertIn("绑项目测试", bound_ctx)
+        self.assertIn("项目长期记忆", bound_ctx)                        # 绑了才注入项目记忆
+        self.assertIn("全局 Leader", free_ctx)
+        self.assertIn("全局简报", free_ctx)
+        self.assertNotIn("你是《", free_ctx)          # Leader 文案本身会提到 Partner Agent，用开头的「你是《项目》」判定
+        self.assertEqual(ids[0], proj)                                  # 绑着 → 工具作用域 = 项目
+        self.assertEqual(ids[1], chat)                                  # 解绑后 → 回到对话自己的 id
+        with self.assertRaises(ValueError):
+            self.db.bind_chat(chat, "no-such-project")                  # 绑一个不存在的项目 → 拒绝
+
+
+# ---------------- 来自 test_deepread.py ----------------
+os.environ.setdefault("RESEARCH_WORKBENCH_DB", str(pathlib.Path(tempfile.gettempdir()) / "dr_unit.sqlite3"))
+
+import workflow  # noqa: E402
+
+
+class DeepreadTest(unittest.TestCase):
+    def setUp(self) -> None:
+        self.d = pathlib.Path(tempfile.mkdtemp(prefix="dr_"))
+        # 一篇「真论文」：够大、没有同名 .tex
+        self.paper = self.d / "s41586-024-08328-6.pdf"
+        self.paper.write_bytes(b"%PDF-1.4" + b"x" * 30000)
+        # 各种建产物/残件
+        (self.d / "main_zh.pdf").write_bytes(b"%PDF-1.4" + b"x" * 30000)
+        (self.d / "main_zh.tex").write_text("\\documentclass{revtex4-1}", encoding="utf-8")
+        (self.d / "tiny.pdf").write_bytes(b"%PDF-1.4" + b"x" * 100)
+        (self.d / "_build").mkdir()
+        (self.d / "_build" / "main.pdf").write_bytes(b"%PDF-1.4" + b"x" * 30000)
+        (self.d / "overleaf").mkdir()
+        (self.d / "overleaf" / "main.pdf").write_bytes(b"%PDF-1.4" + b"x" * 30000)
+        # 翻译产物：BabelDOC 把译文写回「文献库」，以前会被当成新论文又精读一遍
+        (self.d / "s41586.no_watermark.zh.mono.pdf").write_bytes(b"%PDF-1.4" + b"x" * 30000)
+        (self.d / "s41586.no_watermark.zh.dual.pdf").write_bytes(b"%PDF-1.4" + b"x" * 30000)
+        (self.d / "s41586.zh.mono.no_watermark.zh.mono.pdf").write_bytes(b"%PDF-1.4" + b"x" * 30000)
+
+    def test_01_only_real_papers_pass(self):
+        self.assertTrue(workflow.is_paper_pdf(self.paper))                 # 真论文
+        self.assertFalse(workflow.is_paper_pdf(self.d / "main_zh.pdf"))    # 旁边有 .tex → 编出来的
+        self.assertFalse(workflow.is_paper_pdf(self.d / "tiny.pdf"))       # 太小
+        self.assertFalse(workflow.is_paper_pdf(self.d / "_build" / "main.pdf"))
+        self.assertFalse(workflow.is_paper_pdf(self.d / "overleaf" / "main.pdf"))
+        self.assertFalse(workflow.is_paper_pdf(self.d / "s41586.no_watermark.zh.mono.pdf"))   # 译文
+        self.assertFalse(workflow.is_paper_pdf(self.d / "s41586.no_watermark.zh.dual.pdf"))   # 双语译文
+        self.assertFalse(workflow.is_paper_pdf(self.d / "s41586.zh.mono.no_watermark.zh.mono.pdf"))  # 译文的译文
+        self.assertFalse(workflow.is_paper_pdf(self.d / "不存在.pdf"))      # 不存在也算不算
+
+    def test_02_relevance_filter(self):
+        q = "materials informatics machine learning doping"
+        good = {"title": "Machine learning for materials informatics in doped cathodes", "abstract": ""}
+        junk = {"title": "Teacher materials Volume 1", "abstract": ""}
+        self.assertTrue(workflow._relevant(q, good))
+        self.assertFalse(workflow._relevant(q, junk))                      # 只蹭到一个词 → 挡掉
+        self.assertTrue(workflow._relevant(q, {"title": "Machine learning review", "abstract": "doping in materials"}))
+        self.assertTrue(workflow._relevant("doping", junk))                # 关键词本来就少 → 不过滤
+
+    def test_03_vocab_and_stop_exception_exist(self):
+        self.assertTrue(hasattr(workflow, "DeepreadStopped"))
+        self.assertTrue(hasattr(workflow, "deepread_kick"))
+        self.assertTrue(hasattr(workflow, "deepread_stop"))
+        self.assertIsNone(workflow.deepread_state("no-such-task"))
+
+
 if __name__ == "__main__":
-    unittest.main(verbosity=2)
+    unittest.main()

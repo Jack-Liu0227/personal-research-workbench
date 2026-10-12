@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import json
-import os
 import re
 import urllib.error
 import urllib.request
@@ -9,8 +8,6 @@ from pathlib import Path
 from typing import Any
 
 
-class ConnectorError(RuntimeError):
-    pass
 
 
 def _safe_name(value: str) -> str:
@@ -18,14 +15,6 @@ def _safe_name(value: str) -> str:
     return value[:120] or "research-note"
 
 
-def zotero_probe(base_url: str = "http://127.0.0.1:23119") -> dict[str, Any]:
-    url = base_url.rstrip("/") + "/connector/ping"
-    try:
-        with urllib.request.urlopen(url, timeout=3) as response:
-            body = response.read().decode("utf-8", "replace")
-        return {"connected": True, "url": url, "response": body}
-    except (urllib.error.URLError, TimeoutError) as exc:
-        return {"connected": False, "url": url, "error": str(exc)}
 
 
 def zotero_preview(item: dict[str, Any]) -> dict[str, Any]:

@@ -223,10 +223,6 @@ def drop_connection(account_id: str) -> None:
             pass
 
 
-def prune_connections() -> None:
-    now = time.time()
-    for aid in [k for k, v in _CONN.items() if now - v["last"] > CACHE_IDLE_S]:
-        drop_connection(aid)
 
 
 # ---------- 工具 ----------

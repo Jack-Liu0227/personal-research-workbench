@@ -18,7 +18,6 @@ import pdfio            # PDF 读写（pypdf/pdfplumber，见 pdfio.py）
 import re
 import shutil
 import socket
-import sqlite3
 import subprocess
 import time
 import urllib.error
@@ -29,7 +28,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from research_core import ResearchDB, excerpt_matches
+from research_core import ResearchDB
 
 HERE = Path(__file__).resolve().parent
 DATA = HERE / "data"
@@ -145,10 +144,10 @@ OAUTH_CONSOLE = {
     "cloudflare-workers-ai": "https://dash.cloudflare.com/",
 }
 
-STAGES = ["idea", "search", "download", "notes", "outline", "write", "review", "entrans", "convert"]
+STAGES = ["idea", "search", "download", "notes", "outline", "map", "write", "review", "entrans", "convert"]
 STAGE_LABEL = {
     "idea": "创新点审查", "search": "论文搜索", "download": "下载精读",
-    "notes": "论文翻译", "outline": "确认大纲", "write": "文章撰写", "review": "审查",
+    "notes": "论文翻译", "outline": "确认大纲", "map": "梳理精读", "write": "文章撰写", "review": "审查",
     "entrans": "中译英", "convert": "格式转换",
 }
 
@@ -169,6 +168,8 @@ class WorkflowDB(ResearchDB):
         cols = {r["name"] for r in self.db.execute("PRAGMA table_info(chats)")}
         if "assistant_id" not in cols:                # 老库补列：对话绑的助手（我的/公开）
             self.db.execute("ALTER TABLE chats ADD COLUMN assistant_id TEXT NOT NULL DEFAULT ''")
+        if "task_id" not in cols:                     # 老库补列：对话绑的项目（'' = 随意对话）
+            self.db.execute("ALTER TABLE chats ADD COLUMN task_id TEXT NOT NULL DEFAULT ''")
         # 老库补列（providers 是这次新做的表，早期版本只有 6 列）
         cols = {r["name"] for r in self.db.execute("PRAGMA table_info(providers)")}
         if "source" not in cols:
@@ -1532,6 +1533,8 @@ def is_paper_pdf(path: Any) -> bool:
         return False
     if p.with_suffix(".tex").exists():        # 旁边就是它的 .tex 源 → 这是编出来的
         return False
+    if ".no_watermark.zh." in low:            # BabelDOC 译文（xxx.no_watermark.zh.mono|dual.pdf）不是新论文
+        return False
     return True
 
 
@@ -1614,28 +1617,6 @@ def _deepread_worker(db_path: str, task_id: str) -> None:
         st["current"] = ""
 
 
-def stage_deepread(db: WorkflowDB, task_id: str) -> dict[str, Any]:
-    """一键精读：把项目里已入库的 PDF（文献库里的）逐篇精读，生成的 Markdown 笔记落到「笔记」。"""
-    folder = db.pdir(task_id, "文献库")
-    known = {p["filename"] for p in db.papers_of(task_id)}
-    for pdf in sorted(folder.glob("*.pdf")):           # 手动下载后丢进「文献库」的也一起收进来
-        if pdf.name not in known:
-            try:
-                db.ingest_pdf(task_id, pdf)
-            except Exception:
-                pass
-    papers = db.papers_of(task_id)
-    if not papers:
-        raise ValueError("还没有已下载的 PDF，先在「论文搜索」勾选并进入下载")
-    notes, errors = [], []
-    for p in papers:
-        try:
-            r = stage_read(db, task_id, p["id"])
-            notes.append({"paper": p["filename"], "note_id": r["note_id"], "chunks": r["chunks"]})
-        except Exception as exc:
-            errors.append({"paper": p["filename"], "error": str(exc)})
-    db.log_step(task_id, "notes", "done", f"精读 {len(notes)} 篇，失败 {len(errors)} 篇")
-    return {"notes": notes, "errors": errors, "out": str(db.pdir(task_id, "笔记"))}
 
 
 def stage_read(db: WorkflowDB, task_id: str, paper_id: str, per_page: int = 6000,
@@ -2280,6 +2261,12 @@ def _tool_impl(name: str, db: "WorkflowDB", task_id: str, args: dict[str, Any], 
         return outline_write(db, task_id, args.get("markdown", ""))
     if name == "outline_read":
         return outline_read(db, task_id)
+    if name == "map_write":
+        return map_write(db, task_id, args.get("data") or {})
+    if name == "map_read":
+        return map_read(db, task_id)
+    if name == "map_sources":
+        return map_sources(db, task_id)
     if name == "doc_write":
         return doc_write(db, task_id, scope or "outline", args.get("markdown", ""))
     if name == "doc_read":
@@ -2333,6 +2320,83 @@ def doc_read(db: "WorkflowDB", task_id: str, kind: str = "outline") -> dict[str,
             "sections": len(re.findall(r"(?m)^## ", md)), "subs": len(re.findall(r"(?m)^### ", md))}
 
 
+# ---- 梳理精读（第 5 步）：大纲每个小标题 → 论文精读结论 / 实验数据 的谱系图 ----
+MAP_FILE = "谱系.json"
+MAP_TYPES = ("section", "paper", "note", "data")
+
+
+def map_path(db: "WorkflowDB", task_id: str) -> Path:
+    """一份 JSON，落在 <项目>/论文正文/谱系.json；没设项目位置就按项目 id 分名。"""
+    base = db.base_dir(task_id)
+    return (base / "论文正文" / MAP_FILE) if base else (OUT / f"谱系_{task_id[:8]}.json")
+
+
+def map_read(db: "WorkflowDB", task_id: str) -> dict[str, Any]:
+    p = map_path(db, task_id)
+    raw: dict[str, Any] = {"nodes": [], "edges": []}
+    broken = False
+    if p.is_file():
+        try:
+            raw = json.loads(p.read_text(encoding="utf-8", errors="replace") or "{}") or {}
+        except Exception:
+            raw, broken = {"nodes": [], "edges": []}, True
+    nodes = [n for n in (raw.get("nodes") or []) if isinstance(n, dict) and n.get("id") and n.get("label")]
+    ids = {n["id"] for n in nodes}
+    edges = [e for e in (raw.get("edges") or [])
+             if isinstance(e, dict) and e.get("from") in ids and e.get("to") in ids]
+    return {"path": str(p), "exists": p.is_file(), "broken": broken, "nodes": nodes, "edges": edges,
+            "updated": raw.get("updated") or "",
+            "sections": sum(1 for n in nodes if n.get("type") == "section"),
+            "refs": sum(1 for n in nodes if n.get("type") != "section")}
+
+
+def map_write(db: "WorkflowDB", task_id: str, data: Any) -> dict[str, Any]:
+    """整份覆盖写（和 doc_write 同口径）。不合规的节点/边直接丢掉，不报错 —— 模型给脏数据也要能落盘。"""
+    if isinstance(data, str):
+        data = json.loads(data or "{}")
+    if not isinstance(data, dict):
+        raise ValueError("谱系要给 {nodes:[…], edges:[…]} 结构的 JSON")
+    nodes, seen = [], set()
+    for n in (data.get("nodes") or []):
+        if not isinstance(n, dict) or not n.get("id") or not n.get("label"):
+            continue
+        nid = str(n["id"])
+        if nid in seen:
+            continue
+        seen.add(nid)
+        t = str(n.get("type") or "note")
+        nodes.append({"id": nid, "type": t if t in MAP_TYPES else "note",
+                      "label": str(n["label"])[:120], "detail": str(n.get("detail") or "")[:600],
+                      "ref": str(n.get("ref") or "")[:300]})
+    edges = [{"from": str(e["from"]), "to": str(e["to"]), "label": str(e.get("label") or "")[:40]}
+             for e in (data.get("edges") or [])
+             if isinstance(e, dict) and str(e.get("from")) in seen and str(e.get("to")) in seen]
+    p = map_path(db, task_id)
+    p.parent.mkdir(parents=True, exist_ok=True)
+    p.write_text(json.dumps({"nodes": nodes, "edges": edges, "updated": now()},
+                            ensure_ascii=False, indent=1), encoding="utf-8")
+    return map_read(db, task_id)
+
+
+def map_sources(db: "WorkflowDB", task_id: str) -> dict[str, Any]:
+    """谱系图能挂哪些东西：大纲小标题 / 精读笔记 / 文献库 PDF / 实验数据（项目其余/数据 + 上传区）。"""
+    md = doc_read(db, task_id, "outline")["markdown"]
+    secs = re.findall(r"(?m)^###\s+(.+)$", md) or re.findall(r"(?m)^##\s+(.+)$", md)
+    base = db.base_dir(task_id)
+    def ls(d: Path, pats=("*",)):
+        out = []
+        if d.is_dir():
+            for f in sorted(d.rglob("*")):
+                if f.is_file() and any(f.match(x) for x in pats):
+                    out.append(f.relative_to(d).as_posix())
+        return out[:120]
+    notes = ls(base / "笔记") if base else ls(NOTES, ("*.md",))
+    papers = [p["filename"] for p in db.papers_of(task_id)]
+    data = (ls(base / "其余" / "数据") if base else []) + ls(DATA / "uploads")
+    return {"sections": [x.strip() for x in secs][:60], "notes": notes, "papers": papers[:60],
+            "data": list(dict.fromkeys(data))[:60], "map_path": str(map_path(db, task_id))}
+
+
 def doc_write(db: "WorkflowDB", task_id: str, kind: str, markdown: str) -> dict[str, Any]:
     """就地覆盖写（他要的就是「修改调整都直接在原文件改」）。"""
     p = doc_path(db, task_id, kind)
@@ -2343,8 +2407,6 @@ def doc_write(db: "WorkflowDB", task_id: str, kind: str, markdown: str) -> dict[
     return out
 
 
-def outline_path(db: "WorkflowDB", task_id: str) -> Path:                  # 旧名保留
-    return doc_path(db, task_id, "outline")
 
 
 def outline_read(db: "WorkflowDB", task_id: str) -> dict[str, Any]:
@@ -2490,6 +2552,21 @@ def doc_tools(kind: str) -> list[dict[str, Any]]:
 OUTLINE_TOOLS = doc_tools("outline")
 
 
+def map_tools() -> list[dict[str, Any]]:
+    """梳理精读这一步的工具：读写谱系 + 看数据源 + 附件/项目速览/检索/记忆（沿用 doc_tools 里那几个）。"""
+    keep = {"read_attachment", "library_overview", "knowledge_query", "memory_save"}
+    return [t for t in doc_tools("outline") if t["function"]["name"] in keep] + [
+        _schema("map_write", "把**整份**谱系图 JSON 覆盖写进项目那一份 谱系.json（就地改，不新建）。"
+                             "结构：{nodes:[{id,type,label,detail,ref}], edges:[{from,to,label}]}；"
+                             "type = section（大纲小标题）/ paper（论文精读结论）/ note（笔记）/ data（实验数据）；"
+                             "edges 的 from/to 必须都是已有节点 id。用户说「更新谱系」「按这个改」时就调它，给完整 JSON。",
+                {"data": {"type": "string", "description": "完整 JSON 字符串（nodes + edges）"}}, ["data"]),
+        _schema("map_read", "读回当前谱系图（一般不用，system 里已经带了最新那份）。", {}, []),
+        _schema("map_sources", "看这一步能挂什么：大纲小标题、项目里的精读笔记、文献库 PDF、实验数据文件。",
+                {}, []),
+    ]
+
+
 def outline_system(db: "WorkflowDB", task_id: str) -> str:
     """框架 agent 的 system：只做框架 + 固定格式 + 项目记忆 + 当前框架全文。"""
     task = db.summary(task_id)["task"]
@@ -2514,6 +2591,56 @@ def outline_system(db: "WorkflowDB", task_id: str) -> str:
 
 【项目记忆】
 %%MEMORY%%"""
+
+
+MAP_FALLBACK = ("把「大纲每个小标题」和「项目里的精读笔记 / 实验数据」连成一张谱系图：每一节挂上支撑它的论文结论"
+                "（写清是哪篇、什么结论、支持还是反驳），没有出处的写「待补」，不要编。")
+
+
+def map_system(db: "WorkflowDB", task_id: str) -> str:
+    task = db.summary(task_id)["task"]
+    out = doc_read(db, task_id, "outline")
+    cur = map_read(db, task_id)
+    src = map_sources(db, task_id)
+    skills = skill_text("research", "paper-reading-reports", "SKILL.md", cap=2500) or MAP_FALLBACK
+    return f"""你是「科研工作 1.0」里「梳理精读」这一步的**结构整理 agent**，用中文工作。
+
+硬规则：
+1. 这个对话 100% 绑定项目《{task['title']}》，你只做一件事：**维护一张谱系图**（思维导图），把大纲的每个小标题和「支撑它的精读结论 / 实验数据」连起来。不做检索、下载、翻译、写作。
+2. 图存在 `{cur['path']}`（{'已有图' if cur['exists'] else '还没有图'}）—— 结构：
+   {{"nodes":[{{"id":"s1","type":"section","label":"2.1 掺杂元素筛选","detail":""}},
+             {{"id":"p1","type":"paper","label":"Left 2025","detail":"Cu 掺杂使带隙…","ref":"<笔记文件名或 paper_id>"}},
+             {{"id":"d1","type":"data","label":"XRD-2026-10.xlsx","detail":"主峰右移 0.2°","ref":"其余/数据/…"}}],
+    "edges":[{{"from":"s1","to":"p1","label":"支撑"}}]}}
+   type 只认 section / paper / note / data；edges 的 from/to 必须是已有节点 id。
+3. 用户说「更新谱系」「把 X 挂到 Y 下面」、或你们敲定改动时，**必须调用 map_write** 写**整份** JSON（覆盖同一份，不要只给片段、不要新建文件）。
+4. **必须有出处**：paper 节点的 detail 要写清是哪篇/哪条结论，data 节点要写清是哪个文件里的什么现象；**没有出处的节点不要画**，缺就写「待补：<还差什么>」。
+5. 用户上传的文件以「[附件] … 路径」出现，读它用 read_attachment。要挂实验数据先调 map_sources 看现成的文件清单。
+6. **能画就直接画**：用户给了材料就直接 map_write 落盘，然后说清这轮加了/改了哪几个节点；不要先反问一串。
+
+【本机精读规范（节点的 detail 按这个写）】
+{skills}
+
+【大纲（谱系图的骨架来源）】
+{out['markdown'][:5000] or '（还没有大纲 —— 提醒用户先去「确认大纲」）'}
+
+【可以挂上来的东西】
+- 大纲小标题：{'; '.join(src['sections']) or '（无）'}
+- 精读笔记：{'; '.join(src['notes'][:20]) or '（无）'}
+- 文献库 PDF：{'; '.join(src['papers'][:20]) or '（无）'}
+- 实验数据：{'; '.join(src['data'][:20]) or '（无）'}
+
+【当前谱系图】
+{json.dumps({'nodes': cur['nodes'], 'edges': cur['edges']}, ensure_ascii=False)[:6000] or '（还没有）'}
+
+【项目记忆】
+%%MEMORY%%"""
+
+
+def run_map(db: "WorkflowDB", task_id: str, text: str, emit: Any = None) -> dict[str, Any]:
+    """梳理精读：受限对话（读写谱系 + 附件 + 项目速览 + 记忆）。"""
+    system = map_system(db, task_id).replace("%%MEMORY%%", db.memory_block(task_id))
+    return run_agent(db, task_id, text, emit, max_steps=8, system=system, tools=map_tools(), scope="map")
 
 
 def run_outline(db: "WorkflowDB", task_id: str, text: str, emit: Any = None) -> dict[str, Any]:
@@ -2819,28 +2946,154 @@ PONY_RULES = '你是「懒但靠谱的资深工程师」（Ponytail ultra）。�
 
 
 BUILTIN_ASSISTANTS = [
-    {"id": "builtin-pony", "name": "Pony 模式", "avatar": "🐴",
+    {"id": "builtin-pony", "name": "Pony 模式", "avatar": "🐴", "sort_order": 0,
      "description": "懒但靠谱的资深工程师：先读透再动手，能删不加，只写最小可用实现。",
      "rules": PONY_RULES,
      "prompts": ["按 Ponytail 模式帮我改这个功能", "这段代码哪里过度设计了？", "这个 bug 的根因在哪，改一处就够吗？"]},
     {"id": "builtin-searcher", "name": "文献检索员", "avatar": "🔎", "sort_order": 1,
      "description": "开放获取检索 + 去重 + 候选表；不编造、拿不到就说拿不到。",
-     "rules": "只做开放获取检索与筛选：先给候选表（标题 / 年份 / 期刊 / DOI / 是否 OA），再问要不要入库精读。"
-              "拿不到的全文直接说拿不到，绝不编造数据或结论。",
+     "rules": "只做开放获取检索与筛选：先给候选表（标题 / 年份 / 期刊 / DOI / 是否 OA），"
+              "再问要不要入库精读。拿不到的全文直接说拿不到，绝不编造数据或结论。",
      "prompts": ["检索 O3 型钠电正极近三年掺杂改性的论文，产出候选表", "把这篇的期刊和 DOI 补全", "这个方向有哪些值得读的综述"]},
-    {"id": "builtin-writer", "name": "写作搭档", "avatar": "✍️", "sort_order": 2,
-     "description": "按项目框架写/改正文，逐字保真、只动该动的地方。",
-     "rules": "改写时以原稿为骨架、能不改就不改；一次性说明改了哪些句子和为什么，别顺手重写整段。",
-     "prompts": ["按框架写 Introduction 的第一段", "把这段改成论文语气，别改事实", "这句话有什么问题"]},
-    {"id": "builtin-reviewer", "name": "审稿人", "avatar": "🧐", "sort_order": 3,
-     "description": "站在审稿人角度挑最致命的问题，按严重程度排序。",
-     "rules": "先说最可能被拒的三个问题（附证据/位置），再说次要问题；不谈文风喜好，只谈可验证的问题。",
-     "prompts": ["挑这篇稿子最可能被拒的三个问题", "检查数据与结论是否一致", "列出还需要补的实验"]},
-    {"id": "builtin-extractor", "name": "数据抽取员", "avatar": "📊", "sort_order": 4,
+    {"id": "builtin-deepread", "name": "论文精读", "avatar": "📖", "sort_order": 2,
+     "description": "一篇一篇读透，产出中文阅读报告：方法、数据、结论、可借鉴与可疑之处。",
+     "rules": "只依据原文说话：关键数字回原文核对，逐条标出处在（页/表/图）；原文没写的明确写「未提及」，"
+              "绝不用常识补齐。报告固定四段：①这篇想解决什么 ②怎么做的（方法/参数） ③结果与证据强度 ④对我有什么用、哪里可疑。",
+     "prompts": ["精读这篇，出中文阅读报告", "这篇的方法和我的体系差在哪", "它这个结论的证据够不够"]},
+    {"id": "builtin-extractor", "name": "数据抽取员", "avatar": "📊", "sort_order": 3,
      "description": "从 PDF / 正文里抽结构化数据（材料-性能 / 实验参数）。",
      "rules": "只抽原文明确写了的字段，逐条给出处（页/表/句）；原文没有的字段留空并写「未提及」。",
      "prompts": ["从这篇 PDF 抽出材料-性能表", "把这些实验参数整理成表格", "这篇用的合成方法是什么"]},
-]
+    {"id": "builtin-topic", "name": "选题参谋", "avatar": "🧭", "sort_order": 4,
+     "description": "判断选题能不能做、值不值得做：创新点、数据可得性、工作量与风险。",
+     "rules": "先给结论（值得做 / 有条件做 / 不建议），再逐条给依据：①别人做到哪一步了 ②我的增量是什么 "
+              "③数据和算力够不够 ④最可能翻车的地方。不吹可行性，缺数据就说缺数据。",
+     "prompts": ["这个选题值不值得做，风险在哪", "帮我把创新点说清楚", "有没有撞车的论文"]},
+    {"id": "builtin-proposal", "name": "开题报告", "avatar": "🗂", "sort_order": 5,
+     "description": "搭开题报告骨架并逐节论证：背景-问题-方案-路线-预期-风险。",
+     "rules": "按「背景 → 研究现状与缺口 → 科学问题 → 研究内容与技术路线 → 预期成果 → 可行性」搭骨架，"
+              "每节先列 3-5 条要点再展开成段；技术路线要能落到「用什么数据、跑什么、看什么指标」。",
+     "prompts": ["按这个方向写开题报告框架", "技术路线这一节怎么写才说服人", "评审最可能问什么"]},
+    {"id": "builtin-survey", "name": "综述撰写", "avatar": "📚", "sort_order": 6,
+     "description": "把一堆文献组织成有观点的综述：分类维度、脉络、争议、缺口。",
+     "rules": "先定分类维度（别按时间流水账），再把每类文献归位、点出代表工作与争议；"
+              "最后单列「还没解决的问题」当自己的切入点。引用只写真实读过的文献，不许凑数。",
+     "prompts": ["把这些文献组织成综述框架", "按什么维度分类最合理", "这个领域的争议点在哪"]},
+    {"id": "builtin-writer", "name": "写作搭档", "avatar": "✍️", "sort_order": 7,
+     "description": "按项目框架写/改正文，逐字保真、只动该动的地方。",
+     "rules": "改写时以原稿为骨架、能不改就不改；一次性说明改了哪些句子和为什么，别顺手重写整段。",
+     "prompts": ["按框架写 Introduction 的第一段", "把这段改成论文语气，别改事实", "这句话有什么问题"]},
+    {"id": "builtin-paperwriting", "name": "论文写作", "avatar": "📝", "sort_order": 8,
+     "description": "按框架成篇写正文：一段一个论点，证据、数字、逻辑顺下来。",
+     "rules": "严格贴项目框架写，不自己加章节；每段只讲一件事（主张 → 证据/数据 → 一句收束），"
+              "数字只能来自已有数据，拿不准的地方写「（待补：要什么数据）」而不是编。写完列出还缺的证据清单。",
+     "prompts": ["按框架把这一章写完整", "这一段证据不够，怎么补", "结论部分怎么写才不过度宣称"]},
+    {"id": "builtin-writingcoach", "name": "写作指导", "avatar": "🎓", "sort_order": 9,
+     "description": "教方法不代写：指出问题、给改法规则、给示范句，让你自己能写。",
+     "rules": "不整段代写成稿：先指问题（位置 + 病名），再给可复用的规则，最后给 1-2 句示范并说明为什么这么写。"
+              "用大白话讲，必要时打比方；结尾留一个「你试写一句，我看看」的动作。",
+     "prompts": ["这段为什么读着别扭，教我改", "学术写作里怎么把话说严谨", "帮我制定一个改稿清单"]},
+    {"id": "builtin-polish", "name": "语言润色", "avatar": "✒️", "sort_order": 10,
+     "description": "保持原意与术语前提下润色中文/英文，改语言不改事实。",
+     "rules": "只动语言，不动事实、数据和术语；改完给「原文 → 改后」对照表并说明每处为什么改。"
+              "不许把限定词（可能/初步/在…条件下）删掉让结论变强，也不许加原文没有的因果。",
+     "prompts": ["润色这几段，保留原意", "把口语化的表述改学术些", "这些限定词该不该保留"]},
+    {"id": "builtin-entrans", "name": "中译英", "avatar": "🌐", "sort_order": 11,
+     "description": "中文学术稿译成地道英文，术语一致、句式合规。",
+     "rules": "逐段对照给「英 → 中」两栏，术语全篇统一（先列术语表再用）；不用 fancy 词，"
+              "主动被动按期刊习惯选；数值、单位、图表编号原样保留。",
+     "prompts": ["把摘要译成英文", "这段英文太中文化了，改地道", "先给我一份术语对照表"]},
+    {"id": "builtin-figure", "name": "图表设计", "avatar": "🎨", "sort_order": 12,
+     "description": "定图的内容规格、轴/图例/配色与图注写法，达到可投稿标准。",
+     "rules": "先问清这张图要证明什么，再定坐标轴、单位、误差棒、显著性标记；配色用色盲安全方案（Okabe-Ito 一类），"
+              "不放与文案重复的装饰；图注写清「图几 + 图内容」，说明文字放图题上方居中。文字与图形元素不得重叠。",
+     "prompts": ["这张图怎么改才能投稿", "帮我定三个视觉方案", "图注该怎么写"]},
+    {"id": "builtin-stats", "name": "统计把关", "avatar": "📈", "sort_order": 13,
+     "description": "检查统计口径与证据强度：样本、误差、显著性、别用均值糊弄。",
+     "rules": "先问清每组的 n、误差是标准差还是标准误、有没有重复测量；给结论必须带置信分级而不是简单均值比较。"
+              "别硬切阈值当判据（阈值设在胜者证据上限之上就是 selection artifact），优先连续权重/适用域判据。",
+     "prompts": ["我这样比均值有问题吗", "这组数据该报什么误差", "怎么给结论定置信分级"]},
+    {"id": "builtin-ml", "name": "机器学习建模", "avatar": "🤖", "sort_order": 14,
+     "description": "材料/数据建模：特征、切分、验证、防数据泄露。",
+     "rules": "先定预测目标与适用域，再说特征与切分（同源样本不能跨训练/测试集）；给指标必须带基线对照，"
+              "别拿 R² 好看当结论；小样本别上复杂模型，先能解释再谈精度。",
+     "prompts": ["这套建模流程有没有数据泄露", "小样本该怎么验证", "该用什么基线对比"]},
+    {"id": "builtin-code", "name": "代码管家", "avatar": "💻", "sort_order": 15,
+     "description": "写/修复现脚本：可重复、有日志、报错定位到行。",
+     "rules": "代码要能直接跑：显式路径与依赖、固定随机种子、中间结果落盘；改 bug 先复现再定位，"
+              "给最小修复而不是重写；每次交付附「怎么跑 + 预期输出」。",
+     "prompts": ["这个脚本报错，定位一下", "帮我把流程写成可复现脚本", "结果对不上，怎么查"]},
+    {"id": "builtin-experiment", "name": "实验记录", "avatar": "🧪", "sort_order": 16,
+     "description": "把实验过程整理成标准化日志：条件、参数、现象、原始数据位置。",
+     "rules": "按固定模板记录：日期 / 目的 / 条件与参数（含批次、设备、环境）/ 现象与异常 / 原始数据路径 / "
+              "结论与下一步。缺失项写「未记录」，不许凭印象补；异常必须单独列出。",
+     "prompts": ["把今天的实验整理成日志", "这次失败的可能原因列一下", "我漏记了哪些关键参数"]},
+    {"id": "builtin-reviewer", "name": "审稿人", "avatar": "🧐", "sort_order": 17,
+     "description": "站在审稿人角度挑最致命的问题，按严重程度排序。",
+     "rules": "先说最可能被拒的三个问题（附证据/位置），再说次要问题；不谈文风喜好，只谈可验证的问题。",
+     "prompts": ["挑这篇稿子最可能被拒的三个问题", "检查数据与结论是否一致", "列出还需要补的实验"]},
+    {"id": "builtin-paperreview", "name": "论文审查", "avatar": "🔍", "sort_order": 18,
+     "description": "投稿前系统审查：逻辑链、证据-结论一致性、图表与正文对齐、查重风险。",
+     "rules": "逐节核查并出表：位置 / 问题 / 严重度 / 建议改法。重点查四样：①结论有没有超出数据 ②正文与图表数字是否一致 "
+              "③方法与结果是否对得上 ④是否存在过度宣称（「显著优于」这类无统计支撑的话）。",
+     "prompts": ["按投稿标准审一遍全文", "结论有没有超出数据", "图里的数字和正文对得上吗"]},
+    {"id": "builtin-format", "name": "格式审查", "avatar": "📐", "sort_order": 19,
+     "description": "按目标期刊/学校规范逐条核对：章节、字号、行距、图表编号、参考文献体例。",
+     "rules": "先问清目标期刊/学位论文模板，再逐条对表（项目 / 规范要求 / 现状 / 是否合规 / 怎么改）。"
+              "不确定规范时宁可写「需确认」也不要猜；引用体例（GB/T 7714 或期刊体例）逐条核到标点。",
+     "prompts": ["按这个期刊格式审一遍", "图表编号和交叉引用有没有错", "参考文献体例哪里不合规"]},
+    {"id": "builtin-refcheck", "name": "参考文献核对", "avatar": "🧾", "sort_order": 20,
+     "description": "逐条核验引文真实性：作者、题名、年份、卷期页、DOI 对不对得上。",
+     "rules": "一条一条核：把引用条目与数据库/原文比对，逐字段判「一致 / 冲突 / 查不到」，"
+              "卷年与 DOI 年冲突要单列；查不到的明确写查不到，绝不替它编页码。",
+     "prompts": ["核对这份参考文献列表", "这条引文是真的吗", "哪些条目缺卷期页"]},
+    {"id": "builtin-response", "name": "审稿回复", "avatar": "💬", "sort_order": 21,
+     "description": "写 point-by-point 回复：逐条回应、说清改在哪、不改也给理由。",
+     "rules": "评审意见逐条抄下再回应，格式固定：意见 → 我们的答复 → 稿件改了什么（位置）。"
+              "能改就改并指出改动处；不同意要礼貌但明确地说理由与依据，别含糊过去。",
+     "prompts": ["把这些审稿意见写成逐条回复", "这条我不认同，怎么说得体", "回复信的开头怎么写"]},
+    {"id": "builtin-submit", "name": "投稿准备", "avatar": "🚀", "sort_order": 22,
+     "description": "选刊与投稿清单：范围匹配、体例、材料齐不齐、cover letter。",
+     "rules": "先按「范围匹配 / 周期 / 门槛」给 3 个候选期刊并说依据，再出投稿清单（正文、图表源文件、补充材料、"
+              "声明、作者信息、推荐审稿人）；cover letter 只写事实与卖点，不夸大。",
+     "prompts": ["这篇稿子投哪个刊合适", "投稿前还缺什么材料", "帮我写 cover letter"]},
+    {"id": "builtin-slides", "name": "演示稿", "avatar": "📽", "sort_order": 23,
+     "description": "答辩/汇报 PPT：一页一个结论、图表能自证、配讲稿。",
+     "rules": "先给大纲（每页一句话结论），再逐页给标题 + 图上放什么 + 3 条以内要点；"
+              "数据页必须有图或表支撑，别用大段文字；每页附 30 秒讲稿，先讲结论再讲怎么得到的。",
+     "prompts": ["帮我把这篇论文做成答辩 PPT 大纲", "这页信息太多，怎么精简", "配一版讲稿"]},
+    {"id": "builtin-grant", "name": "项目申报", "avatar": "📑", "sort_order": 24,
+     "description": "申报书按评分点写：讲清做什么、为什么是我、怎么保证做成。",
+     "rules": "先对齐评审指标（逐项列出评分点与对应材料），再写内容：问题与意义 → 目标 → 技术路线 → "
+              "基础与条件 → 预期成果。每一段都要能被评分表打到分，空话删掉；时间节点给到月。",
+     "prompts": ["按这个申报模板列提纲", "评审会盯哪些点", "研究基础这节怎么写"]},
+    {"id": "builtin-minutes", "name": "会议纪要", "avatar": "🗓", "sort_order": 25,
+     "description": "从聊天/录音记录里抽出决策、待办、负责人与时间点。",
+     "rules": "只抽记录里说过的：决策（谁定的） / 待办（做什么 + 谁 + 何时）/ 待澄清问题。"
+              "每条后括注来源句子，别替人补结论；没提时间就写「未定」。",
+     "prompts": ["把这段记录整理成纪要", "抽出所有待办和负责人", "这次会上定了什么"]},
+    {"id": "builtin-tutor", "name": "概念讲解", "avatar": "🧑🏫", "sort_order": 26,
+     "description": "把方法/原理讲到能懂：先类比再严格，最后给可验证的小例子。",
+     "rules": "先用一句大白话类比说清它是什么、解决什么问题，再补严格定义与前提；"
+              "给了公式要配一个能手算的小例子，最后列 2 个「怎么自己验证」的办法。术语第一次出现就用中文解释。",
+     "prompts": ["用通俗的话讲清这个方法", "这个概念的前提是什么", "给我一个能手算的例子"]},
+
+    {"id": "builtin-chunker", "name": "分块员", "avatar": "🧩", "sort_order": 27,
+     "description": "把一篇论文切成可分工的块：每块给页码范围、一句话内容、该交给谁读。",
+     "rules": "只切分不解读：按结构切（摘要 / 引言 / 方法 / 结果 / 讨论 / 结论，图与表各自单独成块），"
+              "每块给「页码范围 + 一句话内容 + 交给谁（图表块→图表解读员，正文块→论文精读）」。"
+              "扫描件没文本层、或结构读不出来时直说，别猜内容。",
+     "prompts": ["把这篇切成块，标出每块谁读", "图和表单独成块", "这篇正文块怎么分才不重复"]},
+    {"id": "builtin-chartread", "name": "图表解读员", "avatar": "🖼", "sort_order": 28,
+     "description": "只读图与表：编号、轴与单位、关键数值、能不能支撑正文那句话。",
+     "rules": "只读图表不读正文：逐个给「图/表编号 + 它想说明什么 + 横纵轴与单位 + 图例编码 + 关键数值（照抄，带误差棒/显著性标记）"
+              "+ 能支撑哪句结论」。图里看不出或没标数值就写「图里看不出」，绝不估算；数值与正文对不上时两处都列出来。",
+     "prompts": ["把这篇的图表逐个解读", "这张图能支撑正文哪句话", "图里的数值和正文对得上吗"]},
+    {"id": "builtin-outline", "name": "结构规划员", "avatar": "🧱", "sort_order": 29,
+     "description": "按项目框架定大纲：每章要证明什么、要哪些证据、还缺什么。",
+     "rules": "只出结构不写正文：按「大标题 → 小标题 → 这一节要证明的一件事 → 需要哪些证据/图/数据」给纲领，"
+              "与项目现有框架对齐、不擅自加章节；没有的证据标「待补：要什么数据」，最后单列缺口清单。",
+     "prompts": ["按框架定这章的大纲", "每节分别要什么证据", "还缺哪些数据才能写"]},]
 
 def _global_brief(db: "WorkflowDB") -> str:
     """全局 Leader 的简报：有哪些项目、各自走到哪、库里有多少东西。
@@ -2895,7 +3148,26 @@ def run_agent(db: "WorkflowDB", task_id: str, text: str, emit: Any = None, max_s
         say({"type": "user", "content": text})
     task = db.summary(task_id)["task"]
     chat_row = db.db.execute("SELECT * FROM chats WHERE id=?", (task_id,)).fetchone()
-    if chat_row:  # 首页 Agent = 全局 Leader：不绑项目，但有全局视野
+    bound = ""                                     # 这个对话绑的项目（'' = 随意对话）
+    if chat_row:
+        try:
+            bound = (chat_row["task_id"] or "").strip()
+        except Exception:
+            bound = ""
+        if bound and not db.db.execute("SELECT 1 FROM research_tasks WHERE id=?", (bound,)).fetchone():
+            bound = ""                             # 项目被删了 → 退回随意对话
+    ctx_id = bound or task_id                       # 工具按这个 id 干活：绑了项目就落在项目里
+    if chat_row and bound:                        # 绑了项目 → Partner Agent（对话历史独立，视野与产出跟项目走）
+        pt = db.summary(bound)["task"]
+        ctx = (f"你是《{pt['title']}》项目的 **Partner Agent**：这个对话绑在该项目上 —— 对话历史自己一份，"
+               f"但文献/笔记/记忆/产出都按项目来。\n"
+               f"当前项目：{pt['title']}\n研究问题：{pt['question']}\n关键词 / 材料体系：{pt['material_system']}\n"
+               f"项目 ID：{bound}\n产出目录：{db.pdir(bound, '其余')}")
+        try:
+            ctx += "\n\n" + db.memory_block(bound)     # 项目的长期/短期记忆
+        except Exception:
+            pass
+    elif chat_row:  # 首页 Agent = 全局 Leader：不绑项目，但有全局视野
         ctx = ("你是这个软件的 **全局 Leader**（首页 Agent，不属于任何单个项目）：可以跨项目工作 —— 查任意项目、"
                "任意文献/笔记/日程，也能新建项目、加日程、检索下载精读文献、写笔记。\n"
                "项目工作流里跑的是 **绑定单个项目的 Partner Agent**；要在某个项目内部推进，就按「哪个项目、要什么产出」把话说清，"
@@ -2958,7 +3230,7 @@ def run_agent(db: "WorkflowDB", task_id: str, text: str, emit: Any = None, max_s
             ev = {"type": "tool_call", "name": name, "args": args, "id": call.get("id")}
             say(ev); events.append(ev)
             try:
-                result = _tool_impl(name, db, task_id, args, scope)
+                result = _tool_impl(name, db, ctx_id, args, scope)
                 ok, brief = True, _brief(name, result)
             except Exception as exc:
                 result, ok, brief = {"error": f"{type(exc).__name__}: {exc}"}, False, f"失败：{exc}"

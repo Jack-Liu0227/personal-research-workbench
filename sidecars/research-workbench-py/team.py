@@ -11,10 +11,10 @@
 """
 from __future__ import annotations
 
+import re
 import threading
 import time
 import traceback
-import uuid
 from datetime import datetime
 from typing import Any
 
@@ -151,7 +151,6 @@ def retry(task_id_row: str) -> dict[str, Any]:
 
 # ---------------- 队列 worker（串行） ----------------
 def _run_one(row: dict[str, Any]) -> None:
-    import team as _self                      # 便于测试替换 run_agent
     t_id = row["task_id"]
     with workflow.WorkflowDB(_db_path()) as db:
         db.team_task_mark(row["id"], "running", started_at=_now())
@@ -441,18 +440,68 @@ def chat_state(scope: str) -> dict[str, Any]:
             "colors": {m["id"]: color_of(m) for m in ms}}
 
 
-# ============================ v3：多团队（3 固定 + 2 机动）+ 成员各用自己的模型 ============================
+# ==================== v3：多团队（2 固定 + 3 机动）+ 成员各用自己的模型 ====================
 
-MAX_TEAMS, MAX_FIXED, MAX_TEMP = 5, 3, 2
+MAX_TEAMS, MAX_FIXED, MAX_TEMP = 5, 2, 3
+
+# 两个固定团队（常驻、不可解散）与它们的预置成员 —— 成员按「助手名字」找，找不到就跳过。
+#   论文精读：分块员 → 图表解读员 → 论文精读（读正文）
+#   论文写作：结构规划员 → 论文写作 → 论文审查（照十步里「确认大纲 / 文章撰写 / 稿件审查」那条线）
+FIXED_TEAMS = [
+    ("论文精读", ["分块员", "图表解读员", "论文精读"]),
+    ("论文写作", ["结构规划员", "论文写作", "论文审查"]),
+]
+_PLACEHOLDER = re.compile(r"^团队\s*\d+$")      # 第一版播的空占位团队
+
+
+def _team_row(tid: str) -> dict[str, Any]:
+    with workflow.WorkflowDB(_db_path()) as db:
+        return db.team(tid) or {}
+
+
+def _seed_roster(tid: str) -> int:
+    """给固定团队拉预置成员：只在它一个正式成员都没有时做一次 —— 之后用户自己改的算数。"""
+    name = (_team_row(tid) or {}).get("name") or ""
+    want = dict(FIXED_TEAMS).get(name, [])
+    if not want or picks(tid):
+        return 0
+    with workflow.WorkflowDB(_db_path()) as db:
+        by_name = {a["name"]: a for a in db.assistants()}
+    n = 0
+    for nm in want:
+        a = by_name.get(nm)
+        if not a:
+            continue
+        try:
+            add_assistant(tid, a["id"])
+            n += 1
+        except Exception:
+            pass
+    return n
 
 
 def ensure_defaults() -> list[dict[str, Any]]:
-    """保证 3 个固定团队在（幂等）。"""
+    """保证两个固定团队在（幂等）：论文精读 / 论文写作，并预置成员。
+    老库里第一版播的空占位「团队 N」会被改名接手，多的转成「已收工」的机动（名额还回去，记录不删）。"""
     with workflow.WorkflowDB(_db_path()) as db:
-        ts = db.teams()
-        fixed = [x for x in ts if x["kind"] == "fixed"]
-        for i in range(len(fixed), MAX_FIXED):
-            db.team_add("团队 %d" % (i + 1), "fixed")
+        for name, _roster in FIXED_TEAMS:
+            ts = db.teams()
+            if any(x["name"] == name and x["kind"] == "fixed" for x in ts):
+                continue
+            holder = next((x for x in ts if x["kind"] == "fixed" and _PLACEHOLDER.match(x["name"] or "")
+                           and not [m for m in db.team_members(x["id"]) if m["role"] == "member"]), None)
+            if holder:
+                db.team_update(holder["id"], name=name)
+            else:
+                db.team_add(name, "fixed")
+        for x in db.teams():                    # 剩下的空占位 → 机动位（不删数据）
+            if x["kind"] == "fixed" and _PLACEHOLDER.match(x["name"] or "") \
+               and not [m for m in db.team_members(x["id"]) if m["role"] == "member"]:
+                db.team_update(x["id"], kind="temp", status="done")
+        fixed_ids = [x["id"] for x in db.teams() if x["kind"] == "fixed"]
+    for tid in fixed_ids:                       # 播种放在 DB 关掉之后（add_assistant 自己开会话）
+        _seed_roster(tid)
+    with workflow.WorkflowDB(_db_path()) as db:
         return db.teams()
 
 
@@ -472,7 +521,7 @@ def teams() -> dict[str, Any]:
 
 
 def new_team(kind: str = "temp", name: str = "") -> dict[str, Any]:
-    """建团队。固定位 3 个、机动位 2 个；机动位满了会先把「已收工」的自动收掉（用完即释放）。"""
+    """建团队。固定位 2 个（论文精读 / 论文写作，只改名不解散）、机动位 3 个；机动位满了会先把「已收工」的自动收掉（用完即释放）。"""
     with workflow.WorkflowDB(_db_path()) as db:
         ensure_defaults()
         ts = db.teams()
@@ -484,7 +533,7 @@ def new_team(kind: str = "temp", name: str = "") -> dict[str, Any]:
             if len(temps) >= MAX_TEMP:
                 done = [x for x in temps if x["status"] == "done"]
                 if not done:
-                    raise ValueError("两个机动位都在用 —— 等它们跑完，或先解散一个")
+                    raise ValueError("三个机动位都在用 —— 等它们跑完，或先解散一个")
                 db.team_delete(done[0]["id"])          # 用完的机动团队自动回收，腾出名额
         if len(db.teams()) >= MAX_TEAMS:               # 兜底（正常走不到：上面两种位各卡了一道）
             raise ValueError("最多 %d 个团队（%d 固定 + %d 机动）" % (MAX_TEAMS, MAX_FIXED, MAX_TEMP))
@@ -503,7 +552,7 @@ def rename_team(tid: str, name: str) -> dict[str, Any]:
 
 
 def dissolve(tid: str) -> dict[str, Any]:
-    """解散团队。机动的可以；固定的不行（3 个固定位是常驻的）。记录留在库里不删。"""
+    """解散团队。机动的可以；固定的不行（2 个固定位是常驻的）。记录留在库里不删。"""
     with workflow.WorkflowDB(_db_path()) as db:
         t = db.team(tid)
         if not t:

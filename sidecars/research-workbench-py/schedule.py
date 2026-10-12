@@ -25,10 +25,14 @@ from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any
 
-import integrations
 import workflow
 
 DB_PATH: "Path | None" = None     # 由 server.py 运行时注入（schedule 不能反向 import server）
+
+
+def _safe_name(value: str) -> str:
+    """把任务名变成能当文件名的样子（从旧的 integrations.py 搬过来的）。"""
+    return re.sub(r"[^0-9A-Za-z\u4e00-\u9fff._-]+", "_", (value or "").strip())[:80] or "task"
 
 
 def _db_path() -> Path:
@@ -246,7 +250,7 @@ def run_once(sched: dict[str, Any], trigger: str = "scheduler", emit: Any = None
             out = workflow.run_agent(db, sched["project_id"], prompt, emit=emit, publish=False)
             text = str(out.get("reply") or "").strip() or "（模型没有返回内容）"
             stamp = datetime.now().strftime("%Y-%m-%d_%H%M")
-            path = folder / f"{integrations._safe_name(sched['name'])[:60]}-{stamp}.md"
+            path = folder / f"{_safe_name(sched['name'])[:60]}-{stamp}.md"
             header = (f"# {sched['name']}\n\n"
                       f"> 由「定时任务」生成 · {datetime.now().strftime('%Y-%m-%d %H:%M')} · "
                       f"触发：{'手动' if trigger == 'manual' else ('启动补跑' if trigger == 'catchup' else '定时')} · "

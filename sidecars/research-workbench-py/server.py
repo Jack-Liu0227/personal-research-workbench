@@ -31,11 +31,11 @@ import workflow
 import schedule                  # 定时任务：抄原版 automation（只在应用活着时调度）
 import team                      # 团队：Leader + Partner 成员 + 派活队列（抄 AionUi Teams）
 import zotero                    # Zotero 本机 Local API 只读接入（笔记页；不碰 zotero.sqlite）
-from research_core import ResearchDB
 from workflow import (ACTION, CUSTOM_WIRES, OAUTH_CONSOLE, PROVIDER_CATALOG, STAGES, STAGE_LABEL,
                       TOOL_SPECS, USABLE_WIRES, WIRE_LABEL, WorkflowDB, chat, compose_draft,
                       discover_models, litgraph, make_project_tree, run_agent, run_idea, run_outline, run_write, run_review,
                       outline_read, outline_write, doc_read, doc_write, doc_seed, OUTLINE_TEMPLATE,
+                      run_map, map_read, map_write, map_sources,
                       cite_read, cite_add, cite_sync, conv_files, conv_run, conv_compile, conv_open,
                       en_state, en_run, CONV_FORMATS, _safe_path,
                       stage_download_selected, test_provider,
@@ -793,6 +793,13 @@ class Handler(BaseHTTPRequestHandler):
                                        "long": db.memory(tid, "long"),
                                        "messages": db.messages(tid, step),
                                        **doc_read(db, tid, step)})
+            if path == "/api/map/state":                  # 梳理精读：谱系图 + 能挂的源 + 大纲
+                with WorkflowDB(DB_PATH) as db:
+                    tid = q["id"][0]
+                    return self._json({"messages": db.messages(tid, "map"),
+                                       "outline": doc_read(db, tid, "outline"),
+                                       "sources": map_sources(db, tid),
+                                       **map_read(db, tid)})
             if path == "/api/en/state":                   # 中译英：默认源（正文.md）+ 上次译文
                 with WorkflowDB(DB_PATH) as db:
                     return self._json(en_state(db, q["id"][0]))
@@ -852,7 +859,7 @@ class Handler(BaseHTTPRequestHandler):
                 return self._json(deepread_state((q.get("task_id") or [""])[0]) or {"phase": ""})
             if path == "/api/settings/meta":            # 设置页分区要的元数据：工具 / 技能 / MCP
                 return self._json(settings_meta())
-            if path == "/api/teams":                     # 团队清单（多团队：3 固定 + 2 机动）
+            if path == "/api/teams":                     # 团队清单（多团队：2 固定 + 3 机动）
                 try:
                     return self._json(team.teams())
                 except ValueError as exc:
@@ -1024,6 +1031,8 @@ class Handler(BaseHTTPRequestHandler):
             return self._sse(data)
         if path == "/api/idea":
             return self._sse(data, "idea")
+        if path == "/api/map":
+            return self._sse(data, "map")
         if path == "/api/outline":
             return self._sse(data, "outline")
         if path == "/api/write":
@@ -1185,6 +1194,10 @@ class Handler(BaseHTTPRequestHandler):
                     with WorkflowDB(DB_PATH) as db:
                         return self._json(doc_seed(db, (data.get("task_id") or "").strip(),
                                                    data.get("step") or "outline"))
+                if path == "/api/map/save":                # 谱系图整份覆盖写（手改 / 前端拖节点后落盘）
+                    with WorkflowDB(DB_PATH) as db:
+                        return self._json(map_write(db, (data.get("task_id") or "").strip(),
+                                                    data.get("data") or {}))
                 if path == "/api/doc/save":                # 手动改/用回复落盘（三步共用）
                     with WorkflowDB(DB_PATH) as db:
                         return self._json(doc_write(db, (data.get("task_id") or "").strip(),
@@ -1222,6 +1235,13 @@ class Handler(BaseHTTPRequestHandler):
                     cid = data.get("id", "")
                     db.clear_messages(cid)
                     return self._json(db.delete_chat(cid))
+                if path == "/api/chat/bind":                  # 对话绑项目（'' = 解绑成随意对话）
+                    b = data or {}
+                    with WorkflowDB(DB_PATH) as db:
+                        try:
+                            return self._json({"chat": db.bind_chat(b.get("id", ""), b.get("task_id", ""))})
+                        except ValueError as exc:
+                            return self._json({"error": str(exc)}, 400)
                 if path == "/api/chat/rename":               # 对话改名（照 AionUi 标题点击改名）
                     b = data or {}
                     with WorkflowDB(DB_PATH) as db:
@@ -1352,7 +1372,7 @@ class Handler(BaseHTTPRequestHandler):
 
         db = WorkflowDB(DB_PATH)
         try:
-            runners = {"idea": run_idea, "outline": run_outline, "write": run_write, "review": run_review}
+            runners = {"idea": run_idea, "outline": run_outline, "map": run_map, "write": run_write, "review": run_review}
             (runners.get(step) or run_agent)(db, data.get("task_id", ""), data.get("message", ""), emit)
         except Exception as exc:
             emit({"type": "error", "message": f"{type(exc).__name__}: {exc}"})
