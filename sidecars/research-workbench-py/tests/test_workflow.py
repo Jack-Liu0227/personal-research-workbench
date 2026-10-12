@@ -211,14 +211,10 @@ class WorkflowTest(unittest.TestCase):
     def test_delete_task_cascades_and_spares_user_files(self) -> None:
         """删项目：子表（含只能经 papers 关联的 paper_pages/evidence）清干净，别的项目不受影响；
         磁盘上只清 data/papers 里的副本 —— 用户自己的原文件必须还在。"""
-        import fitz
+        from _pdf_fixture import write_text_pdf
 
         pdf = Path(self.td.name) / "keep-me.pdf"
-        doc = fitz.open()
-        page = doc.new_page()
-        page.insert_text((72, 72), "NaNi1/3Fe1/3Mn1/3O2 Cu doping")
-        doc.save(str(pdf))
-        doc.close()
+        write_text_pdf(pdf, ["NaNi1/3Fe1/3Mn1/3O2 Cu doping"])
         paper = self.db.ingest_pdf(self.task, pdf)
         self.db.add_note(self.task, "笔记", "# n")
         self.db.log_step(self.task, "search", "ok", "搜索完成")
@@ -281,17 +277,14 @@ class WorkflowTest(unittest.TestCase):
         import urllib.request
         from http.server import ThreadingHTTPServer
 
-        import fitz  # py310 自带；只用来造一个一页的测试 PDF
+        from _pdf_fixture import write_text_pdf
+
         import server as srv
 
         srv.DB_PATH = Path(self.td.name) / "wb.sqlite3"      # 指到本测试的临时库
         srv.UPLOADS = Path(self.td.name) / "uploads"
         pdf_path = Path(self.td.name) / "样例.pdf"
-        doc = fitz.open()
-        page = doc.new_page()
-        page.insert_text((72, 72), "NaNi1/3Fe1/3Mn1/3O2 Cu doping")
-        doc.save(str(pdf_path))
-        doc.close()
+        write_text_pdf(pdf_path, ["NaNi1/3Fe1/3Mn1/3O2 Cu doping"])
 
         httpd = ThreadingHTTPServer(("127.0.0.1", 0), srv.Handler)
         port = httpd.server_address[1]

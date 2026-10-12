@@ -12,9 +12,9 @@ from pathlib import Path
 from typing import Any
 
 try:
-    import fitz  # PyMuPDF
+    import pdfio  # PDF 读写走宽松许可适配层（pypdf/pdfplumber）
 except ImportError as exc:  # pragma: no cover
-    raise RuntimeError("PyMuPDF is required for PDF ingestion") from exc
+    raise RuntimeError("PDF 功能需要 pypdf / pdfplumber，见 requirements.txt") from exc
 
 
 SCHEMA = """
@@ -160,11 +160,7 @@ class ResearchDB:
         existing = self.db.execute("SELECT id FROM papers WHERE sha256=?", (sha,)).fetchone()
         if existing:
             return self.paper(existing["id"])
-        doc = fitz.open(path)
-        try:
-            pages = [(i + 1, page.get_text("text").strip()) for i, page in enumerate(doc)]
-        finally:
-            doc.close()
+        pages = [(i + 1, t) for i, t in enumerate(pdfio.page_texts(path))]
         text_chars = sum(len(text) for _, text in pages)
         ocr_status = "text" if text_chars >= 100 else "likely-scan"
         paper_id = uuid.uuid4().hex

@@ -8,6 +8,7 @@
 """
 from __future__ import annotations
 
+import pdfio            # PDF 读写（pypdf/pdfplumber，见 pdfio.py）
 import json
 import os
 import re
@@ -53,32 +54,7 @@ def pdf_path(db: Any, paper_id: str) -> Path | None:
     return p if p.is_file() and p.suffix.lower() == ".pdf" else None
 
 
-def _fitz(path: Path):
-    import fitz                                                # PyMuPDF（py -3.10 里有）
-    return fitz.open(path)
-
-
 # ---------------- 元数据 ----------------
-def _biggest_title(doc) -> str:
-    """首页字号最大的那几行当标题（跳过期刊页眉/DOI 行）。"""
-    try:
-        page = doc[0]
-        best: list[tuple[float, str]] = []
-        for block in page.get_text("dict").get("blocks", []):
-            for line in block.get("lines", []):
-                txt = "".join(s.get("text", "") for s in line.get("spans", [])).strip()
-                size = max((s.get("size", 0) for s in line.get("spans", [])), default=0)
-                if len(txt) >= 12 and size > 0:
-                    best.append((size, txt))
-        if not best:
-            return ""
-        best.sort(key=lambda x: -x[0])
-        top = best[0][0]
-        return " ".join(t for s, t in best if s >= top * 0.92)[:300]
-    except Exception:
-        return ""
-
-
 def _crossref(doi: str, timeout: float = 12) -> dict[str, Any]:
     """按 DOI 反查 Crossref 补全题目/时间/关键词/作者（直连；代理关着也能用）。"""
     env = {k: v for k, v in os.environ.items() if not k.lower().endswith("_proxy")}
@@ -105,11 +81,11 @@ def paper_meta(db: Any, paper_id: str) -> dict[str, Any]:
         return dict(hit[1])
     out: dict[str, Any] = {"filename": path.name, "doi": "", "title": "", "keywords": "",
                            "published": "", "authors": "", "pages": 0, "source": ""}
-    with _fitz(path) as doc:
-        out["pages"] = doc.page_count
-        text = "\n".join(doc[i].get_text() for i in range(min(3, doc.page_count)))
-        out["title"] = (doc.metadata or {}).get("title", "").strip() or _biggest_title(doc)
-        out["published"] = ((doc.metadata or {}).get("creationDate") or "")[:10].replace("D:", "")
+    out["pages"] = pdfio.page_count(path)
+    text = pdfio.text(path, limit=3)
+    _meta = pdfio.meta(path)
+    out["title"] = _meta["title"] or pdfio.biggest_title(path)
+    out["published"] = _meta["creation"][:10].replace("D:", "")
     m = DOI_RE.search(text)
     if m:
         out["doi"] = m.group(0).rstrip(".,;)")
@@ -251,8 +227,7 @@ def start(db: Any, paper_id: str, out_dir: Path, pages: str = "", force: bool = 
                           "dual": "", "pages_done": 0, "total_pages": 0}
     n = 0
     try:
-        with _fitz(path) as doc:
-            n = doc.page_count
+        n = pdfio.page_count(path)
     except Exception:
         pass
     plan = _parse_pages(pages) or _plan(n)
@@ -346,68 +321,51 @@ def _trim_tail(mono: Path, src: Path, done_pages: int) -> None:
     这种页本来没有可翻的文字，代价可接受；真要精确就按页存一份「本页已翻」的标记。
     """
     try:
-        import fitz
-        with fitz.open(str(mono)) as mo, fitz.open(str(src)) as so:
-            n, m = mo.page_count, so.page_count
-            keep = n
-            while keep > 1 and keep > done_pages:
-                i = keep - 1
-                a = mo[i].get_text().strip()
-                b = so[i].get_text().strip() if i < m else ""
-                if a and b and a == b:
-                    keep -= 1
-                else:
-                    break
-            if keep == n or keep < 1:
-                return
-            out = fitz.open()
-            for i in range(keep):
-                out.insert_pdf(mo, from_page=i, to_page=i)
-            tmp = mono.with_name(mono.name + ".trim.pdf")
-            out.save(str(tmp))
-            out.close()
+        a_texts = pdfio.page_texts(mono)
+        b_texts = pdfio.page_texts(src)
+        n = len(a_texts)
+        keep = n
+        while keep > 1 and keep > done_pages:
+            i = keep - 1
+            a = a_texts[i]
+            b = b_texts[i] if i < len(b_texts) else ""
+            if a and b and a == b:
+                keep -= 1
+            else:
+                break
+        if keep == n or keep < 1:
+            return
+        tmp = mono.with_name(mono.name + ".trim.pdf")
+        pdfio.write_pages(tmp, [(mono, i) for i in range(keep)])
         os.replace(tmp, mono)
     except Exception:
-        pass                                   # 裁不掉不影响翻译本身
-
-
-def _splice(dest: Path, part: Path, a: int, b: int) -> None:
-    """把 part 里的第 a..b 页拼进累积译文：读旧 + 写新 + 替换（页序始终跟原文一一对应）。"""
-    if not dest.is_file():
-        # 第一段：babeldoc 为版式上下文会多带页（实测要 1-2 页时给了 3 页），
-        # 所以不能整份照搬，只取 [a, b] 区间 —— 否则未翻译的原页会留在译文里
-        import fitz
-        with _fitz(part) as src:
-            out = fitz.open()
-            for i in range(a - 1, min(b, src.page_count)):
-                out.insert_pdf(src, from_page=i, to_page=i)
-            tmp = dest.with_name(dest.name + ".tmp.pdf")
-            out.save(str(tmp))
-            out.close()
-        os.replace(tmp, dest)
         return
-    with _fitz(dest) as old, _fitz(part) as new:
-        import fitz                                              # 空文档得用模块的 open()，_fitz 是"开已有文件"的帮手
-        out = fitz.open()
-        n_out = max(old.page_count, b)                           # 文档只增不减：新段可能把页数往后推
-        ref = new[0].rect if new.page_count else None             # 乱序并行缺页时补一张空白，保住页号一一对应
-        for i in range(n_out):
-            if (a - 1) <= i <= (b - 1) and i < new.page_count:
-                out.insert_pdf(new, from_page=i, to_page=i)
-            elif i < old.page_count:
-                out.insert_pdf(old, from_page=i, to_page=i)
+def _splice(dest: Path, part: Path, a: int, b: int) -> None:
+    """把 part 里第 a..b 页拼进累积译文（页序始终跟原文一一对应）。
+
+    babeldoc 为版式上下文会多带页（实测要 1-2 页给整篇），所以只取 [a, b] 区间；
+    文档只增不减：新段可能把页数往后推，乱序并行缺页时补空白页，保住页号一一对应。
+    """
+    tmp = dest.with_name(dest.name + ".tmp.pdf")
+    if not dest.is_file():
+        pdfio.write_pages(tmp, [(part, k) for k in range(a - 1, min(b, pdfio.page_count(part)))])
+    else:
+        old_n, new_n = pdfio.page_count(dest), pdfio.page_count(part)
+        srcs: list[tuple[Path, int] | None] = []
+        for k in range(max(old_n, b)):
+            if (a - 1) <= k <= (b - 1) and k < new_n:
+                srcs.append((part, k))
+            elif k < old_n:
+                srcs.append((dest, k))
             else:
-                out.new_page(width=ref.width if ref else 595, height=ref.height if ref else 842)
-        tmp = dest.with_name(dest.name + ".tmp.pdf")
-        out.save(str(tmp))
-        out.close()
+                srcs.append(None)                     # 还没翻到的那页先占位，等它自己那段来填
+        pdfio.write_pages(tmp, srcs, size=pdfio.page_size(part) if new_n else None)
     for _ in range(3):
         try:
             tmp.replace(dest)
             return
         except OSError:                              # 前端可能正读着这个文件，等一下再换
             time.sleep(0.4)
-
 
 def _progress(paper_id: str, msg: str, done: int, total: int, log: Path,
               pct: int | None = None, mono: str = "") -> None:
@@ -519,23 +477,13 @@ def _run(paper_id: str, path: Path, out_dir: Path, cfg: dict[str, str],
 
 # ---------------- 译文 → 中文笔记 ----------------
 def pdf_words(path: Path, max_pages: int = 0) -> dict[str, Any]:
-    """每页的词 + 坐标（PDF 点，fitz 原点在左上），前端按缩放比铺文字层：
+    """每页的词 + 坐标（PDF 点，左上原点），前端按缩放比铺文字层：
     自己能控、离线可用，还能让荧光笔的选区对准（pdf.js 的 renderTextLayer 在 WebView2 里会挂）。"""
-    pages: list[dict[str, Any]] = []
-    with _fitz(path) as doc:
-        n = doc.page_count if not max_pages else min(doc.page_count, max_pages)
-        for i in range(n):
-            page = doc[i]
-            r = page.rect
-            words = [{"x": round(w[0], 1), "y": round(w[1], 1), "w": round(w[2] - w[0], 1),
-                      "h": round(w[3] - w[1], 1), "t": w[4]} for w in page.get_text("words")]
-            pages.append({"n": i + 1, "w": round(r.width, 1), "h": round(r.height, 1), "words": words})
-    return {"pages": pages}
+    return {"pages": pdfio.pages_with_words(path, max_pages)}
 
 
 def mono_pages(mono: Path) -> list[str]:
-    with _fitz(mono) as doc:
-        return [doc[i].get_text().strip() for i in range(doc.page_count)]
+    return pdfio.page_texts(mono)
 
 
 _CJK = re.compile(r"[\u3400-\u9fff]")

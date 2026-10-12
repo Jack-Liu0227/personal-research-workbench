@@ -991,6 +991,18 @@ class Handler(BaseHTTPRequestHandler):
         path, q = parsed.path, urllib.parse.parse_qs(parsed.query)
         if path == "/api/upload":
             return self._upload(q)
+        ctype = (self.headers.get("Content-Type") or "").split(";")[0].strip().lower()
+        if ctype != "application/json":
+            return self._json({"error": "只接受 application/json"}, 415)
+        origin = (self.headers.get("Origin") or "").strip()
+        if origin and not re.match(r"^https?://(127\.0\.0\.1|localhost|\[::1\])(:\d+)?$", origin):
+            return self._json({"error": "来源不被允许"}, 403)
+        ctype = (self.headers.get("Content-Type") or "").split(";")[0].strip().lower()
+        if ctype != "application/json":                      # 挡跨站「简单请求」：非 JSON 一律不收
+            return self._json({"error": "只接受 application/json"}, 415)
+        origin = (self.headers.get("Origin") or "").strip()
+        if origin and not re.match(r"^https?://(127\.0\.0\.1|localhost|\[::1\])(:\d+)?$", origin):
+            return self._json({"error": "来源不被允许"}, 403)
         data = self._body()
         if self._mail_route("POST", path, q, data):
             return

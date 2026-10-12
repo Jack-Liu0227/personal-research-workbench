@@ -1,11 +1,9 @@
-# 本 sidecar 的第三方依赖（精确版本来自作者本机实测环境）
-# 运行：Python 3.10 + 下列包；许可证一列是选型依据，见仓库 AGENTS.md 的许可证政策
-#
+# 第三方依赖（精确版本来自作者本机实测环境）
 #   pip install -r requirements.txt
-#
-PyMuPDF==1.28.2          # AGPL-3.0   ← 待替换为 pypdf / pdfplumber（见评审第 4 项）
-python-docx==1.2.0       # MIT
-pywebview==6.2.1         # BSD-3-Clause
-PyYAML==6.0.3            # MIT
-pywin32==312             # PSF-2.0    （可选：只 installer.py 用到，已包在 try/except 内）
-# 可选：Windows 桌面窗口/快捷方式相关，纯命令行跑服务时不需要 pywebview
+# 许可证一列是选型依据，见仓库 AGENTS.md：GPL/AGPL 只作参考，不作直接依赖
+pypdf==6.16.2            # BSD-3-Clause   页数 / 页面合并（pdfio.py）
+pdfplumber==0.11.10      # MIT            文本与词坐标（pdfio.py）
+python-docx==1.2.0       # MIT            导出 Word（workflow.py）
+pywebview==6.2.1         # BSD-3-Clause   桌面窗口（server.py；纯命令行跑服务不需要）
+PyYAML==6.0.3            # MIT            读配置（server.py）
+pywin32==312             # PSF-2.0        可选：仅 installer.py 用，已包在 try/except 内

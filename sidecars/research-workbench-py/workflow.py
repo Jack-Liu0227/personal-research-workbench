@@ -14,6 +14,7 @@ import json
 import os
 
 import guards          # 出站脱敏 + 引用核验（见 guards.py）
+import pdfio            # PDF 读写（pypdf/pdfplumber，见 pdfio.py）
 import re
 import shutil
 import socket
@@ -2019,7 +2020,7 @@ def _safe_path(path: str, extra_roots: list[Path] | None = None) -> Path:
     p = p.resolve()
     roots = [*(extra_roots or []), DATA, DATA / "uploads", PAPERS, NOTES, OUT]
     roots = [r.resolve() for r in roots if r.exists()]
-    if not any(str(p).lower().startswith(str(r).lower()) for r in roots):
+    if not any(p.is_relative_to(r) for r in roots):        # 前缀比较会让 data-evil/ 混进来
         raise ValueError(f"只允许项目目录与 data 目录里的文件：{p}")
     return p
 
@@ -2433,7 +2434,7 @@ _FILE_ROOTS = [DATA, DATA / "uploads", PAPERS, NOTES, OUT]
 
 
 def read_attachment(path: str, chars: int = 8000) -> dict[str, Any]:
-    """读用户上传/项目里的文件：PDF 用 fitz 抓正文，其余按文本读。只允许 data/ 与项目目录里的文件。"""
+    """读用户上传/项目里的文件：PDF 用 pdfio 抓正文，其余按文本读。只允许 data/ 与项目目录里的文件。"""
     if not path:
         raise ValueError("没给路径")
     p = Path(path).expanduser()
@@ -2442,21 +2443,14 @@ def read_attachment(path: str, chars: int = 8000) -> dict[str, Any]:
     except OSError as exc:
         raise ValueError(f"路径不可用：{exc}") from exc
     roots = [r.resolve() for r in _FILE_ROOTS if r.exists()]
-    if not p.is_file() or not any(str(p).lower().startswith(str(r).lower()) for r in roots):
+    # 前缀比较（startswith）会让同级的 data-evil/ 混进来，必须按路径层级判断
+    if not p.is_file() or not any(p.is_relative_to(r) for r in roots):
         raise ValueError(f"只读 data/ 与项目目录里的文件：{p}")
     cap = max(500, min(int(chars or 8000), READ_MAX))
     if p.suffix.lower() == ".pdf":
-        with _fitzed(p) as doc:
-            text = "\n".join(doc[i].get_text() for i in range(min(6, doc.page_count)))
-    else:
-        text = p.read_text(encoding="utf-8", errors="replace")
-    return {"path": str(p), "name": p.name, "chars": len(text), "text": text[:cap],
-            "truncated": len(text) > cap}
 
+        text = pdfio.text(p)
 
-def _fitzed(path: Path):                            # 小包装：py -3.10 里是 fitz
-    import fitz
-    return fitz.open(str(path))
 
 
 def doc_tools(kind: str) -> list[dict[str, Any]]:

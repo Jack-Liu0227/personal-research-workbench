@@ -2,8 +2,8 @@ import tempfile
 import unittest
 from pathlib import Path
 
-import fitz
-
+import pdfio
+from _pdf_fixture import write_text_pdf
 from research_core import ResearchDB
 
 
@@ -11,7 +11,7 @@ class CoreTest(unittest.TestCase):
     def test_ingest_is_hash_deduplicated_and_evidence_keeps_page(self):
         with tempfile.TemporaryDirectory() as td:
             root = Path(td); pdf = root / "paper.pdf"
-            doc = fitz.open(); page = doc.new_page(); page.insert_text((72, 72), "CuO material was sintered at 800 °C and reached 120 MPa."); doc.save(pdf); doc.close()
+            write_text_pdf(pdf, ["CuO material was sintered at 800 C and reached 120 MPa."])
             db = ResearchDB(root / "research.sqlite3")
             task = db.create_task("Cu test", "What is the process?", "CuO")
             first = db.ingest_pdf(task, pdf); second = db.ingest_pdf(task, pdf)

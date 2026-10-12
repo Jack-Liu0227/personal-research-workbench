@@ -54,9 +54,9 @@ python -m PyInstaller ResearchWorkbench.spec --noconfirm --clean   # 或双击 b
 
 ```bash
 cd C:\Users\24410\Desktop\科研agent\research-workbench
-py -3.10 server.py            # 默认 http://127.0.0.1:8765，自动开 Edge 应用窗口
-py -3.10 server.py --no-open  # 只起服务
-py -3.10 app.py               # 旧的 Tk 界面（仍可用）
+python server.py            # 默认 http://127.0.0.1:8765，自动开 Edge 应用窗口
+python server.py --no-open  # 只起服务
+python app.py               # 旧的 Tk 界面（仍可用）
 ```
 
 依赖：Python 3.10（`py -3.10`）+ PyMuPDF、python-docx（均已装）。搜索/模型走系统代理设置。
@@ -73,7 +73,7 @@ python research_core.py data/research.sqlite3 summary TASK_ID
 ## 测试
 
 ```bash
-py -3.10 -m unittest -v          # research_core / integrations / workflow 共 9 项
+python -m unittest discover -s tests -t .   # 全部自检（含 workflow / 团队 / 翻译）
 node web/theme.test.mjs          # 前端主题配色自检
 ```
 
