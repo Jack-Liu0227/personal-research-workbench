@@ -932,6 +932,12 @@ body.md-narrow .wctl button:hover { background: #eee; }
 .tr-stage.dual .tr-pane{position:relative;inset:auto}
 .tr-split.hidden{display:none}
 .tr-pane.act{box-shadow:inset 0 0 0 2px color-mix(in srgb,var(--accent) 55%,transparent)}
+.tr-stage.zen{position:fixed;inset:0;z-index:900;border-radius:0;margin:0;padding:0;background:var(--bg)}
+.tr-zen-exit{display:none;position:absolute;right:14px;top:12px;z-index:20;align-items:center;gap:6px;
+  padding:7px 14px;border-radius:999px;border:1px solid var(--line);background:color-mix(in srgb,var(--panel) 92%,transparent);
+  color:var(--fg);font:600 13px/1 system-ui,"Microsoft YaHei",sans-serif;cursor:pointer;box-shadow:0 6px 18px rgba(0,0,0,.28)}
+.tr-zen-exit:hover{border-color:var(--accent);color:var(--accent)}
+.tr-stage.zen .tr-zen-exit{display:flex}
 .tr-pane-tag{position:absolute;left:10px;top:8px;z-index:6;background:color-mix(in srgb,var(--panel) 88%,transparent);border:1px solid var(--line);border-radius:999px;padding:1px 9px;font-size:11px;color:var(--muted)}
 .tr-scroll{position:absolute;inset:0;overflow:auto;display:flex;flex-direction:column;align-items:center;gap:12px;padding:30px 12px 16px;background:color-mix(in srgb,var(--bg) 70%,var(--panel2))}
 .tr-split{cursor:col-resize;background:var(--line);border-radius:3px}
@@ -5965,6 +5971,7 @@ function trPanelHTML(active){
       <span class="tr-zoom"><button class="tr-ib" id="trOut" title="缩小">−</button><button class="tr-ib" id="trIn" title="放大">＋</button></span>
       <span class="tr-pageno" id="trPageNo">0 / 0</span>
       <button class="btn ghost" id="trPenTop">🖍 荧光笔</button>
+      <button class="btn ghost" id="trZenTop" title="全屏，左原文右中文，可拖分栏 / Ctrl+滚轮缩放（Esc 退出）">⛶ 专注模式</button>
       <button class="btn" id="trBtnT">🌐 中英互译</button>
       <button class="btn" id="trBtnN">📝 笔记模式</button>
       <button class="btn ghost hidden" id="trBtnBack">↩ 还原</button>
@@ -5977,6 +5984,7 @@ function trPanelHTML(active){
       <div><b>关键词：</b><span id="trKw">暂无信息</span></div>
     </div>
     <div class="tr-stage" id="trStage">
+      <button class="tr-zen-exit" id="trZenExit" title="退出专注模式（Esc）">✕ 退出专注</button>
       <div class="tr-drop" id="trDrop">
         <div class="tr-drop-in">
           <div class="tr-drop-ico">📄</div>
@@ -6153,6 +6161,17 @@ function trPageNo(key){
   box.querySelectorAll(".tr-page").forEach(el=>{ if(el.offsetTop <= mid) best = +el.dataset.page; });
   if(key === (TR.active==="b"?"b":"a")) $("trPageNo").textContent = `${best} / ${TR.pages || 0}`;
   TR.cur = best;
+}
+function trZen(on){
+  /* 专注模式：只把阅读区拉到全屏，其余（pdf.js 双栏、拖分隔线、点哪栏管哪栏）全复用现成的 */
+  const st = $("trStage"); if(!st) return;
+  const show = on === undefined ? !st.classList.contains("zen") : !!on;
+  st.classList.toggle("zen", show);
+  TR.zen = show;
+  $("trZenTop")?.classList.toggle("active", show);
+  trMsg(show ? "专注模式：中间那条线照样能拖，Ctrl+滚轮 / 双指缩放，Esc 退出"
+             : "");
+  if(show) trPaintNear(TR.active === "b" ? "b" : "a");
 }
 function trZoom(d){
   TR.scale = Math.min(TR_MAX, Math.max(TR_MIN, Math.round((TR.scale + d) * 100) / 100));
@@ -6394,7 +6413,7 @@ function trBind(){
   trPenInit(); trNoteBind(); trFillPick();
   if(!TR.hlBound){ TR.hlBound = 1;                     // 文档级监听只挂一次（renderWorkflow 会反复调 trBind）
     document.addEventListener("mouseup", (e)=>{ if($("trStage")?.contains(e.target)) trHlOnMouseUp(e); });
-    document.addEventListener("keydown", (e)=>{ if(e.key === "Escape"){ trPenPanel(false); } });
+    document.addEventListener("keydown", (e)=>{ if(e.key === "Escape"){ trPenPanel(false); trZen(false); } });
   }
   // 拖进来（整页都能接）
   const st = $("trStage"); let depth = 0;
@@ -6414,6 +6433,14 @@ function trBind(){
     box.style.gridTemplateColumns = `${pct*100}% 6px ${(1-pct)*100}%`;
   });
   ["pointerup","pointercancel"].forEach(t=>sp.addEventListener(t,()=>{ dragging = false; }));
+  $("trZenTop").onclick = () => trZen();
+  $("trZenExit").onclick = () => trZen(false);
+  // Ctrl+滚轮 / 双指捏合 = 缩放（触屏上浏览器把捏合报成 ctrl+wheel）
+  $("trStage").addEventListener("wheel",(e)=>{
+    if(!e.ctrlKey) return;
+    e.preventDefault();
+    trZoom(e.deltaY < 0 ? 0.1 : -0.1);
+  },{passive:false});
   // 点哪一栏，工具栏就管哪一栏
   $("trStage").addEventListener("mousedown",(e)=>{
     const p = e.target.closest(".tr-pane"); if(!p) return;
