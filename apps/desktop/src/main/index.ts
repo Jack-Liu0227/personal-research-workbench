@@ -178,6 +178,38 @@ async function bootstrap(): Promise<void> {
   if (app.isPackaged) setTimeout(() => { void updates.controller.check() }, 3_000)
 }
 
+type BootstrapProfile = ReturnType<typeof IntegrationProfileSchema.parse>
+
+/**
+ * Read the saved integration profiles while Main is still bootstrapping.
+ *
+ * This is the first RPC Main issues once the Core reports itself ready, and a
+ * cold Core can answer that first request before its repositories are usable —
+ * an unusable answer carries no `data` array. Giving up on that single response
+ * silently drops the first-launch defaults, and the missing profile then shows
+ * up much later as an unrelated page rendering without its configured state.
+ * Retry briefly instead of trusting one cold answer.
+ *
+ * Returns `null` when no usable answer arrived; the caller must then leave the
+ * existing profiles untouched.
+ */
+async function listIntegrationProfilesForBootstrap(
+  client: CoreRpcClient
+): Promise<BootstrapProfile[] | null> {
+  for (let attempt = 0; attempt < 3; attempt += 1) {
+    const listed = await client.request('integrations.list', null)
+    if (listed.ok && Array.isArray(listed.data)) {
+      return listed.data.flatMap((value) => {
+        const parsed = IntegrationProfileSchema.safeParse(value)
+        return parsed.success ? [parsed.data] : []
+      })
+    }
+    if (attempt < 2) await new Promise((resolve) => setTimeout(resolve, 200 * (attempt + 1)))
+  }
+  console.warn('[workbench] integrations.list was unusable at startup; first-launch defaults were left untouched')
+  return null
+}
+
 /**
  * Materialize a non-secret Zotero profile from the adjacent .env/defaults so
  * the renderer can immediately run a real capability probe. Existing user
@@ -185,12 +217,8 @@ async function bootstrap(): Promise<void> {
  * bootstrap path.
  */
 async function ensureDefaultZoteroProfile(client: CoreRpcClient): Promise<void> {
-  const listed = await client.request('integrations.list', null)
-  if (!listed.ok || !Array.isArray(listed.data)) return
-  const profiles = listed.data.flatMap((value) => {
-    const parsed = IntegrationProfileSchema.safeParse(value)
-    return parsed.success ? [parsed.data] : []
-  })
+  const profiles = await listIntegrationProfilesForBootstrap(client)
+  if (profiles === null) return
   if (profiles.some((profile) => profile.provider === 'zotero')) return
 
   const location = process.env['ZOTERO_API_URL']?.trim() || 'http://localhost:23119/api/'
@@ -224,12 +252,8 @@ async function ensureDefaultZoteroProfile(client: CoreRpcClient): Promise<void> 
  * README content through the layout service.
  */
 async function ensureDefaultObsidianVault(client: CoreRpcClient): Promise<void> {
-  const listed = await client.request('integrations.list', null)
-  if (!listed.ok || !Array.isArray(listed.data)) return
-  const profiles = listed.data.flatMap((value) => {
-    const parsed = IntegrationProfileSchema.safeParse(value)
-    return parsed.success ? [parsed.data] : []
-  })
+  const profiles = await listIntegrationProfilesForBootstrap(client)
+  if (profiles === null) return
   const obsidianProfiles = profiles.filter((profile) => profile.provider === 'obsidian')
   const envRoot = app.isPackaged ? dirname(app.getPath('exe')) : process.cwd()
   const defaultLocation = join(envRoot, 'workbench')
