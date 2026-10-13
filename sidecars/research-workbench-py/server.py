@@ -466,6 +466,17 @@ class Handler(BaseHTTPRequestHandler):
         except (ValueError, UnicodeDecodeError):
             return {}
 
+    def _drain(self) -> None:
+        """把没读走的请求体丢掉。本服务是 HTTP/1.1 长连接（见 Handler 顶部的 protocol_version），
+        早退（403/415）时若不复位，残留字节会被当成下一个请求的起始行去解析 ——
+        现象就是客户端前一个请求被正确拒绝、紧接着的那个请求无辜收到 501。"""
+        n = int(self.headers.get("Content-Length") or 0)
+        if n:
+            try:
+                self.rfile.read(n)
+            except OSError:                 # 连接已断，别再复用
+                self.close_connection = True
+
     # ---------- 路由 ----------
     def _upload(self, q: dict[str, list[str]]) -> None:
         """附件上传：原始字节走 body，文件名/任务走 query（避开 multipart 解析，本地单机够用）。
@@ -996,20 +1007,18 @@ class Handler(BaseHTTPRequestHandler):
     def do_POST(self) -> None:
         parsed = urllib.parse.urlparse(self.path)
         path, q = parsed.path, urllib.parse.parse_qs(parsed.query)
+        # 跨站「简单请求」防线：先验来源。必须放在 /api/upload 之前，
+        # 否则上传接口会被跨站表单直接打穿（multipart 是简单请求，不触发预检）。
+        origin = (self.headers.get("Origin") or "").strip()
+        if origin and not re.match(r"^https?://(127\.0\.0\.1|localhost|\[::1\])(:\d+)?$", origin):
+            self._drain()                    # 先复位再早退，否则长连接会被这具尸体带歪
+            return self._json({"error": "来源不被允许"}, 403)
         if path == "/api/upload":
             return self._upload(q)
         ctype = (self.headers.get("Content-Type") or "").split(";")[0].strip().lower()
-        if ctype != "application/json":
-            return self._json({"error": "只接受 application/json"}, 415)
-        origin = (self.headers.get("Origin") or "").strip()
-        if origin and not re.match(r"^https?://(127\.0\.0\.1|localhost|\[::1\])(:\d+)?$", origin):
-            return self._json({"error": "来源不被允许"}, 403)
-        ctype = (self.headers.get("Content-Type") or "").split(";")[0].strip().lower()
         if ctype != "application/json":                      # 挡跨站「简单请求」：非 JSON 一律不收
+            self._drain()
             return self._json({"error": "只接受 application/json"}, 415)
-        origin = (self.headers.get("Origin") or "").strip()
-        if origin and not re.match(r"^https?://(127\.0\.0\.1|localhost|\[::1\])(:\d+)?$", origin):
-            return self._json({"error": "来源不被允许"}, 403)
         data = self._body()
         if self._mail_route("POST", path, q, data):
             return

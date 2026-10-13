@@ -2491,6 +2491,7 @@ def doc_seed(db: "WorkflowDB", task_id: str, kind: str = "outline") -> dict[str,
     return cur
 
 
+ATTACH_PDF_PAGES = 6                               # 附件 PDF 最多只扫前几页：够 agent 判断，又不拖死服务
 READ_MAX = 12000                                   # 附件一次最多读多少字（够 agent 判断，不炸上下文）
 _FILE_ROOTS = [DATA, DATA / "uploads", PAPERS, NOTES, OUT]
 
@@ -2510,9 +2511,11 @@ def read_attachment(path: str, chars: int = 8000) -> dict[str, Any]:
         raise ValueError(f"只读 data/ 与项目目录里的文件：{p}")
     cap = max(500, min(int(chars or 8000), READ_MAX))
     if p.suffix.lower() == ".pdf":
-
-        text = pdfio.text(p)
-
+        text = pdfio.text(p, ATTACH_PDF_PAGES)
+    else:
+        text = p.read_text(encoding="utf-8", errors="replace")
+    return {"path": str(p), "name": p.name, "chars": len(text), "text": text[:cap],
+            "truncated": len(text) > cap}
 
 
 def doc_tools(kind: str) -> list[dict[str, Any]]:
