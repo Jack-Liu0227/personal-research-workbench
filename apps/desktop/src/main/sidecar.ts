@@ -23,7 +23,13 @@ const ERROR_TAIL_CHARS = 400
 function safeMessage(error: unknown): string {
   const message = error instanceof Error ? error.message : String(error)
   return message
-    .replace(/([A-Za-z]:[\\/]|\\\\|\/home\/|\/Users\/|Bearer\s+\S+|token=\S+|api[_-]?key=\S+)/giu, '[redacted]')
+    // Whole paths collapse to their final segment. A Python traceback is mostly
+    // machine layout and directory names; the file name and the error line are
+    // what the user can act on, and the layout is not ours to echo back into a
+    // window that can be screenshotted or shared.
+    .replace(/(?:[A-Za-z]:[\\/]|\\\\)(?:[^\\/:"'<>|\r\n]+[\\/])*([^\\/:"'<>|\r\n]+)/gu, '…\\$1')
+    .replace(/(?:\/home|\/Users)(?:\/[^\s/:"']+)*\/([^\s/:"']+)/gu, '…/$1')
+    .replace(/Bearer\s+\S+|token=\S+|api[_-]?key=\S+/giu, '[redacted]')
     .slice(-ERROR_TAIL_CHARS)
 }
 
