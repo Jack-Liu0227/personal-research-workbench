@@ -1,7 +1,7 @@
 @echo off
 chcp 65001 >nul
 cd /d "%~dp0"
-rem 必须用 3.10：只有它的 site-packages 里有 pywebview（无边框窗口）和 PyMuPDF/python-docx。
+rem 必须用 3.10：只有它的 site-packages 里有 pywebview（无边框窗口）和 python-docx。
 rem 用 3.11 打出来的包缺 pywebview，会静默退回带黑标题栏的 Edge --app 窗口。
 set PY=%LOCALAPPDATA%\Programs\Python\Python310\python.exe
 if not exist "%PY%" set PY=python

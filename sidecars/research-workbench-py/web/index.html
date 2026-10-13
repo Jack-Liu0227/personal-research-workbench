@@ -6250,7 +6250,7 @@ function trPaintNear(key){
   });
 }
 function trWords(key){
-  /* 每个词的坐标从后端来（fitz），自己铺文字层：选中→荧光笔才有依据。
+  /* 每个词的坐标从后端来（pdfplumber，见 pdfio.py），自己铺文字层：选中→荧光笔才有依据。
      两栏各自一份（a=原文 / b=译文），所以中文那栏也能划。 */
   TR.words = TR.words || {};
   if(TR.words[key]) return Promise.resolve(TR.words[key]);

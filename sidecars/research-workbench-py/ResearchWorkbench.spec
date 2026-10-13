@@ -17,8 +17,8 @@ a = Analysis(
     ],
     hiddenimports=['pdfplumber', 'pypdf', 'cryptography', 'PIL', 'pypdfium2', 'webview'],
     # 说明：pdfminer.six / pdfplumber 里有条件导入（cryptography 处理加密 PDF、PIL/pypdfium2 渲染），
-    # 静态分析看不到，必须显式列出；PyMuPDF(AGPL) 已弃用，见 pdfio.py。
-   # cryptography: pdfminer.six 里是条件导入，静态分析看不到   # PyMuPDF(AGPL) 已弃用，见 pdfio.py / requirements.txt
+    # 静态分析看不到，必须显式列出。
+    # PyMuPDF(AGPL) 已弃用：PDF 解析统一走 pdfio.py（pdfplumber + pypdf，均为宽松许可）。
     hookspath=['hooks'],       # hooks/hook-workflow.py 用来顶掉同名 contrib 钩子（见该文件注释）
     hooksconfig={},
     runtime_hooks=[],

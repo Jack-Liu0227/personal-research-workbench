@@ -4,7 +4,7 @@ cd /d "%~dp0"
 rem 科研工作 1.0 一条命令自检：Python 自检（含「主脚本必须过 node --check」）+ 前端主题配色
 set PY=%LOCALAPPDATA%\Programs\Python\Python310\python.exe
 if not exist "%PY%" set PY=python
-echo === 1/2 Python 自检（tests/，109 项）===
+echo === 1/2 Python 自检（tests/ 全量）===
 "%PY%" -m unittest discover -s tests -t .
 if errorlevel 1 (echo. & echo [X] Python 自检没过 & pause & exit /b 1)
 echo.
