@@ -1,8 +1,8 @@
 ﻿<#
   科研工作 1.0 安装器（Windows）
   ------------------------------------------------------------------
-  给别人用（从 GitHub Releases 拉最新版，装到 %LOCALAPPDATA%、建桌面快捷方式、直接启动）：
-      irm https://raw.githubusercontent.com/3276166289-code/research-workbench/main/install.ps1 | iex
+  给别人用（装到 %LOCALAPPDATA%、建桌面快捷方式、直接启动）：
+      .\install.ps1 -Source https://<你的发布地址>/ResearchWorkbench.zip
 
   自己从本地打包目录装（开发时用）：
       .\install.ps1 -Source .\dist\ResearchWorkbench
@@ -12,17 +12,22 @@
         中文会把脚本解析崩，而且报错行号是假的（现象：复制、建快捷方式都执行了，最后一条才炸）。
 #>
 param(
-    [string]$Repo = "3276166289-code/research-workbench",
     [string]$InstallRoot = "$env:LOCALAPPDATA\Programs\ResearchWorkbench",
     [string]$Source = ""
 )
 $ErrorActionPreference = "Stop"
 
+# -Source 可以是本地目录，也可以是 zip 的下载地址；不传就报错退出。
+# 刻意不设「默认仓库」：安装脚本一旦硬编码某个 GitHub 账号，对方改了 release
+# 内容就等于改了你要装的东西（供应链风险）。这里只认调用者显式给的东西。
 if (-not $Source) {
-    $url = "https://github.com/$Repo/releases/latest/download/ResearchWorkbench.zip"
+    throw "请用 -Source 指定安装包（本地目录或 zip 地址）。例：.\install.ps1 -Source .\dist\ResearchWorkbench"
+}
+if ($Source -match '^https?://') {
+    $url = $Source
     $zip = Join-Path $env:TEMP "ResearchWorkbench.zip"
     $tmp = Join-Path $env:TEMP "rw-unpack"
-    Write-Host "下载最新版：$url"
+    Write-Host "下载：$url"
     Invoke-WebRequest $url -OutFile $zip -UseBasicParsing
     Remove-Item $tmp -Recurse -Force -ErrorAction SilentlyContinue
     Expand-Archive $zip -DestinationPath $tmp -Force
