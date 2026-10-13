@@ -34,10 +34,24 @@ extraResources:
       - "!**/*.pyc"
       - "!**/last30days/assets/**"
       - "!**/windows-release/**"
-  # The Scholar adapter is an explicit, page-bounded sidecar. It is shipped
-  # as data so the Python runtime remains user-controlled and inspectable.
+  # 侧车随包分发，当前有两个成员：
+  #   scholar.py          Electron 的 Google Scholar 适配器（literature-runtime
+  #                       通过 <resources>/sidecars/scholar.py 解析），必须保留；
+  #   research-workbench-py  独立的“科研工作”本地应用（Python + 本地网页界面），
+  #                       主程序不调用它，由用户在路线 B 下以内嵌方式托管。
+  # 以数据形式分发，让 Python 运行时代码保持用户可读、可审计 —— 这是有意的。
+  #
+  # 过滤器只拦运行期产物与用户数据。`data/` 里是真实精读笔记与
+  # research.sqlite3，属于个人数据，绝不能进入发行物（也绝不能被压缩进
+  # 安装包后再随卸载残留留在用户磁盘上）。用户数据由运行期写入
+  # `research-workbench-py/../<userData>/sidecar-data/`，见 sidecar-runtime。
   - from: ../../sidecars
     to: sidecars
+    filter:
+      - "**/*"
+      - "!**/__pycache__/**"
+      - "!**/*.pyc"
+      - "!**/data/**"
 asarUnpack:
   - node_modules/better-sqlite3/**
   - node_modules/sqlite-vec/**
