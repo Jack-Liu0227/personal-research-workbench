@@ -1238,6 +1238,17 @@ export interface WorkbenchApiV2 {
     install(): Promise<void>
     onState(listener: (state: UpdateState) => void): () => void
   }
+  /**
+   * The embedded Python sidecar.  Main owns the process; this surface only
+   * asks it to start, stop, and report state.  `open` is idempotent: calling it
+   * while the sidecar already runs just brings its window forward.
+   */
+  sidecar: {
+    state(): Promise<import('./v2.js').SidecarState>
+    open(): Promise<import('./v2.js').SidecarState>
+    stop(): Promise<import('./v2.js').SidecarState>
+    onState(listener: (state: import('./v2.js').SidecarState) => void): () => void
+  }
 }
 
 /* Keep these aliases available to code that imports the DTO names directly. */

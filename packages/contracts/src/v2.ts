@@ -2008,6 +2008,27 @@ export const UpdateStateSchema = z.strictObject({
 export type UpdateState = z.infer<typeof UpdateStateSchema>
 
 /**
+ * Main-owned embedded-sidecar state.
+ *
+ * The Python 「科研工作」 application is started and supervised by the Main
+ * process and rendered inside its own workbench-owned window, so the renderer
+ * never learns the child pid, the launch arguments, or the sidecar's internal
+ * API surface.  It receives only this finite state machine, mirroring the
+ * update controller above.  `dataDir` is the application's own data root — the
+ * renderer needs it to tell the user where their data lives, and it is the
+ * user's own local path, never a secret.
+ */
+export const SidecarPhaseSchema = z.enum(['stopped', 'starting', 'running', 'stopping', 'error'])
+export type SidecarPhase = z.infer<typeof SidecarPhaseSchema>
+export const SidecarStateSchema = z.strictObject({
+  phase: SidecarPhaseSchema,
+  port: z.number().int().min(1024).max(65_535).nullable(),
+  dataDir: z.string().trim().min(1).max(2_000),
+  message: z.string().trim().max(500).nullable()
+})
+export type SidecarState = z.infer<typeof SidecarStateSchema>
+
+/**
  * Knowledge engines are optional, user-managed services.  Their public
  * configuration is persisted in the authoritative workspace database while
  * API keys remain in Main's safeStorage credential vault.  HTTP is accepted

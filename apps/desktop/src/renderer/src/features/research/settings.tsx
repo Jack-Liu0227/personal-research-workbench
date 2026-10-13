@@ -1,5 +1,5 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import type { AgentAuthPromptKind, AgentAuthPromptOption, AgentAuthType, AgentConnector, AgentCredentialStatus, AgentModelCatalogEntry, AgentPermissionMode, AgentProxyProfile, AgentRuntimeKind, AgentSettingsSaveInput, AgentToolProfile, ArchiveBulkResult, IntegrationProfile, IntegrationProvider, KnowledgeEngineConfig, KnowledgeEngineKind, Project, SyncRun, UpdateState } from '@prw/contracts'
+import type { AgentAuthPromptKind, AgentAuthPromptOption, AgentAuthType, AgentConnector, AgentCredentialStatus, AgentModelCatalogEntry, AgentPermissionMode, AgentProxyProfile, AgentRuntimeKind, AgentSettingsSaveInput, AgentToolProfile, ArchiveBulkResult, IntegrationProfile, IntegrationProvider, KnowledgeEngineConfig, KnowledgeEngineKind, Project, SidecarState, SyncRun, UpdateState } from '@prw/contracts'
 import { Cable, CheckCircle2, ChevronDown, ChevronUp, Download, Edit3, ExternalLink, FolderOpen, KeyRound, Plus, RefreshCw, Save, TestTube2, Trash2 } from 'lucide-react'
 import { Fragment, useEffect, useId, useRef, useState, type FormEvent, type ReactElement } from 'react'
 import { ArchiveReceiptList, SelectionBar, SelectionCheckbox } from '../../components/selection'
@@ -14,7 +14,7 @@ import { CustomProviderSection } from './custom-providers'
 import { describeSyncRun, MutationFeedback, ResearchPanel, ResearchTabs, StatusBadge, SyncRunList } from './shared'
 import { RssSourceSettings } from './rss-source-settings'
 
-type SettingsTab = 'general' | 'workspace' | 'literature' | 'proxy' | 'connectors' | 'rss' | 'agent' | 'engines' | 'mcp' | 'security' | 'about'
+type SettingsTab = 'general' | 'workspace' | 'literature' | 'sidecar' | 'proxy' | 'connectors' | 'rss' | 'agent' | 'engines' | 'mcp' | 'security' | 'about'
 
 /**
  * Deep-link target requested by another surface before it navigates here.
@@ -602,6 +602,54 @@ function GeneralSettingsPanel(): React.JSX.Element {
   }
 
   return <SettingInfoPanel eyebrow="SETTINGS / GENERAL" title="通用"><div className="grid gap-3 sm:grid-cols-2"><label className="grid gap-1.5 text-xs font-semibold text-foreground" htmlFor="general-theme"><span>主题</span><select className="select-control" id="general-theme" onChange={(event) => { const next = event.target.value as 'light' | 'dark'; setTheme(next); publish(next, fontScale) }} value={theme}><option value="dark">深色</option><option value="light">浅色</option></select></label><label className="grid gap-1.5 text-xs font-semibold text-foreground" htmlFor="general-font-scale"><span>字号</span><select className="select-control" id="general-font-scale" onChange={(event) => { const next = event.target.value as 'compact' | 'comfortable' | 'large'; setFontScale(next); publish(theme, next) }} value={fontScale}><option value="compact">紧凑（13px）</option><option value="comfortable">标准（14px）</option><option value="large">大号（16px）</option></select></label></div><p>主题和字号会保存在当前用户配置并立即应用；左侧底部主题按钮与此处保持同步。</p><p>全局快捷创建支持顶部 Todo 输入；Ctrl K 搜索入口当前跳转到文献检索工作区。</p></SettingInfoPanel>
+}
+
+function SidecarSettingsPanel(): React.JSX.Element {
+  const [state, setState] = useState<SidecarState | null>(null)
+  const [busy, setBusy] = useState<'open' | 'stop' | null>(null)
+  const [error, setError] = useState<string | null>(null)
+
+  useEffect(() => {
+    let active = true
+    const api = getWorkbenchApi().sidecar
+    void api.state().then((value) => { if (active) setState(value) }).catch((reason) => { if (active) setError(getErrorMessage(reason)) })
+    const unsubscribe = api.onState((value) => { if (active) setState(value) })
+    return () => { active = false; unsubscribe() }
+  }, [])
+
+  const run = async (operation: 'open' | 'stop'): Promise<void> => {
+    if (busy) return
+    setBusy(operation)
+    setError(null)
+    try {
+      const api = getWorkbenchApi().sidecar
+      setState(operation === 'open' ? await api.open() : await api.stop())
+    } catch (reason) {
+      setError(getErrorMessage(reason))
+    } finally {
+      setBusy(null)
+    }
+  }
+
+  const phase = state?.phase ?? 'starting'
+  const phaseLabel: Record<SidecarState['phase'], string> = {
+    stopped: '未运行', starting: '正在启动', running: '运行中', stopping: '正在停止', error: '启动失败'
+  }
+  const transitional = phase === 'starting' || phase === 'stopping'
+  return <SettingInfoPanel eyebrow="SETTINGS / WORKSPACE APP" title="科研工作（内嵌应用）">
+    <p>十步科研工作流（创新点审查 → 论文搜索 → 下载精读 → 论文翻译 → 确认大纲 → 梓理精读 → 文章撑写 → 稿件审查 → 中译英 → 格式转换）作为内嵌窗口运行，由主进程启动、监控并回收；它在独立会话中渲染，不持有预加载脚本，也不接触工作台数据库。</p>
+    <div className="flex flex-wrap items-center gap-3">
+      <span className={cn('status-led', phase === 'running' ? 'bg-online' : phase === 'error' ? 'bg-danger' : 'bg-muted-foreground')} />
+      <strong className="text-foreground">{phaseLabel[phase]}</strong>
+      {state?.port !== null && state?.port !== undefined ? <code className="font-mono text-xs text-muted-foreground">127.0.0.1:{state.port}</code> : null}
+      <Button disabled={busy !== null || transitional} onClick={() => void run('open')} size="sm" variant="primary"><ExternalLink aria-hidden="true" className="size-3.5" />{phase === 'running' ? '切到该窗口' : '打开'}</Button>
+      <Button disabled={busy !== null || transitional || phase === 'stopped'} onClick={() => void run('stop')} size="sm" variant="secondary">停止</Button>
+    </div>
+    {state?.message ? <p className="text-xs leading-5 text-muted-foreground">{state.message}</p> : null}
+    {error ? <p className="text-xs leading-5 text-danger">{error}</p> : null}
+    {state ? <div className="grid gap-2 rounded-md border border-border bg-muted/30 p-3 text-xs"><span>数据目录：<code className="break-all font-mono text-foreground">{state.dataDir}</code></span><span>十步工作流、助手团队、笔记、邮箱与翻译输出全部写入该目录，与工作台自身的 <code className="font-mono text-foreground">workspace.sqlite3</code> 相互独立。</span></div> : null}
+    <p className="text-xs leading-5 text-muted-foreground">内嵌应用需要本机 Python 3.10+ 与 <code className="font-mono text-foreground">sidecars/research-workbench-py/requirements.txt</code>；应用不会静默安装 Python 依赖。</p>
+  </SettingInfoPanel>
 }
 
 function UpdatesSettingsPanel(): React.JSX.Element {
@@ -1268,5 +1316,5 @@ export function IntegrationsSettingsPage({ projects: _projects }: { projects: Pr
     pendingSection = null
     return requested
   })
-  return <div className="page-scroll"><PageHeader description="管理工作区、外部工具、代理、模型认证与知识引擎映射；页面仅显示后端真实状态。" eyebrow="SETTINGS / WORKSPACE" title="设置" /><div className="mt-4"><ResearchTabs items={[{ value: 'general', label: '通用' }, { value: 'workspace', label: '工作区与数据' }, { value: 'literature', label: '文献检索' }, { value: 'proxy', label: '代理' }, { value: 'connectors', label: '工具连接' }, { value: 'rss', label: 'RSS 来源' }, { value: 'agent', label: '模型与 Agent' }, { value: 'engines', label: '知识引擎' }, { value: 'mcp', label: 'MCP Server' }, { value: 'security', label: '安全与审计' }, { value: 'about', label: '关于与更新' }]} label="设置分区" onChange={setTab} value={tab} /></div><div className="mt-4">{tab === 'general' ? <GeneralSettingsPanel /> : null}{tab === 'workspace' ? <WorkspaceSettingsPanel /> : null}{tab === 'literature' ? <LiteratureSettingsPanel /> : null}{tab === 'proxy' ? <ProxySettingsPanel /> : null}{tab === 'connectors' ? <><ConnectorsPanel /><FeishuBindingPanel /><RssSourceSettings /></> : null}{tab === 'rss' ? <RssSourceSettings /> : null}{tab === 'agent' ? <AgentModelSettingsPanel authFeedback={authFeedback} authState={authState} onLoginAttempt={(provider) => { expectedLoginProvider.current = provider; setAuthFeedback(null) }} onLoginCancelled={(loginId) => { expectedLoginProvider.current = null; ownedLoginIds.current.delete(loginId); activeLoginId.current = null; setAuthState({ login: null, promptValue: '' }) }} onLoginPromptAnswered={(loginId) => setAuthState((current) => current.login?.loginId === loginId ? { ...current, promptValue: '', login: { ...current.login, prompt: null } } : current)} onLoginStarted={(loginId) => { ownedLoginIds.current.add(loginId); activeLoginId.current = loginId; expectedLoginProvider.current = null }} onPromptValueChange={(value) => setAuthState((current) => ({ ...current, promptValue: value }))} /> : null}{tab === 'engines' ? <EnginesPanel /> : null}{tab === 'mcp' ? <McpSettingsPanel /> : null}{tab === 'security' ? <SecuritySettingsPanel /> : null}{tab === 'about' ? <UpdatesSettingsPanel /> : null}</div></div>
+  return <div className="page-scroll"><PageHeader description="管理工作区、外部工具、代理、模型认证与知识引擎映射；页面仅显示后端真实状态。" eyebrow="SETTINGS / WORKSPACE" title="设置" /><div className="mt-4"><ResearchTabs items={[{ value: 'general', label: '通用' }, { value: 'workspace', label: '工作区与数据' }, { value: 'literature', label: '文献检索' }, { value: 'sidecar', label: '科研工作' }, { value: 'proxy', label: '代理' }, { value: 'connectors', label: '工具连接' }, { value: 'rss', label: 'RSS 来源' }, { value: 'agent', label: '模型与 Agent' }, { value: 'engines', label: '知识引擎' }, { value: 'mcp', label: 'MCP Server' }, { value: 'security', label: '安全与审计' }, { value: 'about', label: '关于与更新' }]} label="设置分区" onChange={setTab} value={tab} /></div><div className="mt-4">{tab === 'general' ? <GeneralSettingsPanel /> : null}{tab === 'workspace' ? <WorkspaceSettingsPanel /> : null}{tab === 'literature' ? <LiteratureSettingsPanel /> : null}{tab === 'sidecar' ? <SidecarSettingsPanel /> : null}{tab === 'proxy' ? <ProxySettingsPanel /> : null}{tab === 'connectors' ? <><ConnectorsPanel /><FeishuBindingPanel /><RssSourceSettings /></> : null}{tab === 'rss' ? <RssSourceSettings /> : null}{tab === 'agent' ? <AgentModelSettingsPanel authFeedback={authFeedback} authState={authState} onLoginAttempt={(provider) => { expectedLoginProvider.current = provider; setAuthFeedback(null) }} onLoginCancelled={(loginId) => { expectedLoginProvider.current = null; ownedLoginIds.current.delete(loginId); activeLoginId.current = null; setAuthState({ login: null, promptValue: '' }) }} onLoginPromptAnswered={(loginId) => setAuthState((current) => current.login?.loginId === loginId ? { ...current, promptValue: '', login: { ...current.login, prompt: null } } : current)} onLoginStarted={(loginId) => { ownedLoginIds.current.add(loginId); activeLoginId.current = loginId; expectedLoginProvider.current = null }} onPromptValueChange={(value) => setAuthState((current) => ({ ...current, promptValue: value }))} /> : null}{tab === 'engines' ? <EnginesPanel /> : null}{tab === 'mcp' ? <McpSettingsPanel /> : null}{tab === 'security' ? <SecuritySettingsPanel /> : null}{tab === 'about' ? <UpdatesSettingsPanel /> : null}</div></div>
 }

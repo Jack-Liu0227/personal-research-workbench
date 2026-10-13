@@ -43,10 +43,15 @@ from workflow import (ACTION, CUSTOM_WIRES, OAUTH_CONSOLE, PROVIDER_CATALOG, STA
 
 HERE = Path(__file__).resolve().parent
 WEB = HERE / "web"
-DB_PATH = Path(os.environ.get("RESEARCH_WORKBENCH_DB", HERE / "data" / "research.sqlite3"))
+# 数据根目录。默认仍是程序目录下的 data/（独立运行时的原有行为完全不变）；
+# 被 Electron 主进程托管时，sidecar-runtime 会把它指向 <userData>/sidecar-data，
+# 这样用户数据既不写进安装目录（Program Files 通常不可写、卸载时还会连数据一起删掉），
+# 也不会混进仓库。变量名沿用 mail.py 已经确立的 RESEARCH_WORKBENCH_DATA。
+DATA_ROOT = Path(os.environ.get("RESEARCH_WORKBENCH_DATA", HERE / "data"))
+DB_PATH = Path(os.environ.get("RESEARCH_WORKBENCH_DB", DATA_ROOT / "research.sqlite3"))
 schedule.DB_PATH = DB_PATH          # 定时任务共用同一个库（schedule 不反向 import server）
 team.DB_PATH = DB_PATH              # 团队共用同一个库
-UPLOADS = HERE / "data" / "uploads"
+UPLOADS = DATA_ROOT / "uploads"
 PORT = 8765
 CARD_W, CARD_H = 1117, 625      # 「开始卡片」尺寸（CSS 逻辑像素）
 CARD_PIN = True                 # True=窗口一直钉在卡片尺寸；点「进入」走 /api/win/maximize 后放掉
@@ -267,12 +272,12 @@ def _webview_window(url: str, stamp: int) -> bool:
             x=int(x / s), y=int(y / s), width=int(w / s), height=int(h / s),
             min_size=(int(420 / s), int(380 / s)), background_color="#111821")   # 逻辑像素！专注模式的「窄栏」只有 580 物理，按 DPI 反算，否则会把窗口钳在 ~690 宽
         webview.start(gui="edgechromium", private_mode=False,   # 关掉隐私模式，localStorage/头像才留得住
-                      storage_path=str(HERE / "data" / "webview"),
+                      storage_path=str(DATA_ROOT / "webview"),
                       icon=str(icon) if icon.is_file() else None,
                       func=lambda: _fit_after())
         return True                                   # 关窗 → 这里返回 → main 退出 → 服务一起停
     except Exception:
-        log = HERE / "data" / "server-error.log"
+        log = DATA_ROOT / "server-error.log"
         log.write_text(traceback.format_exc(), encoding="utf-8")
         return False
 
@@ -929,7 +934,7 @@ class Handler(BaseHTTPRequestHandler):
                     pid = (q.get("id") or [""])[0]
                     src = papertran.pdf_path(db, pid)
                     tid = (q.get("task") or [""])[0]
-                    out = db.pdir(tid, "文献库") if tid else (HERE / "data" / "out")
+                    out = db.pdir(tid, "文献库") if tid else (DATA_ROOT / "out")
                 if not src:
                     return self._send(404, b"not found", "text/plain; charset=utf-8")
                 f = papertran.out_paths(src, out)[0 if kind == "dual" else 1]
@@ -942,7 +947,7 @@ class Handler(BaseHTTPRequestHandler):
                 with WorkflowDB(DB_PATH) as db:
                     f = papertran.pdf_path(db, (q.get("id") or [""])[0])
                     tid = (q.get("task") or [""])[0]
-                    out = db.pdir(tid, "文献库") if tid else (HERE / "data" / "out")
+                    out = db.pdir(tid, "文献库") if tid else (DATA_ROOT / "out")
                 if not f:
                     return self._json({"error": "找不到这篇 PDF 的文件"}, 404)
                 if kind == "mono":
@@ -1179,7 +1184,7 @@ class Handler(BaseHTTPRequestHandler):
                     tid = (data.get("task_id") or "").strip()
                     pid = (data.get("id") or "").strip()
                     with WorkflowDB(DB_PATH) as db:
-                        out = db.pdir(tid, "文献库") if tid else (HERE / "data" / "out")
+                        out = db.pdir(tid, "文献库") if tid else (DATA_ROOT / "out")
                         return self._json(papertran.start(db, pid, out, str(data.get("pages") or ""),
                                                           bool(data.get("force"))))
                 if path == "/api/en/run":                   # 一键翻译（中文 markdown → 英文 markdown）
@@ -1226,7 +1231,7 @@ class Handler(BaseHTTPRequestHandler):
                 if path == "/api/paper/note":
                     tid = (data.get("task_id") or "").strip()
                     with WorkflowDB(DB_PATH) as db:
-                        out = db.pdir(tid, "文献库") if tid else (HERE / "data" / "out")
+                        out = db.pdir(tid, "文献库") if tid else (DATA_ROOT / "out")
                         return self._json(papertran.reading_note(db, tid, (data.get("id") or "").strip(), out))
                 if path == "/api/rss/refresh":
                     return self._json(rss.refresh(db))
@@ -1475,7 +1480,7 @@ if __name__ == "__main__":
     except SystemExit:
         raise
     except BaseException:  # pythonw 下没有控制台，错误必须落盘，否则双击后“什么都没发生”
-        log = HERE / "data" / "server-error.log"
+        log = DATA_ROOT / "server-error.log"
         log.parent.mkdir(parents=True, exist_ok=True)
         log.write_text(traceback.format_exc(), encoding="utf-8")
         raise SystemExit(1)

@@ -21,6 +21,7 @@ import { registerRpcHandler } from './ipc.js'
 import { FeishuBindingController } from './feishu-binding.js'
 import { migrateLegacyUserData } from './data-migration.js'
 import { registerUpdateHandlers } from './updater.js'
+import { registerSidecarHandlers } from './sidecar.js'
 import {
   developmentRendererUrl,
   hardenSession,
@@ -42,6 +43,7 @@ let mainWindow: BrowserWindow | null = null
 let coreClient: CoreRpcClient | null = null
 let removeRpcHandler: (() => void) | null = null
 let removeUpdateHandlers: (() => void) | null = null
+let removeSidecarHandlers: (() => void) | null = null
 const developmentUrl = developmentRendererUrl(app.isPackaged, process.env['ELECTRON_RENDERER_URL'])
 
 function createWindow(): BrowserWindow {
@@ -174,6 +176,15 @@ async function bootstrap(): Promise<void> {
     developmentUrl
   })
   removeUpdateHandlers = updates.dispose
+  // The Python 「科研工作」 application is supervised here rather than launched
+  // by the user. It starts lazily: a missing interpreter must not turn every
+  // launch into an error banner, and the sidecar is not needed for the
+  // workbench's own screens.
+  const sidecars = registerSidecarHandlers({
+    getWindow: () => mainWindow,
+    developmentUrl
+  })
+  removeSidecarHandlers = sidecars.dispose
   mainWindow = createWindow()
   if (app.isPackaged) setTimeout(() => { void updates.controller.check() }, 3_000)
 }
@@ -343,6 +354,8 @@ app.on('activate', () => {
 })
 
 app.on('before-quit', () => {
+  removeSidecarHandlers?.()
+  removeSidecarHandlers = null
   removeUpdateHandlers?.()
   removeUpdateHandlers = null
   removeRpcHandler?.()

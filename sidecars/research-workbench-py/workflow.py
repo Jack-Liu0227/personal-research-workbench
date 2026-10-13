@@ -31,7 +31,7 @@ from typing import Any
 from research_core import ResearchDB
 
 HERE = Path(__file__).resolve().parent
-DATA = HERE / "data"
+DATA = Path(os.environ.get("RESEARCH_WORKBENCH_DATA", HERE / "data"))
 PAPERS = DATA / "papers"
 NOTES = DATA / "notes"
 OUT = DATA / "out"

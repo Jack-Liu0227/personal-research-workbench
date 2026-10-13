@@ -53,7 +53,8 @@ import type {
   RssItemsQueryInput,
   RssItemsPage,
   RssItemsRefreshInput,
-  UpdateState
+  UpdateState,
+  SidecarState
 } from '@prw/contracts'
 import {
   AgentApprovalSchema,
@@ -273,6 +274,7 @@ import {
   RssItemsRefreshInputSchema,
   RssItemsRefreshResultSchema,
   UpdateStateSchema,
+  SidecarStateSchema,
   /** Same allowlist Main enforces; a non-http(s) URL never leaves the renderer bridge. */
   ExternalOpenUrlSchema
 } from '@prw/contracts'
@@ -291,6 +293,8 @@ const agentLedgerPushChannel = 'workbench:agent:ledger-push'
 const agentAuthChannel = 'workbench:agent:auth'
 const updateStateChannel = 'workbench:updates:state'
 const updateInvokeChannel = 'workbench:updates:invoke'
+const sidecarStateChannel = 'workbench:sidecar:state'
+const sidecarInvokeChannel = 'workbench:sidecar:invoke'
 
 class WorkbenchApiError extends Error {
   readonly code: string
@@ -412,6 +416,21 @@ function subscribeUpdates(handler: (state: UpdateState) => void): () => void {  
     if (!active) return
     active = false
     ipcRenderer.removeListener(updateStateChannel, listener)
+  }
+}
+
+function subscribeSidecar(handler: (state: SidecarState) => void): () => void {
+  let active = true
+  const listener = (_event: unknown, payload: unknown): void => {
+    if (!active) return
+    const parsed = SidecarStateSchema.safeParse(payload)
+    if (parsed.success) handler(parsed.data)
+  }
+  ipcRenderer.on(sidecarStateChannel, listener)
+  return () => {
+    if (!active) return
+    active = false
+    ipcRenderer.removeListener(sidecarStateChannel, listener)
   }
 }
 
@@ -911,6 +930,14 @@ const api: WorkbenchApiV2 = {
     download: () => ipcRenderer.invoke(updateInvokeChannel, 'download').then((value: unknown) => UpdateStateSchema.parse(value)),
     install: async () => { await ipcRenderer.invoke(updateInvokeChannel, 'install') },
     onState: subscribeUpdates
+  },
+  sidecar: {
+    // Main owns the process; the renderer only ever sees the state machine, so
+    // a malformed or hostile payload cannot reach the UI unchecked.
+    state: () => ipcRenderer.invoke(sidecarInvokeChannel, 'state').then((value: unknown) => SidecarStateSchema.parse(value)),
+    open: () => ipcRenderer.invoke(sidecarInvokeChannel, 'open').then((value: unknown) => SidecarStateSchema.parse(value)),
+    stop: () => ipcRenderer.invoke(sidecarInvokeChannel, 'stop').then((value: unknown) => SidecarStateSchema.parse(value)),
+    onState: subscribeSidecar
   }
 }
 
