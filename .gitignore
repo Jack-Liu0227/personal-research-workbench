@@ -23,3 +23,6 @@ apps/desktop/electron.vite.config.*.mjs
 # 科研工作 1.0 运行期数据：库、上传、笔记都在本机产生，不该进版本库
 # （data/out/ 已被上面的 out/ 规则覆盖，这里补齐其余）
 sidecars/research-workbench-py/data/
+/pi/
+/pi-web/
+/.playwright-mcp/

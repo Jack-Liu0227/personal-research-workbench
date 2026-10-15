@@ -1,9 +1,0 @@
-# 第三方依赖（精确版本来自作者本机实测环境）
-#   pip install -r requirements.txt
-# 许可证一列是选型依据，见仓库 AGENTS.md：GPL/AGPL 只作参考，不作直接依赖
-pypdf==6.16.2            # BSD-3-Clause   页数 / 页面合并（pdfio.py）
-pdfplumber==0.11.10      # MIT            文本与词坐标（pdfio.py）
-python-docx==1.2.0       # MIT            导出 Word（workflow.py）
-pywebview==6.2.1         # BSD-3-Clause   桌面窗口（server.py；纯命令行跑服务不需要）
-PyYAML==6.0.3            # MIT            读配置（server.py）
-pywin32==312             # PSF-2.0        可选：仅 installer.py 用，已包在 try/except 内
