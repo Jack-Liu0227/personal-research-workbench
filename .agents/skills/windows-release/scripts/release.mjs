@@ -528,7 +528,7 @@ function cmdVerify() {
   const legalGate = readJson(path.join(legal, 'release-gate.json'))
   if (legalGate.release !== version || !['PASS', 'PASS_WITH_DISCLOSED_EXCEPTIONS'].includes(legalGate.gate))
     fail('Packaged license gate is not approved for this version.')
-  for (const name of ['LICENSE', 'LICENSES.chromium.html'])
+  for (const name of ['LICENSE.electron.txt', 'LICENSES.chromium.html'])
     if (!fs.existsSync(path.join(unpacked, name))) fail(`Missing Electron notice: ${name}`)
 
   const effectiveFile = path.join(out, 'builder-effective-config.yaml')
