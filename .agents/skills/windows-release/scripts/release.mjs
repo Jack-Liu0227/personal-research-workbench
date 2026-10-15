@@ -521,7 +521,7 @@ function cmdVerify() {
     fail('Build log/artifact timestamp is outside this recorded build.')
   const buildLog = fs.readFileSync(receipt.logFile, 'utf8')
   const makensis = buildLog.split(/\r?\n/).filter((line) => /spawning/.test(line) && /makensis(?:\.exe)?/i.test(line))
-  if (!makensis.length || makensis.some((line) => !line.includes(`-DAPP_INSTALLER_STORE_FILE=${UPDATER_CACHE}\\\\installer.exe`)))
+  if (!makensis.length || makensis.some((line) => !line.includes(`-DAPP_INSTALLER_STORE_FILE=${UPDATER_CACHE}\\installer.exe`)))
     fail('This build has no matching real makensis cache define; build with DEBUG=electron-builder.')
 
   const legal = path.join(resources, 'legal', version)
