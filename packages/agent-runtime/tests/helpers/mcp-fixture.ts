@@ -46,4 +46,3 @@ export async function mcpFixture(options: { toolName?: string; description?: str
   return { endpoint: `http://127.0.0.1:${address.port}/mcp`, calls, headers,
     close: async () => { await Promise.all(servers.map((sdk) => sdk.close())); server.closeAllConnections(); server.close(); await once(server, 'close') } }
 }
-
