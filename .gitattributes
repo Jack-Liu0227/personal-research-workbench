@@ -1,2 +1,2 @@
 # Preserve content-addressed notice/source evidence byte-for-byte on Windows.
-docs/legal/** -text
+docs/legal/** -text -whitespace

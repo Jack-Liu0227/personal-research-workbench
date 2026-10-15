@@ -1,0 +1,424 @@
+{
+  "@aws-sdk/credential-provider-http@3.972.72": {
+    "license": "Apache-2.0",
+    "metadataUrl": "https://registry.npmjs.org/%40aws-sdk%2Fcredential-provider-http/3.972.72",
+    "repository": "https://github.com/aws/aws-sdk-js-v3",
+    "revision": "d760a00859a08b5d04590ee047510b49add12361",
+    "proof": {
+      "kind": "official-version-manifest",
+      "url": "https://raw.githubusercontent.com/aws/aws-sdk-js-v3/d760a00859a08b5d04590ee047510b49add12361/packages-internal/credential-provider-http/package.json",
+      "published": "2026-08-21T19:07:59.200Z",
+      "commitsUrl": "https://api.github.com/repos/aws/aws-sdk-js-v3/commits?path=packages-internal%2Fcredential-provider-http%2Fpackage.json&until=2026-08-21T19%3A07%3A59.200Z&per_page=8",
+      "note": "Exact name/version/license matched at source revision; npm omitted gitHead, so source-to-tarball reproducibility is not asserted."
+    },
+    "texts": [
+      {
+        "kind": "license",
+        "source": "https://raw.githubusercontent.com/aws/aws-sdk-js-v3/d760a00859a08b5d04590ee047510b49add12361/LICENSE",
+        "file": "license-texts/edea91454b811f127fbdea3d86f378f6719bd372ed440abf82b232f6fca06c3d.txt",
+        "sha256": "edea91454b811f127fbdea3d86f378f6719bd372ed440abf82b232f6fca06c3d"
+      }
+    ]
+  },
+  "@aws-sdk/credential-provider-login@3.972.77": {
+    "license": "Apache-2.0",
+    "metadataUrl": "https://registry.npmjs.org/%40aws-sdk%2Fcredential-provider-login/3.972.77",
+    "repository": "https://github.com/aws/aws-sdk-js-v3",
+    "revision": "d760a00859a08b5d04590ee047510b49add12361",
+    "proof": {
+      "kind": "official-version-manifest",
+      "url": "https://raw.githubusercontent.com/aws/aws-sdk-js-v3/d760a00859a08b5d04590ee047510b49add12361/packages-internal/credential-provider-login/package.json",
+      "published": "2026-08-21T19:06:58.723Z",
+      "commitsUrl": "https://api.github.com/repos/aws/aws-sdk-js-v3/commits?path=packages-internal%2Fcredential-provider-login%2Fpackage.json&until=2026-08-21T19%3A06%3A58.723Z&per_page=8",
+      "note": "Exact name/version/license matched at source revision; npm omitted gitHead, so source-to-tarball reproducibility is not asserted."
+    },
+    "texts": [
+      {
+        "kind": "license",
+        "source": "https://raw.githubusercontent.com/aws/aws-sdk-js-v3/d760a00859a08b5d04590ee047510b49add12361/LICENSE",
+        "file": "license-texts/edea91454b811f127fbdea3d86f378f6719bd372ed440abf82b232f6fca06c3d.txt",
+        "sha256": "edea91454b811f127fbdea3d86f378f6719bd372ed440abf82b232f6fca06c3d"
+      }
+    ]
+  },
+  "@aws-sdk/nested-clients@3.997.44": {
+    "license": "Apache-2.0",
+    "metadataUrl": "https://registry.npmjs.org/%40aws-sdk%2Fnested-clients/3.997.44",
+    "repository": "https://github.com/aws/aws-sdk-js-v3",
+    "revision": "d760a00859a08b5d04590ee047510b49add12361",
+    "proof": {
+      "kind": "official-version-manifest",
+      "url": "https://raw.githubusercontent.com/aws/aws-sdk-js-v3/d760a00859a08b5d04590ee047510b49add12361/packages-internal/nested-clients/package.json",
+      "published": "2026-08-21T19:08:01.680Z",
+      "commitsUrl": "https://api.github.com/repos/aws/aws-sdk-js-v3/commits?path=packages-internal%2Fnested-clients%2Fpackage.json&until=2026-08-21T19%3A08%3A01.680Z&per_page=8",
+      "note": "Exact name/version/license matched at source revision; npm omitted gitHead, so source-to-tarball reproducibility is not asserted."
+    },
+    "texts": [
+      {
+        "kind": "license",
+        "source": "https://raw.githubusercontent.com/aws/aws-sdk-js-v3/d760a00859a08b5d04590ee047510b49add12361/LICENSE",
+        "file": "license-texts/edea91454b811f127fbdea3d86f378f6719bd372ed440abf82b232f6fca06c3d.txt",
+        "sha256": "edea91454b811f127fbdea3d86f378f6719bd372ed440abf82b232f6fca06c3d"
+      }
+    ]
+  },
+  "@earendil-works/chord@0.85.1": {
+    "license": "MIT",
+    "metadataUrl": "https://registry.npmjs.org/%40earendil-works%2Fchord/0.85.1",
+    "repository": "https://github.com/earendil-works/pi",
+    "revision": "d981de1229ef899957bbe968bc8dcda02a21f477",
+    "proof": {
+      "kind": "npm-gitHead"
+    },
+    "texts": [
+      {
+        "kind": "license",
+        "source": "https://raw.githubusercontent.com/earendil-works/pi/d981de1229ef899957bbe968bc8dcda02a21f477/LICENSE",
+        "file": "license-texts/0457f5bcec3b3b211605dfb5d1a49042fd638f3686a410fe099c24a25af13c48.txt",
+        "sha256": "0457f5bcec3b3b211605dfb5d1a49042fd638f3686a410fe099c24a25af13c48"
+      }
+    ]
+  },
+  "@earendil-works/pi-agent-core@0.85.1": {
+    "license": "MIT",
+    "metadataUrl": "https://registry.npmjs.org/%40earendil-works%2Fpi-agent-core/0.85.1",
+    "repository": "https://github.com/earendil-works/pi",
+    "revision": "d981de1229ef899957bbe968bc8dcda02a21f477",
+    "proof": {
+      "kind": "npm-gitHead"
+    },
+    "texts": [
+      {
+        "kind": "license",
+        "source": "https://raw.githubusercontent.com/earendil-works/pi/d981de1229ef899957bbe968bc8dcda02a21f477/LICENSE",
+        "file": "license-texts/0457f5bcec3b3b211605dfb5d1a49042fd638f3686a410fe099c24a25af13c48.txt",
+        "sha256": "0457f5bcec3b3b211605dfb5d1a49042fd638f3686a410fe099c24a25af13c48"
+      }
+    ]
+  },
+  "@earendil-works/pi-ai@0.85.1": {
+    "license": "MIT",
+    "metadataUrl": "https://registry.npmjs.org/%40earendil-works%2Fpi-ai/0.85.1",
+    "repository": "https://github.com/earendil-works/pi",
+    "revision": "d981de1229ef899957bbe968bc8dcda02a21f477",
+    "proof": {
+      "kind": "npm-gitHead"
+    },
+    "texts": [
+      {
+        "kind": "license",
+        "source": "https://raw.githubusercontent.com/earendil-works/pi/d981de1229ef899957bbe968bc8dcda02a21f477/LICENSE",
+        "file": "license-texts/0457f5bcec3b3b211605dfb5d1a49042fd638f3686a410fe099c24a25af13c48.txt",
+        "sha256": "0457f5bcec3b3b211605dfb5d1a49042fd638f3686a410fe099c24a25af13c48"
+      }
+    ]
+  },
+  "@earendil-works/pi-coding-agent@0.85.1": {
+    "license": "MIT",
+    "metadataUrl": "https://registry.npmjs.org/%40earendil-works%2Fpi-coding-agent/0.85.1",
+    "repository": "https://github.com/earendil-works/pi",
+    "revision": "d981de1229ef899957bbe968bc8dcda02a21f477",
+    "proof": {
+      "kind": "npm-gitHead"
+    },
+    "texts": [
+      {
+        "kind": "license",
+        "source": "https://raw.githubusercontent.com/earendil-works/pi/d981de1229ef899957bbe968bc8dcda02a21f477/LICENSE",
+        "file": "license-texts/0457f5bcec3b3b211605dfb5d1a49042fd638f3686a410fe099c24a25af13c48.txt",
+        "sha256": "0457f5bcec3b3b211605dfb5d1a49042fd638f3686a410fe099c24a25af13c48"
+      }
+    ]
+  },
+  "@earendil-works/pi-telemetry@0.85.1": {
+    "license": "MIT",
+    "metadataUrl": "https://registry.npmjs.org/%40earendil-works%2Fpi-telemetry/0.85.1",
+    "repository": "https://github.com/earendil-works/pi",
+    "revision": "d981de1229ef899957bbe968bc8dcda02a21f477",
+    "proof": {
+      "kind": "npm-gitHead"
+    },
+    "texts": [
+      {
+        "kind": "license",
+        "source": "https://raw.githubusercontent.com/earendil-works/pi/d981de1229ef899957bbe968bc8dcda02a21f477/LICENSE",
+        "file": "license-texts/0457f5bcec3b3b211605dfb5d1a49042fd638f3686a410fe099c24a25af13c48.txt",
+        "sha256": "0457f5bcec3b3b211605dfb5d1a49042fd638f3686a410fe099c24a25af13c48"
+      }
+    ]
+  },
+  "@earendil-works/pi-tui@0.85.1": {
+    "license": "MIT",
+    "metadataUrl": "https://registry.npmjs.org/%40earendil-works%2Fpi-tui/0.85.1",
+    "repository": "https://github.com/earendil-works/pi",
+    "revision": "d981de1229ef899957bbe968bc8dcda02a21f477",
+    "proof": {
+      "kind": "npm-gitHead"
+    },
+    "texts": [
+      {
+        "kind": "license",
+        "source": "https://raw.githubusercontent.com/earendil-works/pi/d981de1229ef899957bbe968bc8dcda02a21f477/LICENSE",
+        "file": "license-texts/0457f5bcec3b3b211605dfb5d1a49042fd638f3686a410fe099c24a25af13c48.txt",
+        "sha256": "0457f5bcec3b3b211605dfb5d1a49042fd638f3686a410fe099c24a25af13c48"
+      }
+    ]
+  },
+  "@esbuild/win32-x64@0.28.1": {
+    "license": "MIT",
+    "metadataUrl": "https://registry.npmjs.org/%40esbuild%2Fwin32-x64/0.28.1",
+    "repository": "https://github.com/evanw/esbuild",
+    "revision": "bb9db84c02433fbe37b3509f53f9f3e3cc48725e",
+    "proof": {
+      "kind": "npm-gitHead"
+    },
+    "texts": [
+      {
+        "kind": "license",
+        "source": "https://raw.githubusercontent.com/evanw/esbuild/bb9db84c02433fbe37b3509f53f9f3e3cc48725e/LICENSE.md",
+        "file": "license-texts/b40ec5baec7bb34fa5b1c09521fa3cd52d5fad7adafed74932a2010d3612a681.txt",
+        "sha256": "b40ec5baec7bb34fa5b1c09521fa3cd52d5fad7adafed74932a2010d3612a681"
+      }
+    ]
+  },
+  "@nodable/entities@3.0.0": {
+    "license": "MIT",
+    "metadataUrl": "https://registry.npmjs.org/%40nodable%2Fentities/3.0.0",
+    "repository": "https://github.com/nodable/val-parsers",
+    "revision": "d2070d76a8ba07e6c7fa142caeb51ffd756e47eb",
+    "proof": {
+      "kind": "npm-gitHead"
+    },
+    "texts": [
+      {
+        "kind": "license",
+        "source": "https://raw.githubusercontent.com/nodable/val-parsers/d2070d76a8ba07e6c7fa142caeb51ffd756e47eb/LICENSE",
+        "file": "license-texts/750cb3fb6362804957ef52caaf9b5c824015be44d494637330d7cd8834d31d40.txt",
+        "sha256": "750cb3fb6362804957ef52caaf9b5c824015be44d494637330d7cd8834d31d40"
+      }
+    ]
+  },
+  "@radix-ui/react-compose-refs@1.1.2": {
+    "license": "MIT",
+    "metadataUrl": "https://registry.npmjs.org/%40radix-ui%2Freact-compose-refs/1.1.2",
+    "repository": "https://github.com/radix-ui/primitives",
+    "revision": "fcef0668a5c827e5a4baac405474d75680f9a4eb",
+    "proof": {
+      "kind": "npm-gitHead"
+    },
+    "texts": [
+      {
+        "kind": "license",
+        "source": "https://raw.githubusercontent.com/radix-ui/primitives/fcef0668a5c827e5a4baac405474d75680f9a4eb/LICENSE",
+        "file": "license-texts/0e80a2d229d2fd4fc7e8636142ec5d0ff0bc031f14c15b682e2ac01dfd5b5138.txt",
+        "sha256": "0e80a2d229d2fd4fc7e8636142ec5d0ff0bc031f14c15b682e2ac01dfd5b5138"
+      }
+    ]
+  },
+  "@radix-ui/react-context@1.1.2": {
+    "license": "MIT",
+    "metadataUrl": "https://registry.npmjs.org/%40radix-ui%2Freact-context/1.1.2",
+    "repository": "https://github.com/radix-ui/primitives",
+    "revision": "fcef0668a5c827e5a4baac405474d75680f9a4eb",
+    "proof": {
+      "kind": "npm-gitHead"
+    },
+    "texts": [
+      {
+        "kind": "license",
+        "source": "https://raw.githubusercontent.com/radix-ui/primitives/fcef0668a5c827e5a4baac405474d75680f9a4eb/LICENSE",
+        "file": "license-texts/0e80a2d229d2fd4fc7e8636142ec5d0ff0bc031f14c15b682e2ac01dfd5b5138.txt",
+        "sha256": "0e80a2d229d2fd4fc7e8636142ec5d0ff0bc031f14c15b682e2ac01dfd5b5138"
+      }
+    ]
+  },
+  "@radix-ui/react-direction@1.1.1": {
+    "license": "MIT",
+    "metadataUrl": "https://registry.npmjs.org/%40radix-ui%2Freact-direction/1.1.1",
+    "repository": "https://github.com/radix-ui/primitives",
+    "revision": "fcef0668a5c827e5a4baac405474d75680f9a4eb",
+    "proof": {
+      "kind": "npm-gitHead"
+    },
+    "texts": [
+      {
+        "kind": "license",
+        "source": "https://raw.githubusercontent.com/radix-ui/primitives/fcef0668a5c827e5a4baac405474d75680f9a4eb/LICENSE",
+        "file": "license-texts/0e80a2d229d2fd4fc7e8636142ec5d0ff0bc031f14c15b682e2ac01dfd5b5138.txt",
+        "sha256": "0e80a2d229d2fd4fc7e8636142ec5d0ff0bc031f14c15b682e2ac01dfd5b5138"
+      }
+    ]
+  },
+  "@radix-ui/react-id@1.1.1": {
+    "license": "MIT",
+    "metadataUrl": "https://registry.npmjs.org/%40radix-ui%2Freact-id/1.1.1",
+    "repository": "https://github.com/radix-ui/primitives",
+    "revision": "fcef0668a5c827e5a4baac405474d75680f9a4eb",
+    "proof": {
+      "kind": "npm-gitHead"
+    },
+    "texts": [
+      {
+        "kind": "license",
+        "source": "https://raw.githubusercontent.com/radix-ui/primitives/fcef0668a5c827e5a4baac405474d75680f9a4eb/LICENSE",
+        "file": "license-texts/0e80a2d229d2fd4fc7e8636142ec5d0ff0bc031f14c15b682e2ac01dfd5b5138.txt",
+        "sha256": "0e80a2d229d2fd4fc7e8636142ec5d0ff0bc031f14c15b682e2ac01dfd5b5138"
+      }
+    ]
+  },
+  "@radix-ui/react-use-callback-ref@1.1.1": {
+    "license": "MIT",
+    "metadataUrl": "https://registry.npmjs.org/%40radix-ui%2Freact-use-callback-ref/1.1.1",
+    "repository": "https://github.com/radix-ui/primitives",
+    "revision": "fcef0668a5c827e5a4baac405474d75680f9a4eb",
+    "proof": {
+      "kind": "npm-gitHead"
+    },
+    "texts": [
+      {
+        "kind": "license",
+        "source": "https://raw.githubusercontent.com/radix-ui/primitives/fcef0668a5c827e5a4baac405474d75680f9a4eb/LICENSE",
+        "file": "license-texts/0e80a2d229d2fd4fc7e8636142ec5d0ff0bc031f14c15b682e2ac01dfd5b5138.txt",
+        "sha256": "0e80a2d229d2fd4fc7e8636142ec5d0ff0bc031f14c15b682e2ac01dfd5b5138"
+      }
+    ]
+  },
+  "@radix-ui/react-use-escape-keydown@1.1.1": {
+    "license": "MIT",
+    "metadataUrl": "https://registry.npmjs.org/%40radix-ui%2Freact-use-escape-keydown/1.1.1",
+    "repository": "https://github.com/radix-ui/primitives",
+    "revision": "fcef0668a5c827e5a4baac405474d75680f9a4eb",
+    "proof": {
+      "kind": "npm-gitHead"
+    },
+    "texts": [
+      {
+        "kind": "license",
+        "source": "https://raw.githubusercontent.com/radix-ui/primitives/fcef0668a5c827e5a4baac405474d75680f9a4eb/LICENSE",
+        "file": "license-texts/0e80a2d229d2fd4fc7e8636142ec5d0ff0bc031f14c15b682e2ac01dfd5b5138.txt",
+        "sha256": "0e80a2d229d2fd4fc7e8636142ec5d0ff0bc031f14c15b682e2ac01dfd5b5138"
+      }
+    ]
+  },
+  "@radix-ui/react-use-layout-effect@1.1.1": {
+    "license": "MIT",
+    "metadataUrl": "https://registry.npmjs.org/%40radix-ui%2Freact-use-layout-effect/1.1.1",
+    "repository": "https://github.com/radix-ui/primitives",
+    "revision": "fcef0668a5c827e5a4baac405474d75680f9a4eb",
+    "proof": {
+      "kind": "npm-gitHead"
+    },
+    "texts": [
+      {
+        "kind": "license",
+        "source": "https://raw.githubusercontent.com/radix-ui/primitives/fcef0668a5c827e5a4baac405474d75680f9a4eb/LICENSE",
+        "file": "license-texts/0e80a2d229d2fd4fc7e8636142ec5d0ff0bc031f14c15b682e2ac01dfd5b5138.txt",
+        "sha256": "0e80a2d229d2fd4fc7e8636142ec5d0ff0bc031f14c15b682e2ac01dfd5b5138"
+      }
+    ]
+  },
+  "@radix-ui/react-use-rect@1.1.1": {
+    "license": "MIT",
+    "metadataUrl": "https://registry.npmjs.org/%40radix-ui%2Freact-use-rect/1.1.1",
+    "repository": "https://github.com/radix-ui/primitives",
+    "revision": "fcef0668a5c827e5a4baac405474d75680f9a4eb",
+    "proof": {
+      "kind": "npm-gitHead"
+    },
+    "texts": [
+      {
+        "kind": "license",
+        "source": "https://raw.githubusercontent.com/radix-ui/primitives/fcef0668a5c827e5a4baac405474d75680f9a4eb/LICENSE",
+        "file": "license-texts/0e80a2d229d2fd4fc7e8636142ec5d0ff0bc031f14c15b682e2ac01dfd5b5138.txt",
+        "sha256": "0e80a2d229d2fd4fc7e8636142ec5d0ff0bc031f14c15b682e2ac01dfd5b5138"
+      }
+    ]
+  },
+  "@radix-ui/react-use-size@1.1.1": {
+    "license": "MIT",
+    "metadataUrl": "https://registry.npmjs.org/%40radix-ui%2Freact-use-size/1.1.1",
+    "repository": "https://github.com/radix-ui/primitives",
+    "revision": "fcef0668a5c827e5a4baac405474d75680f9a4eb",
+    "proof": {
+      "kind": "npm-gitHead"
+    },
+    "texts": [
+      {
+        "kind": "license",
+        "source": "https://raw.githubusercontent.com/radix-ui/primitives/fcef0668a5c827e5a4baac405474d75680f9a4eb/LICENSE",
+        "file": "license-texts/0e80a2d229d2fd4fc7e8636142ec5d0ff0bc031f14c15b682e2ac01dfd5b5138.txt",
+        "sha256": "0e80a2d229d2fd4fc7e8636142ec5d0ff0bc031f14c15b682e2ac01dfd5b5138"
+      }
+    ]
+  },
+  "@radix-ui/rect@1.1.1": {
+    "license": "MIT",
+    "metadataUrl": "https://registry.npmjs.org/%40radix-ui%2Frect/1.1.1",
+    "repository": "https://github.com/radix-ui/primitives",
+    "revision": "fcef0668a5c827e5a4baac405474d75680f9a4eb",
+    "proof": {
+      "kind": "npm-gitHead"
+    },
+    "texts": [
+      {
+        "kind": "license",
+        "source": "https://raw.githubusercontent.com/radix-ui/primitives/fcef0668a5c827e5a4baac405474d75680f9a4eb/LICENSE",
+        "file": "license-texts/0e80a2d229d2fd4fc7e8636142ec5d0ff0bc031f14c15b682e2ac01dfd5b5138.txt",
+        "sha256": "0e80a2d229d2fd4fc7e8636142ec5d0ff0bc031f14c15b682e2ac01dfd5b5138"
+      }
+    ]
+  },
+  "data-uri-to-buffer@4.0.1": {
+    "license": "MIT",
+    "metadataUrl": "https://registry.npmjs.org/data-uri-to-buffer/4.0.1",
+    "repository": "https://github.com/TooTallNate/node-data-uri-to-buffer",
+    "revision": "85cd8c854aefbf1bb636789d80364cfac8ea1583",
+    "proof": {
+      "kind": "npm-gitHead"
+    },
+    "texts": [
+      {
+        "kind": "license",
+        "source": "https://raw.githubusercontent.com/TooTallNate/node-data-uri-to-buffer/85cd8c854aefbf1bb636789d80364cfac8ea1583/README.md#license",
+        "file": "license-texts/9b7a157a0079ef346f3215b964071fa460d0dd251ca93cbf581bcc91595066ca.txt",
+        "sha256": "9b7a157a0079ef346f3215b964071fa460d0dd251ca93cbf581bcc91595066ca"
+      }
+    ]
+  },
+  "drizzle-orm@0.45.2": {
+    "license": "Apache-2.0",
+    "metadataUrl": "https://registry.npmjs.org/drizzle-orm/0.45.2",
+    "repository": "https://github.com/drizzle-team/drizzle-orm",
+    "revision": "273c78071d4841b497f5144734b38294df7ec64b",
+    "proof": {
+      "kind": "npm-provenance-metadata",
+      "url": "https://registry.npmjs.org/-/npm/v1/attestations/drizzle-orm@0.45.2",
+      "note": "Registry metadata read; cryptographic attestation signature not independently verified."
+    },
+    "texts": [
+      {
+        "kind": "license",
+        "source": "https://raw.githubusercontent.com/drizzle-team/drizzle-orm/273c78071d4841b497f5144734b38294df7ec64b/LICENSE",
+        "file": "license-texts/c71d239df91726fc519c6eb72d318ec65820627232b2f796219e87dcf35d0ab4.txt",
+        "sha256": "c71d239df91726fc519c6eb72d318ec65820627232b2f796219e87dcf35d0ab4"
+      }
+    ]
+  },
+  "standardwebhooks@1.1.1": {
+    "license": "MIT",
+    "metadataUrl": "https://registry.npmjs.org/standardwebhooks/1.1.1",
+    "repository": "https://github.com/standard-webhooks/standard-webhooks",
+    "revision": "b4d2c14fc5b4ccff3ff271e3b087dff812254c59",
+    "proof": {
+      "kind": "npm-gitHead"
+    },
+    "texts": [
+      {
+        "kind": "license",
+        "source": "https://raw.githubusercontent.com/standard-webhooks/standard-webhooks/b4d2c14fc5b4ccff3ff271e3b087dff812254c59/LICENSE",
+        "file": "license-texts/c71d239df91726fc519c6eb72d318ec65820627232b2f796219e87dcf35d0ab4.txt",
+        "sha256": "c71d239df91726fc519c6eb72d318ec65820627232b2f796219e87dcf35d0ab4"
+      }
+    ]
+  }
+}

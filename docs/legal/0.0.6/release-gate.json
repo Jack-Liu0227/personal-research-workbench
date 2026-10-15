@@ -1,0 +1,91 @@
+{
+  "release": "0.0.6",
+  "gate": "PASS_WITH_DISCLOSED_EXCEPTIONS",
+  "inputRows": 288,
+  "packageVersions": 294,
+  "licenseCounts": {
+    "MIT": 208,
+    "Apache-2.0": 50,
+    "BSD-3-Clause": 15,
+    "Python-2.0": 1,
+    "Unlicense": 1,
+    "ISC": 14,
+    "BSD-2-Clause": 1,
+    "BlueOak-1.0.0": 3,
+    "0BSD": 1
+  },
+  "supplementedPackages": 24,
+  "native": {
+    "report": "native-clipboard-evidence.json",
+    "sha256": "f294da7254e36c81d323749e063702475a521246f3f7ab172bcc2b6f25804dd4",
+    "lockedCrates": 121,
+    "checksumVerifiedCrates": 121,
+    "gaps": 0,
+    "otherTargetGaps": 15
+  },
+  "gaps": [
+    {
+      "package": "@mariozechner/clipboard-win32-x64-msvc@0.3.9",
+      "reason": "No complete upstream license text in package or verified exact-revision source.",
+      "exceptionAvailable": true
+    },
+    {
+      "package": "@mariozechner/clipboard@0.3.9",
+      "reason": "No complete upstream license text in package or verified exact-revision source.",
+      "exceptionAvailable": true
+    },
+    {
+      "package": "lazy-val@1.0.5",
+      "reason": "No complete upstream license text in package or verified exact-revision source.",
+      "exceptionAvailable": true
+    },
+    {
+      "package": "react-remove-scroll-bar@2.3.8",
+      "reason": "No complete upstream license text in package or verified exact-revision source.",
+      "exceptionAvailable": true
+    }
+  ],
+  "exceptionsSha256": "7f01b59c6e7d611961b6b2ef883c5213371b0e96c53e1088a3713d6e7c0c724d",
+  "exceptionApproval": {
+    "release": "0.0.6",
+    "decision": "accepted",
+    "reviewerRole": "Review Security",
+    "packageIds": [
+      "@mariozechner/clipboard-win32-x64-msvc@0.3.9",
+      "@mariozechner/clipboard@0.3.9",
+      "lazy-val@1.0.5",
+      "react-remove-scroll-bar@2.3.8"
+    ],
+    "exceptionsSha256": "7f01b59c6e7d611961b6b2ef883c5213371b0e96c53e1088a3713d6e7c0c724d",
+    "nativeEvidenceSha256": "f294da7254e36c81d323749e063702475a521246f3f7ab172bcc2b6f25804dd4",
+    "reviewReference": "Independent Review Security agent /root/independent_review; 2026-10-15; exact frozen evidence, offline reproduction, notice hashes and license-selection counterexamples independently checked before this record was authored.",
+    "scope": "Release-scoped engineering compliance risk acceptance for the four disclosed missing upstream MIT license/attribution bodies in the Personal Research Workbench 0.0.6 Windows x64 candidate only. This does not assert that missing upstream notices were recovered or that no additional notice exists.",
+    "basis": [
+      "Official exact-version npm responses declare MIT for all four packages; retained response bodies, extracted declarations, bounded search results and original installed README documents were independently checked against their recorded hashes.",
+      "The SPDX MIT template remains explicitly marked standard-template-not-upstream, with its placeholder unfilled. No author is inferred to be the copyright holder and no upstream wording is synthesized.",
+      "All 121 exact crate name/version/checksum records match the retained source Cargo.lock and carry archiveVerified assertions. The reviewer independently checked the lock/report correspondence and retained source/notice hashes, but did not re-download archives, compile native code or establish binary reproducibility.",
+      "The conservative Windows/build dependency closure has zero reported license-body or supported-selection gaps. Original selected MIT, BSL-1.0, Zlib, Apache-2.0 and ISC bodies are retained. The exact unicode-ident compound selects MIT AND Unicode-3.0 and retains both bodies. Nonselected alternatives or exceptions are not thereby approved.",
+      "The acknowledged clipboard_rs upstream MIT notice is retained at its recorded fixed revision; exact equivalence to modified vendored sources is not asserted.",
+      "Independent read-only checks verified 254 content-addressed text files, 520 referenced text digests, all 121 stored license selections and seven unsupported-expression rejection cases. The offline generator check reproduced the frozen evidence with exit 1 solely for these four not-yet-approved exceptions."
+    ],
+    "conditions": [
+      "Preserve the complete frozen disclosure, original available notices, content-addressed license texts, chosen-license evidence and standard-template labels in the actual packaged resources/legal/0.0.6 payload.",
+      "Preserve Electron and Chromium distribution notices in the actual Windows package and independently verify the final payload; this record alone does not establish their presence.",
+      "Retain all 15 other-target gaps and the Apple SDK derivation caveat. No macOS or other-target license completeness or distribution approval is granted.",
+      "Any change to either bound evidence document, the four exact versions or the native dependency provenance requires a new review. This acceptance does not carry forward automatically to another release."
+    ],
+    "limitations": [
+      "Missing upstream copyright/notice bodies remain a disclosed legal and attribution risk. This is not legal advice, legal clearance, a copyright warranty or a cryptographic reviewer signature.",
+      "The inventory is a conservative source/dependency superset, not an exhaustive binary SBOM, enabled-feature proof, linker audit or source-to-binary reproducibility attestation.",
+      "Actual NSIS package identity, installation, restart, persistence, reinstall, migration, uninstall, signing, update behavior and online service acceptance remain separate gates. This record does not approve publication."
+    ]
+  },
+  "limitations": [
+    "Independent legal/security approval is separate from this mechanical gate.",
+    "SPDX standard templates do not reconstruct missing upstream copyright/notice text; disclosed exceptions require an explicit release-scoped independent acceptance record.",
+    "An approval file is an auditable decision record, not cryptographic proof of reviewer identity and not legal advice.",
+    "Native/bundled subcomponents are covered only to the extent identified by upstream package notices; this is not an exhaustive binary/SBOM audit.",
+    "Electron/Chromium licenses must remain in the packaged distribution.",
+    "Official npm provenance metadata is not claimed as independently signature-verified."
+  ]
+}

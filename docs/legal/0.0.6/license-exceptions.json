@@ -1,0 +1,285 @@
+{
+  "@mariozechner/clipboard-win32-x64-msvc@0.3.9": {
+    "declaration": {
+      "name": "@mariozechner/clipboard-win32-x64-msvc",
+      "version": "0.3.9",
+      "license": "MIT",
+      "repository": {
+        "url": "git+https://github.com/badlogic/clipboard.git",
+        "type": "git"
+      },
+      "gitHead": "3a0f58eb7250a9a46ad77863bc4618eee099a248"
+    },
+    "declarationSource": "https://registry.npmjs.org/%40mariozechner%2Fclipboard-win32-x64-msvc/0.3.9",
+    "declarationScope": "Exact unmodified fields extracted from the official npm exact-version response; not the full registry metadata document.",
+    "reason": "Search of installed native package root and shared official gitHead tree did not retrieve a complete wrapper license body. Native/vendored dependencies are separately audited; this is not proof no notice exists elsewhere.",
+    "standardText": {
+      "kind": "standard-template-not-upstream",
+      "source": "https://raw.githubusercontent.com/spdx/license-list-data/d46e94e2c78ceede1cfc63cfa0396472d2798d4c/text/MIT.txt",
+      "file": "license-texts/b05785f9f18e6716bab63424b11454513b9943a222595b70411009202fc592b5.txt",
+      "sha256": "b05785f9f18e6716bab63424b11454513b9943a222595b70411009202fc592b5"
+    },
+    "standardRevision": {
+      "repository": "https://github.com/spdx/license-list-data",
+      "tag": "v3.27.0",
+      "tagObject": "60e0de29cbcf3e83bf9d5e299972a1969516d918",
+      "commit": "d46e94e2c78ceede1cfc63cfa0396472d2798d4c"
+    },
+    "disclosure": "SPDX standard MIT template, NOT recovered upstream notice. Placeholder copyright remains unfilled; no copyright holder is inferred. Missing upstream attribution remains a disclosed legal/compliance risk. This is not legal advice.",
+    "declarationSha256": "ae9cea393a2caf1dcc126f1d9567afac7b746e65580b6aa3c17275c8fcdc464f",
+    "localSearch": {
+      "source": "npm:@mariozechner/clipboard-win32-x64-msvc@0.3.9",
+      "rootFiles": [
+        "README.md",
+        "clipboard.win32-x64-msvc.node",
+        "package.json"
+      ],
+      "completeLicenseBodyRecovered": false,
+      "retainedDocuments": [
+        {
+          "kind": "readme-not-license",
+          "source": "npm:@mariozechner/clipboard-win32-x64-msvc@0.3.9/README.md",
+          "file": "license-texts/91ad6d84ce22a105ade522a1e6101caa0a4ad41686a3abc5dd697a94061219bb.txt",
+          "sha256": "91ad6d84ce22a105ade522a1e6101caa0a4ad41686a3abc5dd697a94061219bb"
+        }
+      ]
+    },
+    "searchResponses": [
+      {
+        "url": "https://registry.npmjs.org/%40mariozechner%2Fclipboard-win32-x64-msvc/0.3.9",
+        "status": 200,
+        "responseSha256": "fdee6c1fe4fed3532274fabdeed3700610e9037583d3e4d5f9b3885d017b8ac5",
+        "file": "search-evidence/fdee6c1fe4fed3532274fabdeed3700610e9037583d3e4d5f9b3885d017b8ac5.txt"
+      },
+      {
+        "url": "https://raw.githubusercontent.com/badlogic/clipboard/3a0f58eb7250a9a46ad77863bc4618eee099a248/LICENSE",
+        "status": null,
+        "failure": "Bounded single request failed; no response body was received or retained."
+      },
+      {
+        "url": "https://raw.githubusercontent.com/badlogic/clipboard/3a0f58eb7250a9a46ad77863bc4618eee099a248/LICENSE.md",
+        "status": null,
+        "failure": "Bounded single request failed; no response body was received or retained."
+      },
+      {
+        "url": "https://raw.githubusercontent.com/badlogic/clipboard/3a0f58eb7250a9a46ad77863bc4618eee099a248/README.md",
+        "status": null,
+        "failure": "Bounded single request failed; no response body was received or retained."
+      }
+    ],
+    "searchScope": "Bounded exact npm declaration and three common root paths at npm gitHead; statuses and response hashes retained. Not an exhaustive repository search; no global absence claim."
+  },
+  "@mariozechner/clipboard@0.3.9": {
+    "declaration": {
+      "name": "@mariozechner/clipboard",
+      "version": "0.3.9",
+      "license": "MIT",
+      "repository": {
+        "url": "git+https://github.com/badlogic/clipboard.git",
+        "type": "git"
+      },
+      "gitHead": "3a0f58eb7250a9a46ad77863bc4618eee099a248"
+    },
+    "declarationSource": "https://registry.npmjs.org/%40mariozechner%2Fclipboard/0.3.9",
+    "declarationScope": "Exact unmodified fields extracted from the official npm exact-version response; not the full registry metadata document.",
+    "reason": "Search of installed root files/README and official gitHead root/tree did not retrieve a complete license body. Repository moved from badlogic/clipboard to earendil-works/clipboard. This is bounded search evidence, not proof no notice exists elsewhere.",
+    "standardText": {
+      "kind": "standard-template-not-upstream",
+      "source": "https://raw.githubusercontent.com/spdx/license-list-data/d46e94e2c78ceede1cfc63cfa0396472d2798d4c/text/MIT.txt",
+      "file": "license-texts/b05785f9f18e6716bab63424b11454513b9943a222595b70411009202fc592b5.txt",
+      "sha256": "b05785f9f18e6716bab63424b11454513b9943a222595b70411009202fc592b5"
+    },
+    "standardRevision": {
+      "repository": "https://github.com/spdx/license-list-data",
+      "tag": "v3.27.0",
+      "tagObject": "60e0de29cbcf3e83bf9d5e299972a1969516d918",
+      "commit": "d46e94e2c78ceede1cfc63cfa0396472d2798d4c"
+    },
+    "disclosure": "SPDX standard MIT template, NOT recovered upstream notice. Placeholder copyright remains unfilled; no copyright holder is inferred. Missing upstream attribution remains a disclosed legal/compliance risk. This is not legal advice.",
+    "declarationSha256": "e116360af4999041726972851c5ab6ffa2a6f89539b1b64d682823fd69988854",
+    "localSearch": {
+      "source": "npm:@mariozechner/clipboard@0.3.9",
+      "rootFiles": [
+        ".yarnrc.yml",
+        "Cargo.toml",
+        "README.md",
+        "build.rs",
+        "exp.ts",
+        "index.d.ts",
+        "index.js",
+        "package.json"
+      ],
+      "completeLicenseBodyRecovered": false,
+      "retainedDocuments": [
+        {
+          "kind": "readme-not-license",
+          "source": "npm:@mariozechner/clipboard@0.3.9/README.md",
+          "file": "license-texts/c4f6357dcd297427b5cd21a5eed895dc5a6984eae1bda2c1d25a1af1fce66f4c.txt",
+          "sha256": "c4f6357dcd297427b5cd21a5eed895dc5a6984eae1bda2c1d25a1af1fce66f4c"
+        }
+      ]
+    },
+    "searchResponses": [
+      {
+        "url": "https://registry.npmjs.org/%40mariozechner%2Fclipboard/0.3.9",
+        "status": 200,
+        "responseSha256": "d321c7eec72f6c52b75549660087e1f4ec0346e44b90b935c32377275332ca9b",
+        "file": "search-evidence/d321c7eec72f6c52b75549660087e1f4ec0346e44b90b935c32377275332ca9b.txt"
+      },
+      {
+        "url": "https://raw.githubusercontent.com/badlogic/clipboard/3a0f58eb7250a9a46ad77863bc4618eee099a248/LICENSE",
+        "status": null,
+        "failure": "Bounded single request failed; no response body was received or retained."
+      },
+      {
+        "url": "https://raw.githubusercontent.com/badlogic/clipboard/3a0f58eb7250a9a46ad77863bc4618eee099a248/LICENSE.md",
+        "status": null,
+        "failure": "Bounded single request failed; no response body was received or retained."
+      },
+      {
+        "url": "https://raw.githubusercontent.com/badlogic/clipboard/3a0f58eb7250a9a46ad77863bc4618eee099a248/README.md",
+        "status": null,
+        "failure": "Bounded single request failed; no response body was received or retained."
+      }
+    ],
+    "searchScope": "Bounded exact npm declaration and three common root paths at npm gitHead; statuses and response hashes retained. Not an exhaustive repository search; no global absence claim."
+  },
+  "lazy-val@1.0.5": {
+    "declaration": {
+      "name": "lazy-val",
+      "version": "1.0.5",
+      "license": "MIT",
+      "repository": {
+        "url": "git+https://github.com/develar/lazy-val.git",
+        "type": "git"
+      },
+      "gitHead": "b69ad4119f1b19bdab13c61ee2fcc88d46b89071"
+    },
+    "declarationSource": "https://registry.npmjs.org/lazy-val/1.0.5",
+    "declarationScope": "Exact unmodified fields extracted from the official npm exact-version response; not the full registry metadata document.",
+    "reason": "Search of installed root/README and official gitHead root/tree did not retrieve a complete license body. This is not proof no notice exists elsewhere.",
+    "standardText": {
+      "kind": "standard-template-not-upstream",
+      "source": "https://raw.githubusercontent.com/spdx/license-list-data/d46e94e2c78ceede1cfc63cfa0396472d2798d4c/text/MIT.txt",
+      "file": "license-texts/b05785f9f18e6716bab63424b11454513b9943a222595b70411009202fc592b5.txt",
+      "sha256": "b05785f9f18e6716bab63424b11454513b9943a222595b70411009202fc592b5"
+    },
+    "standardRevision": {
+      "repository": "https://github.com/spdx/license-list-data",
+      "tag": "v3.27.0",
+      "tagObject": "60e0de29cbcf3e83bf9d5e299972a1969516d918",
+      "commit": "d46e94e2c78ceede1cfc63cfa0396472d2798d4c"
+    },
+    "disclosure": "SPDX standard MIT template, NOT recovered upstream notice. Placeholder copyright remains unfilled; no copyright holder is inferred. Missing upstream attribution remains a disclosed legal/compliance risk. This is not legal advice.",
+    "declarationSha256": "9f05732046028b4b7425775142e1013b6ccfaf0eb125ba2c791bd217b3ca3976",
+    "localSearch": {
+      "source": "npm:lazy-val@1.0.5",
+      "rootFiles": [
+        "package.json",
+        "readme.md"
+      ],
+      "completeLicenseBodyRecovered": false,
+      "retainedDocuments": [
+        {
+          "kind": "readme-not-license",
+          "source": "npm:lazy-val@1.0.5/readme.md",
+          "file": "license-texts/87dd77cd27b045ab279f6f2c99acedaeec6b7c92e296a354bb2687b9f2965438.txt",
+          "sha256": "87dd77cd27b045ab279f6f2c99acedaeec6b7c92e296a354bb2687b9f2965438"
+        }
+      ]
+    },
+    "searchResponses": [
+      {
+        "url": "https://registry.npmjs.org/lazy-val/1.0.5",
+        "status": 200,
+        "responseSha256": "b89c1fd70f2fdef869138eaa43addcc73719738762bb84cd6a1bbd3d776b841f",
+        "file": "search-evidence/b89c1fd70f2fdef869138eaa43addcc73719738762bb84cd6a1bbd3d776b841f.txt"
+      },
+      {
+        "url": "https://raw.githubusercontent.com/develar/lazy-val/b69ad4119f1b19bdab13c61ee2fcc88d46b89071/LICENSE",
+        "status": null,
+        "failure": "Bounded single request failed; no response body was received or retained."
+      },
+      {
+        "url": "https://raw.githubusercontent.com/develar/lazy-val/b69ad4119f1b19bdab13c61ee2fcc88d46b89071/LICENSE.md",
+        "status": null,
+        "failure": "Bounded single request failed; no response body was received or retained."
+      },
+      {
+        "url": "https://raw.githubusercontent.com/develar/lazy-val/b69ad4119f1b19bdab13c61ee2fcc88d46b89071/README.md",
+        "status": null,
+        "failure": "Bounded single request failed; no response body was received or retained."
+      }
+    ],
+    "searchScope": "Bounded exact npm declaration and three common root paths at npm gitHead; statuses and response hashes retained. Not an exhaustive repository search; no global absence claim."
+  },
+  "react-remove-scroll-bar@2.3.8": {
+    "declaration": {
+      "name": "react-remove-scroll-bar",
+      "version": "2.3.8",
+      "license": "MIT",
+      "repository": {
+        "url": "git+https://github.com/theKashey/react-remove-scroll-bar.git",
+        "type": "git"
+      },
+      "gitHead": "b3b1287aad81def2e2ae707274b74531b61ddbaf"
+    },
+    "declarationSource": "https://registry.npmjs.org/react-remove-scroll-bar/2.3.8",
+    "declarationScope": "Exact unmodified fields extracted from the official npm exact-version response; not the full registry metadata document.",
+    "reason": "Installed README declares MIT only; attempted exact npm gitHead root notice paths in the declared repository did not recover a complete body. This is bounded search evidence, not proof no notice exists elsewhere.",
+    "standardText": {
+      "kind": "standard-template-not-upstream",
+      "source": "https://raw.githubusercontent.com/spdx/license-list-data/d46e94e2c78ceede1cfc63cfa0396472d2798d4c/text/MIT.txt",
+      "file": "license-texts/b05785f9f18e6716bab63424b11454513b9943a222595b70411009202fc592b5.txt",
+      "sha256": "b05785f9f18e6716bab63424b11454513b9943a222595b70411009202fc592b5"
+    },
+    "standardRevision": {
+      "repository": "https://github.com/spdx/license-list-data",
+      "tag": "v3.27.0",
+      "tagObject": "60e0de29cbcf3e83bf9d5e299972a1969516d918",
+      "commit": "d46e94e2c78ceede1cfc63cfa0396472d2798d4c"
+    },
+    "disclosure": "SPDX standard MIT template, NOT recovered upstream notice. Placeholder copyright remains unfilled; no copyright holder is inferred. Missing upstream attribution remains a disclosed legal/compliance risk. This is not legal advice.",
+    "declarationSha256": "4ff28ba06ea6e9bad831d8856cb057d6112e5c022b563add2d18ad17c1758635",
+    "localSearch": {
+      "source": "npm:react-remove-scroll-bar@2.3.8",
+      "rootFiles": [
+        "README.md",
+        "package.json"
+      ],
+      "completeLicenseBodyRecovered": false,
+      "retainedDocuments": [
+        {
+          "kind": "readme-not-license",
+          "source": "npm:react-remove-scroll-bar@2.3.8/README.md",
+          "file": "license-texts/486442209236ffa3893312e508694699a6b8834d30a2f9c083c1f3379983e4f9.txt",
+          "sha256": "486442209236ffa3893312e508694699a6b8834d30a2f9c083c1f3379983e4f9"
+        }
+      ]
+    },
+    "searchResponses": [
+      {
+        "url": "https://registry.npmjs.org/react-remove-scroll-bar/2.3.8",
+        "status": 200,
+        "responseSha256": "826c618ece09367334160c1ab3a272fd54f8f12e3b0a45f75b0f2660d285855a",
+        "file": "search-evidence/826c618ece09367334160c1ab3a272fd54f8f12e3b0a45f75b0f2660d285855a.txt"
+      },
+      {
+        "url": "https://raw.githubusercontent.com/theKashey/react-remove-scroll-bar/b3b1287aad81def2e2ae707274b74531b61ddbaf/LICENSE",
+        "status": null,
+        "failure": "Bounded single request failed; no response body was received or retained."
+      },
+      {
+        "url": "https://raw.githubusercontent.com/theKashey/react-remove-scroll-bar/b3b1287aad81def2e2ae707274b74531b61ddbaf/LICENSE.md",
+        "status": null,
+        "failure": "Bounded single request failed; no response body was received or retained."
+      },
+      {
+        "url": "https://raw.githubusercontent.com/theKashey/react-remove-scroll-bar/b3b1287aad81def2e2ae707274b74531b61ddbaf/README.md",
+        "status": null,
+        "failure": "Bounded single request failed; no response body was received or retained."
+      }
+    ],
+    "searchScope": "Bounded exact npm declaration and three common root paths at npm gitHead; statuses and response hashes retained. Not an exhaustive repository search; no global absence claim."
+  }
+}
