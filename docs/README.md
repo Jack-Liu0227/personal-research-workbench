@@ -45,4 +45,4 @@
 
 ## 当前边界
 
-AnythingLLM 与 LLMWiki 当前提供配置和只读健康探测元数据，不承诺已接入 RAG/索引执行；Agent 使用应用内进程内 Pi runtime，定时任务仅在应用存活期间运行，并支持暂停/启用。Agent 可读取定时规则、运行历史和非秘密参数；规则编辑仍在定时任务页面完成。Zotero/Obsidian 外部写入统一走 `.request` → preview/fingerprint → 用户确认 → IntegrationCoordinator，不能无人值守；不会直接写 `zotero.sqlite` 或 `.obsidian/`。应用关闭后的后台调度、远程 MCP、PDF/向量检索、富文本引用、durable outbox、备份恢复、真实 Windows 安装/OAuth/外部写入 smoke 和代码签名仍需独立环境验收。
+AnythingLLM 与 LLMWiki 当前提供配置和只读健康探测元数据，不承诺已接入 RAG/索引执行；Agent 使用应用内进程内 Pi runtime，定时任务仅在应用存活期间运行，并支持暂停/启用。Agent 可读取定时规则、运行历史和非秘密参数；规则编辑仍在定时任务页面完成。Zotero/Obsidian 外部写入统一走 `.request` → preview/fingerprint → 用户确认 → IntegrationCoordinator，不能无人值守；不会直接写 `zotero.sqlite` 或 `.obsidian/`。远程 MCP 已提供受控 Streamable HTTP 接入和逐次人工批准，禁止 stdio/任意命令及无人值守调用，详见[实现 29](implementation/29-agent-resources-and-0.0.6.md)。应用关闭后的后台调度、PDF/向量检索、富文本引用、durable outbox、备份恢复、真实在线 OAuth/外部写入、跨版本安装升级和代码签名仍需独立环境验收；当前安装回归结果单独记录，不由 UI 或构建成功推断。

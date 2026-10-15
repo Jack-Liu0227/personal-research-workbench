@@ -47,6 +47,8 @@ Supervisor 负责契约、Main、数据层和发布协调；Frontend/Agent Runti
 
 0.0.6 安装包、实际安装 smoke、远程提交/tag/release 的结果在执行后追加，不能以本文存在推断通过。发布使用原始生产熔丝，不为测试启用 Main inspector；安装 smoke 使用精确子进程与 loopback Renderer CDP，Main isPackaged 不可通过 app.evaluate 直接观测，必须分别报告静态包配置与真实 Renderer/落盘证据。
 
+安装预检发现本机既有 `@prwdesktop-updater/installer.exe`，未覆盖/移动/删除。正式生产配置新增 `extraMetadata.name: personal-research-workbench`，修正 workspace scoped npm 名称污染 updater cache 的问题；源 workspace 名称仍为 `@prw/desktop`。独立 reviewer 亲读 builder metadata merge/AppInfo/NSIS/PublishManager，批准此候选配置后重建，要求实际 ASAR package name、app-update.yml 与 NSIS cache define 三处核对一致，旧缓存只读指纹不变；这不是安装/发布批准。AppId、productName、EXE、默认 profile 不变，旧版缓存不自动迁移，内部包归档名称随新 metadata 名改变。
+
 - 真实在线 Provider/OAuth、真实外部 MCP/Zotero/Obsidian 写入未执行；本地 SDK fixture 不替代这些证据。
 - 真实 Windows OS 显示缩放矩阵未验收；Electron 200% 是应用缩放。已知 200% Agent 顶部长模型 pill 可截断，新增保存/审批控件可达，不宣称全壳层零裁切。
 - 安装器无 Authenticode 签名；自动更新端到端、旧版安装器升级单独报告。相同版本重装不叫跨版本升级，SQLite 38→39 迁移测试不叫安装器升级。

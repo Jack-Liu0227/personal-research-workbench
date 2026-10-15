@@ -1,5 +1,8 @@
 appId: com.personalworkshop.researchworkbench
 productName: Personal Research Workbench
+extraMetadata:
+  # The workspace npm scope must not become the installed updater-cache name.
+  name: personal-research-workbench
 asar: true
 electronFuses:
   runAsNode: false
@@ -21,7 +24,7 @@ files:
   - package.json
 extraResources:
   - from: ../../docs/legal/0.0.6
-    to: legal
+    to: legal/0.0.6
   # Ship the project-owned skill registry from the single canonical location.
   # Runtime resolution looks under resources/skills/<skill>/...; the filter
   # drops what the engine never reads so the installer does not carry the

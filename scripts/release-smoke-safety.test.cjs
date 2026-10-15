@@ -1,0 +1,162 @@
+const { test } = require('node:test')
+const assert = require('node:assert/strict')
+const fs = require('node:fs')
+const os = require('node:os')
+const path = require('node:path')
+const crypto = require('node:crypto')
+const { spawnSync } = require('node:child_process')
+const { parseArgs, contained, assertNoLinks, assertFreshOwnedPath, assertBaseline, assertInstalledState, verifyAttestation, installerArgs, readFuses, uuidV5, selectPowerShell, powershell, fingerprintTrees, assertProtectedUnchanged } = require('./e2e-installed-release.cjs')
+
+// Only synthetic files are created. No installer, Electron, registry writer or native addon is executed.
+const root = fs.mkdtempSync(path.join(os.tmpdir(), 'prw-release-safety-tests-'))
+test('CLI accepts only explicit current setup/version and dry-run', () => {
+  assert.deepEqual(parseArgs(['--setup', 'C:\\build space\\a.exe', '--version', '1.2.3', '--dry-run']), { setup: 'C:\\build space\\a.exe', version: '1.2.3', dryRun: true })
+  for (const argv of [[], ['--version', '1.2.3'], ['--setup', 'relative.exe', '--version', '1.2.3'], ['--setup', '\\\\server\\share\\x.exe', '--version', '1.2.3'], ['--setup', 'C:\\x.exe', '--version', 'bad'], ['--setup', 'C:\\x.exe', '--version', '1.2.3', '--profile', 'C:\\Users'], ['--setup', 'C:\\x.exe', '--version', '1.2.3', '--install', 'C:\\Users'], ['--previous-setup', 'C:\\old.exe'], ['--setup', 'C:\\x.exe', '--setup', 'C:\\y.exe', '--version', '1.2.3'], ['--setup', 'C:\\%TEMP%\\x.exe', '--version', '1.2.3'], ['--setup', 'C:\\x.exe', '--version', '1.2.3', '--dry-run', '--dry-run']]) assert.throws(() => parseArgs(argv))
+})
+test('invalid CLI exits nonzero before launching anything', () => {
+  const result = spawnSync(process.execPath, [path.join(__dirname, 'e2e-installed-release.cjs'), '--previous-setup', 'C:\\old.exe'], { encoding: 'utf8', windowsHide: true })
+  assert.equal(result.status, 1)
+  assert.match(result.stderr, /Old installers may auto-launch/)
+})
+test('owned targets reject root, siblings, traversal and already existing paths', () => {
+  const fresh = path.join(root, 'fresh-owned')
+  assert.equal(assertFreshOwnedPath(root, fresh), fresh)
+  assert(!contained(root, root))
+  assert(!contained(root, path.resolve(root, '..', 'other')))
+  assert.throws(() => assertFreshOwnedPath(root, root))
+  assert.throws(() => assertFreshOwnedPath(root, path.resolve(root, '..', 'other')))
+  fs.mkdirSync(fresh)
+  assert.throws(() => assertFreshOwnedPath(root, fresh))
+})
+test('junction/symlink targets and linked ancestors are refused', () => {
+  const real = path.join(root, 'actual'); fs.mkdirSync(real)
+  const link = path.join(root, 'linked')
+  fs.symlinkSync(real, link, process.platform === 'win32' ? 'junction' : 'dir')
+  assert.throws(() => assertNoLinks(link))
+  assert.throws(() => assertFreshOwnedPath(root, path.join(link, 'profile')))
+})
+test('any existing product state is fail-closed', () => {
+  const empty = () => ({ existing: [], registrations: [], shortcuts: [], processes: [] })
+  assert.doesNotThrow(() => assertBaseline(empty()))
+  for (const key of ['existing', 'registrations', 'shortcuts', 'processes']) {
+    const state = empty(); state[key].push({ synthetic: true })
+    assert.throws(() => assertBaseline(state))
+  }
+  assert.throws(() => assertBaseline({}))
+})
+test('NSIS /D is last and unquoted; no delete-data/force-run/allusers flags', () => {
+  const args = installerArgs('C:\\Synthetic Space\\install')
+  assert.equal(args.at(-1), '/D=C:\\Synthetic Space\\install')
+  assert.equal(args.some((arg) => /delete-app-data|force-run|allusers|"/.test(arg)), false)
+  assert.throws(() => installerArgs('C:\\x" /D=C:\\Users'))
+})
+test('attestation binds current version and exact bytes, rejects auto-launch/tampering', () => {
+  const repo = path.join(root, 'repo'); fs.mkdirSync(path.join(repo, 'apps', 'desktop'), { recursive: true })
+  fs.writeFileSync(path.join(repo, 'apps', 'desktop', 'package.json'), '{"version":"1.2.3"}')
+  const setup = path.join(repo, 'Personal-Research-Workbench-1.2.3-Setup.exe'); fs.writeFileSync(setup, 'Synthetic test text, not an executable')
+  const manifest = path.join(repo, 'installed-smoke-attestation.json')
+  const attestation = { schemaVersion: 1, version: '1.2.3', appId: 'com.personalworkshop.researchworkbench', runAfterFinish: false, packageName: 'personal-research-workbench', updaterCacheDirName: 'personal-research-workbench-updater', nsisInstallerCacheDirName: 'personal-research-workbench-updater', setupSha256: crypto.createHash('sha256').update(fs.readFileSync(setup)).digest('hex') }
+  fs.writeFileSync(manifest, JSON.stringify(attestation))
+  assert.doesNotThrow(() => verifyAttestation(setup, '1.2.3', repo))
+  fs.writeFileSync(manifest, JSON.stringify({ ...attestation, runAfterFinish: true }))
+  assert.throws(() => verifyAttestation(setup, '1.2.3', repo))
+  for (const field of ['packageName', 'updaterCacheDirName', 'nsisInstallerCacheDirName']) {
+    fs.writeFileSync(manifest, JSON.stringify({ ...attestation, [field]: '@prwdesktop-updater' }))
+    assert.throws(() => verifyAttestation(setup, '1.2.3', repo))
+    const missing = { ...attestation }; delete missing[field]
+    fs.writeFileSync(manifest, JSON.stringify(missing))
+    assert.throws(() => verifyAttestation(setup, '1.2.3', repo))
+  }
+  fs.writeFileSync(manifest, JSON.stringify(attestation)); fs.appendFileSync(setup, 'tampered')
+  assert.throws(() => verifyAttestation(setup, '1.2.3', repo))
+})
+test('release fuses require Main inspector, Node and unrestricted file access disabled', () => {
+  const file = path.join(root, 'synthetic-fuses.bin')
+  const make = (wire) => Buffer.concat([Buffer.from('synthetic PE fixture dL7pKGdnNz796PbbjQWNKmHXBZaB9tsX'), Buffer.from([1, 8]), Buffer.from(wire)])
+  fs.writeFileSync(file, make('01001100'))
+  assert.deepEqual(readFuses(file), [...'01001100'])
+  fs.writeFileSync(file, make('01011100'))
+  assert.throws(() => readFuses(file))
+  fs.writeFileSync(file, 'missing sentinel')
+  assert.throws(() => readFuses(file))
+})
+test('installed registrations/shortcuts must refer only to this owned install', () => {
+  const install = path.join(root, 'install')
+  const state = { processes: [], existing: [], localAppData: root, registrations: [{ hive: 'CurrentUser', key: `Software\\${uuidV5('com.personalworkshop.researchworkbench')}`, values: { InstallLocation: install } }], shortcuts: [{ path: 'synthetic.lnk', target: path.join(install, 'research-workbench.exe') }] }
+  assert.doesNotThrow(() => assertInstalledState(state, install))
+  assert.doesNotThrow(() => assertInstalledState({ ...state, existing: [{ path: path.join(root, 'personal-research-workbench-updater') }] }, install))
+  assert.throws(() => assertInstalledState({ ...state, existing: [{ path: path.join(root, '@prwdesktop-updater') }] }, install))
+  assert.throws(() => assertInstalledState({ ...state, processes: [{ pid: 1 }] }, install))
+  assert.throws(() => assertInstalledState({ ...state, registrations: [{ ...state.registrations[0], hive: 'LocalMachine' }] }, install))
+  assert.throws(() => assertInstalledState({ ...state, shortcuts: [{ target: path.join(root, 'other.exe') }] }, install))
+})
+test('namespace GUID is stable RFC4122 v5', () => {
+  assert.match(uuidV5('com.personalworkshop.researchworkbench'), /^[a-f0-9]{8}-[a-f0-9]{4}-5[a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/)
+})
+test('all embedded PowerShell blocks parse without executing them', { skip: process.platform !== 'win32' }, () => {
+  const source = fs.readFileSync(path.join(__dirname, 'e2e-installed-release.cjs'), 'utf8')
+  const blocks = [...source.matchAll(/String\.raw`([^`]+)`/g)].map((match) => match[1])
+  assert(blocks.length >= 5)
+  const result = powershell(selectPowerShell(), "$parsed=@(); foreach($source in $c.blocks){$tokens=$null; $errors=$null; [void][Management.Automation.Language.Parser]::ParseInput($source,[ref]$tokens,[ref]$errors); if($errors.Count){throw ($errors|Out-String)}; $parsed+=$source.Length}; @{count=$parsed.Count}|ConvertTo-Json -Compress", { blocks })
+  assert.equal(result.count, blocks.length)
+})
+test('PowerShell registry-key array contains two distinct exact keys', { skip: process.platform !== 'win32' }, () => {
+  const source = fs.readFileSync(path.join(__dirname, 'e2e-installed-release.cjs'), 'utf8')
+  const expression = source.match(/\$keys=([^\r\n]+)/)[1]
+  const guid = uuidV5('com.personalworkshop.researchworkbench')
+  const result = powershell(selectPowerShell(), `$guid=$c.guid; $keys=${expression}; @{keys=@($keys)}|ConvertTo-Json -Compress`, { guid })
+  assert.deepEqual(result.keys, [`Software\\${guid}`, `Software\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\${guid}`])
+})
+
+test('protected fingerprint reads entire tree but exposes only aggregate metadata', { skip: process.platform !== 'win32' }, () => {
+  const directory = path.join(root, 'protected-fixture'); fs.mkdirSync(directory)
+  const nested = path.join(directory, 'nested'); fs.mkdirSync(nested)
+  const file = path.join(nested, 'private-fixture-name.txt'); fs.writeFileSync(file, 'SYNTHETIC_ONLY_PRIVATE_CONTENT')
+  const targets = [{ label: 'synthetic-protected', path: directory }]
+  const shell = selectPowerShell()
+  const before = fingerprintTrees(shell, targets)
+  assert.equal(before.length, 1)
+  assert.equal(before[0].files, 1)
+  assert.equal(before[0].directories, 2)
+  assert.equal(before[0].entries, 3)
+  assert.equal(before[0].bytes, 30)
+  assert.match(before[0].sha256, /^[a-f0-9]{64}$/)
+  assert(!JSON.stringify(before).includes('private-fixture-name'))
+  assert(!JSON.stringify(before).includes('SYNTHETIC_ONLY'))
+  assertProtectedUnchanged(before, fingerprintTrees(shell, targets))
+  fs.utimesSync(file, new Date(), new Date(Date.now() + 60_000))
+  const changedTime = fingerprintTrees(shell, targets)
+  assert.throws(() => assertProtectedUnchanged(before, changedTime))
+  const stat = fs.statSync(file)
+  fs.writeFileSync(file, 'SYNTHETIC_ONLY_CHANGED_CONTENT')
+  fs.utimesSync(file, stat.atime, stat.mtime)
+  assert.throws(() => assertProtectedUnchanged(changedTime, fingerprintTrees(shell, targets)))
+  fs.writeFileSync(path.join(nested, 'additional.txt'), 'synthetic')
+  assert.throws(() => assertProtectedUnchanged(before, fingerprintTrees(shell, targets)))
+})
+
+test('protected fingerprint refuses oversized trees, byte bounds, reparse points and unsafe labels', { skip: process.platform !== 'win32' }, () => {
+  const directory = path.join(root, 'protected-bounds'); fs.mkdirSync(directory)
+  fs.writeFileSync(path.join(directory, 'synthetic.txt'), 'synthetic')
+  const targets = [{ label: 'synthetic-bounds', path: directory }]
+  const shell = selectPowerShell()
+  assert.throws(() => fingerprintTrees(shell, targets, { maxEntries: 1 }))
+  assert.throws(() => fingerprintTrees(shell, targets, { maxBytes: 1 }))
+  assert.throws(() => fingerprintTrees(shell, targets, { maxEntries: 20_001 }))
+  assert.throws(() => fingerprintTrees(shell, targets, { maxBytes: 2 * 1024 ** 3 + 1 }))
+  assert.throws(() => fingerprintTrees(shell, [{ label: 'unsafe private name', path: directory }]))
+  assert.throws(() => fingerprintTrees(shell, [{ label: 'unc', path: '\\\\server\\share' }]))
+  const junction = path.join(directory, 'linked'); fs.symlinkSync(root, junction, 'junction')
+  assert.throws(() => fingerprintTrees(shell, targets))
+})
+
+test('protected absent roots cannot silently appear', { skip: process.platform !== 'win32' }, () => {
+  const directory = path.join(root, 'protected-absent')
+  const targets = [{ label: 'synthetic-absent', path: directory }]
+  const shell = selectPowerShell()
+  const before = fingerprintTrees(shell, targets)
+  assert.deepEqual(before, [{ label: 'synthetic-absent', present: false }])
+  fs.mkdirSync(directory)
+  assert.throws(() => assertProtectedUnchanged(before, fingerprintTrees(shell, targets)))
+})
+process.on('exit', () => console.log(`Synthetic safety evidence retained: ${root}`))

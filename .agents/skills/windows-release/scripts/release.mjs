@@ -25,6 +25,8 @@ const DESKTOP_DIR = path.join(REPO, 'apps', 'desktop')
 const CHANGELOG_DIR = path.join(REPO, 'docs', 'changelog')
 const PRODUCT_NAME = 'Personal Research Workbench'
 const EXECUTABLE_NAME = 'research-workbench.exe'
+const PACKAGE_NAME = 'personal-research-workbench'
+const UPDATER_CACHE = `${PACKAGE_NAME}-updater`
 
 const rawArgs = process.argv.slice(2)
 const command = rawArgs.find((arg) => !arg.startsWith('-')) ?? 'help'
@@ -378,9 +380,12 @@ function printTail(text, lines = 12) {
 
 function cmdBuild() {
   requireWindows()
+  process.env.DEBUG = [process.env.DEBUG, 'electron-builder'].filter(Boolean).join(',')
   const version = currentVersion()
   const dryRun = flag('dry-run')
   const out = outputDir(version)
+  if (!dryRun && fs.existsSync(out)) fail('Build output must be fresh; select a new --out directory (existing evidence is never deleted).')
+  const startedAt = new Date().toISOString()
   const buildArgs = [
     'exec',
     'electron-builder',
@@ -417,6 +422,14 @@ function cmdBuild() {
   }
   fs.mkdirSync(path.dirname(out), { recursive: true })
   const logFile = path.join(path.dirname(out), `build-${stamp()}.log`)
+  const recordBuild = () => {
+    const installer = findInstaller(version)
+    const receipt = { schemaVersion: 1, version, startedAt, completedAt: new Date().toISOString(),
+      commit: git(['rev-parse', 'HEAD']).out.trim(), output: out, logFile,
+      logSha256: hashFile(logFile), setupSha256: hashFile(installer),
+      configSha256: hashFile(path.join(DESKTOP_DIR, 'electron-builder.yml')) }
+    fs.writeFileSync(path.join(out, 'build-receipt.json'), `${JSON.stringify(receipt, null, 2)}\n`)
+  }
 
   if (flag('force-electron-dist')) {
     const dist = prepareElectronDist(version, false)
@@ -424,6 +437,7 @@ function cmdBuild() {
     fs.writeFileSync(logFile, result.out, 'utf8')
     printTail(result.out, result.code === 0 ? 12 : 30)
     if (result.code !== 0) fail(`Explicit electronDist build failed; log ${logFile}`)
+    recordBuild()
     evidence('build', [`log ${logFile}`, `output ${out}`, `path explicit electronDist (${dist})`,
       'deviation: may retain inert resources/default_app.asar; production fuses remain enabled'])
     return
@@ -432,6 +446,7 @@ function cmdBuild() {
   const first = pnpmRun(buildArgs, DESKTOP_DIR)
   fs.writeFileSync(logFile, first.out, 'utf8')
   if (first.code === 0) {
+    recordBuild()
     log('  default electron-builder path succeeded')
     printTail(first.out)
     evidence('build', [`log ${logFile}`, `output ${out}`, 'path default electron-builder (no electronDist fallback)'])
@@ -453,6 +468,7 @@ function cmdBuild() {
     fail(`electron-builder failed on the electronDist fallback too; log ${logFile}`)
   }
   log('  electronDist fallback succeeded')
+  recordBuild()
   printTail(retry.out)
   evidence('build', [
     `log ${logFile}`,
@@ -483,16 +499,50 @@ function cmdVerify() {
     if (!fs.existsSync(required)) fail(`Required package payload missing: ${required}`)
   if (sidecars.length) fail('Retired sidecars must not be packaged.')
 
+  // Use the installed builder's parsers; no new release/runtime dependency.
+  const builderRequire = createRequire(require.resolve('electron-builder/package.json', { paths: [DESKTOP_DIR] }))
+  const parserRequire = createRequire(builderRequire.resolve('app-builder-lib/package.json'))
+  const asar = parserRequire('@electron/asar')
+  const yaml = parserRequire('js-yaml')
+  const packaged = JSON.parse(asar.extractFile(appAsar, 'package.json').toString('utf8'))
+  const update = yaml.load(fs.readFileSync(path.join(resources, 'app-update.yml'), 'utf8'))
+  if (packaged.name !== PACKAGE_NAME || packaged.version !== version || update.updaterCacheDirName !== UPDATER_CACHE)
+    fail('Actual ASAR name/version or app-update.yml cache identity mismatch.')
+
+  const receipt = readJson(path.join(out, 'build-receipt.json'))
+  if (receipt.schemaVersion !== 1 || receipt.version !== version || path.resolve(receipt.output) !== out ||
+      receipt.setupSha256 !== hashFile(installer) || receipt.logSha256 !== hashFile(receipt.logFile) ||
+      receipt.configSha256 !== hashFile(path.join(DESKTOP_DIR, 'electron-builder.yml')))
+    fail('Build receipt, current config, log and installer do not match.')
+  const start = Date.parse(receipt.startedAt), end = Date.parse(receipt.completedAt)
+  if (!Number.isFinite(start) || !Number.isFinite(end) || end < start ||
+      fs.statSync(installer).mtimeMs < start - 2000 || fs.statSync(installer).mtimeMs > end + 2000 ||
+      fs.statSync(receipt.logFile).mtimeMs < start - 2000 || fs.statSync(receipt.logFile).mtimeMs > end + 2000)
+    fail('Build log/artifact timestamp is outside this recorded build.')
+  const buildLog = fs.readFileSync(receipt.logFile, 'utf8')
+  const makensis = buildLog.split(/\r?\n/).filter((line) => /spawning/.test(line) && /makensis(?:\.exe)?/i.test(line))
+  if (!makensis.length || makensis.some((line) => !line.includes(`-DAPP_INSTALLER_STORE_FILE=${UPDATER_CACHE}\\\\installer.exe`)))
+    fail('This build has no matching real makensis cache define; build with DEBUG=electron-builder.')
+
+  const legal = path.join(resources, 'legal', version)
+  const legalGate = readJson(path.join(legal, 'release-gate.json'))
+  if (legalGate.release !== version || !['PASS', 'PASS_WITH_DISCLOSED_EXCEPTIONS'].includes(legalGate.gate))
+    fail('Packaged license gate is not approved for this version.')
+  for (const name of ['LICENSE', 'LICENSES.chromium.html'])
+    if (!fs.existsSync(path.join(unpacked, name))) fail(`Missing Electron notice: ${name}`)
+
   const effectiveFile = path.join(out, 'builder-effective-config.yaml')
   if (!fs.existsSync(effectiveFile)) fail('Missing effective builder configuration.')
-  const effective = fs.readFileSync(effectiveFile, 'utf8')
-  if (!/^appId: com\.personalworkshop\.researchworkbench\s*$/m.test(effective) ||
-      !/^nsis:\s*\r?\n(?:(?:[ \t]+[^\r\n]*|[ \t]*)\r?\n)*?[ \t]+runAfterFinish: false\s*$/m.test(effective))
+  const effective = yaml.load(fs.readFileSync(effectiveFile, 'utf8'))
+  if (effective.appId !== 'com.personalworkshop.researchworkbench' || effective.nsis?.runAfterFinish !== false ||
+      effective.extraMetadata?.name !== PACKAGE_NAME)
     fail('Cannot attest installer identity and disabled automatic launch.')
   const attestationFile = path.join(out, 'installed-smoke-attestation.json')
   const attestation = {
     schemaVersion: 1, version, setupSha256: hashFile(installer).toLowerCase(),
     runAfterFinish: false, appId: 'com.personalworkshop.researchworkbench',
+    packageName: packaged.name, updaterCacheDirName: update.updaterCacheDirName,
+    nsisInstallerCacheDirName: UPDATER_CACHE, buildCommit: receipt.commit,
   }
   if (!flag('dry-run')) fs.writeFileSync(attestationFile, `${JSON.stringify(attestation, null, 2)}\n`)
 
