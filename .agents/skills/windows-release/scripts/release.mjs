@@ -428,6 +428,7 @@ function cmdBuild() {
       commit: git(['rev-parse', 'HEAD']).out.trim(), output: out, logFile,
       logSha256: hashFile(logFile), setupSha256: hashFile(installer),
       configSha256: hashFile(path.join(DESKTOP_DIR, 'electron-builder.yml')) }
+    fs.copyFileSync(path.join(DESKTOP_DIR, 'electron-builder.yml'), path.join(out, 'builder-input-config.yaml'), fs.constants.COPYFILE_EXCL)
     fs.writeFileSync(path.join(out, 'build-receipt.json'), `${JSON.stringify(receipt, null, 2)}\n`)
   }
 
@@ -531,11 +532,15 @@ function cmdVerify() {
   for (const name of ['LICENSE.electron.txt', 'LICENSES.chromium.html'])
     if (!fs.existsSync(path.join(unpacked, name))) fail(`Missing Electron notice: ${name}`)
 
-  const effectiveFile = path.join(out, 'builder-effective-config.yaml')
-  if (!fs.existsSync(effectiveFile)) fail('Missing effective builder configuration.')
+  // Builder emits effective config only on a TTY; this piped build retains its
+  // exact input plus real makensis defines, without inventing an effective file.
+  const effectiveFile = path.join(out, 'builder-input-config.yaml')
+  if (!fs.existsSync(effectiveFile) || hashFile(effectiveFile) !== receipt.configSha256)
+    fail('Missing or changed hash-bound builder input configuration.')
   const effective = yaml.load(fs.readFileSync(effectiveFile, 'utf8'))
   if (effective.appId !== 'com.personalworkshop.researchworkbench' || effective.nsis?.runAfterFinish !== false ||
-      effective.extraMetadata?.name !== PACKAGE_NAME)
+      effective.extraMetadata?.name !== PACKAGE_NAME ||
+      makensis.some((line) => !line.includes('-DHIDE_RUN_AFTER_FINISH') || /-DRUN_AFTER_FINISH(?:\s|$|=)/.test(line)))
     fail('Cannot attest installer identity and disabled automatic launch.')
   const attestationFile = path.join(out, 'installed-smoke-attestation.json')
   const attestation = {
