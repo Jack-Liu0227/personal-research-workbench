@@ -5,6 +5,7 @@ import { dirname, join, relative, resolve } from 'node:path'
 import { app, BrowserWindow, dialog, shell } from 'electron'
 import { CoreRpcClient } from '../core/client.js'
 import {
+  AgentMcpServerSchema,
   IntegrationProfileSchema,
   ObsidianVaultLayoutInitializeInputSchema,
   ObsidianVaultLayoutPlanSchema,
@@ -18,6 +19,7 @@ import {
 } from './credentials.js'
 import { readAgentCredential, removeAgentCredential, writeAgentCredential } from './agent-credentials.js'
 import { registerRpcHandler } from './ipc.js'
+import { readMcpCredential, withMcpCredentialLock } from './mcp-credentials.js'
 import { FeishuBindingController } from './feishu-binding.js'
 import { migrateLegacyUserData } from './data-migration.js'
 import { registerUpdateHandlers } from './updater.js'
@@ -140,8 +142,17 @@ async function bootstrap(): Promise<void> {
   // Connection secrets travel the same way and for the same reason: an Agent
   // tool call arrives over the in-process MCP transport with no credential
   // envelope, so a Zotero write it requests asks for exactly one profile's key.
-  coreClient.setIntegrationSecretReader(async (profileId) =>
-    credentialVault.get(credentialKey('integration', profileId)))
+  coreClient.setIntegrationSecretReader(async (profileId) => {
+    const mcp = /^(mcp\.[a-z0-9][a-z0-9_-]{0,48}):r(\d+)$/u.exec(profileId)
+    if (!mcp) return credentialVault.get(credentialKey('integration', profileId))
+    return withMcpCredentialLock(mcp[1]!, async () => {
+      const listing = await coreClient?.request('agentMcpServers.list', null)
+      if (!listing) return null
+      if (!listing.ok || !Array.isArray(listing.data)) return null
+      const server = listing.data.find((entry) => entry && typeof entry === 'object' && !Array.isArray(entry) && entry['id'] === mcp[1])
+      return readMcpCredential(credentialVault, server ? AgentMcpServerSchema.parse(server) : null, Number(mcp[2]))
+    })
+  })
   // Message-side push (literature_daily_msg): Main owns the Feishu token and the
   // bound openId in its vault, so Core only hands over the rendered text and
   // learns ok/error — the token never crosses the process boundary. The bound
@@ -176,10 +187,7 @@ async function bootstrap(): Promise<void> {
     developmentUrl
   })
   removeUpdateHandlers = updates.dispose
-  // The Python 「科研工作」 application is supervised here rather than launched
-  // by the user. It starts lazily: a missing interpreter must not turn every
-  // launch into an error banner, and the sidecar is not needed for the
-  // workbench's own screens.
+  // Retain only a disabled compatibility endpoint for the retired sidecar.
   const sidecars = registerSidecarHandlers({
     getWindow: () => mainWindow,
     developmentUrl

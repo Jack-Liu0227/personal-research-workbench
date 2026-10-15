@@ -44,6 +44,7 @@ import {
   sqliteTable,
   text,
   uniqueIndex,
+  primaryKey,
   type AnySQLiteColumn
 } from 'drizzle-orm/sqlite-core'
 
@@ -552,11 +553,36 @@ export const aiProviderProfiles = sqliteTable(
   ]
 )
 
+export const agentAssistants = sqliteTable('agent_assistants', {
+  id: text('id').primaryKey(), dataJson: text('data_json').notNull()
+})
+export const agentAssistantBindings = sqliteTable('agent_assistant_bindings', {
+  assistantId: text('assistant_id').notNull().references(() => agentAssistants.id, { onDelete: 'restrict' }),
+  kind: text('kind').$type<'tool' | 'skill'>().notNull(), bindingKey: text('binding_key').notNull()
+}, (table) => [primaryKey({ columns: [table.assistantId, table.kind, table.bindingKey] })])
+export const agentTeams = sqliteTable('agent_teams', {
+  id: text('id').primaryKey(), dataJson: text('data_json').notNull()
+})
+export const agentTeamMembers = sqliteTable('agent_team_members', {
+  teamId: text('team_id').notNull().references(() => agentTeams.id, { onDelete: 'restrict' }),
+  assistantId: text('assistant_id').notNull().references(() => agentAssistants.id, { onDelete: 'restrict' }),
+  role: text('role').$type<'director' | 'researcher' | 'reviewer'>().notNull(),
+  instructions: text('instructions').notNull(), position: integer('position').notNull()
+}, (table) => [primaryKey({ columns: [table.teamId, table.assistantId] }), uniqueIndex('agent_team_members_position_idx').on(table.teamId, table.position)])
+export const agentTeamRuns = sqliteTable('agent_team_runs', {
+  id: text('id').primaryKey(), teamId: text('team_id').notNull().references(() => agentTeams.id, { onDelete: 'restrict' }),
+  projectId: text('project_id').references(() => projects.id, { onDelete: 'set null' }),
+  idempotencyKey: text('idempotency_key').notNull(), requestFingerprint: text('request_fingerprint').notNull(), dataJson: text('data_json').notNull()
+}, (table) => [uniqueIndex('agent_team_runs_idempotency_idx').on(table.idempotencyKey), index('agent_team_runs_team_idx').on(table.teamId)])
+
 export const agentRuns = sqliteTable(
   'agent_runs',
   {
     id: text('id').primaryKey(),
     jobId: text('job_id'),
+      assistantId: text('assistant_id').references(() => agentAssistants.id, { onDelete: 'restrict' }),
+      teamId: text('team_id').references(() => agentTeams.id, { onDelete: 'restrict' }),
+      teamRunId: text('team_run_id').references(() => agentTeamRuns.id, { onDelete: 'restrict' }),
     idempotencyKey: text('idempotency_key'),
     runtime: text('runtime').$type<AgentRuntimeKind>().notNull().default('pi'),
     transport: text('transport').$type<'cli' | 'inprocess'>().notNull().default('inprocess'),
@@ -1022,6 +1048,15 @@ export const rssSources = sqliteTable(
     index('rss_sources_category_display_idx').on(table.categoryId, table.displayEnabled)
   ]
 )
+
+export const agentRunRequests = sqliteTable('agent_run_requests', {
+  runId: text('run_id').primaryKey().references(() => agentRuns.id, { onDelete: 'cascade' }),
+  fingerprint: text('fingerprint').notNull()
+})
+
+export const agentMcpServers = sqliteTable('agent_mcp_servers', { id: text('id').primaryKey(), dataJson: text('data_json').notNull() })
+export const agentInstructionSkills = sqliteTable('agent_instruction_skills', { id: text('id').primaryKey(), dataJson: text('data_json').notNull() })
+export const agentMcpCalls = sqliteTable('agent_mcp_calls', { id: text('id').primaryKey(), dataJson: text('data_json').notNull() })
 
 export const rssItems = sqliteTable(
   'rss_items',

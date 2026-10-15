@@ -1,5 +1,6 @@
 import type { Client } from '@modelcontextprotocol/sdk/client/index.js'
 import type { Credential } from '@earendil-works/pi-ai'
+export { openControlledMcpClient, validateMcpEndpoint, isPublicMcpAddress, ControlledMcpError } from './mcp/http.js'
 import type {
   AgentAuthEvent,
   AgentAuthPromptKind,
@@ -95,7 +96,23 @@ export interface AgentRuntimeScope {
  */
 export type AgentWorkspaceToolClient = Pick<Client, 'listTools' | 'callTool' | 'close'>
 
+/** Core-owned request-only tools, separate from the trusted workspace surface. */
+export interface AgentExternalRequestTool {
+  readonly name: string
+  readonly description: string
+  readonly inputSchema: unknown
+  request(arguments_: unknown, signal?: AbortSignal): Promise<string>
+}
+
 export interface AgentRuntimeRequest {
+  readonly signal?: AbortSignal | undefined
+  /** Server-resolved assistant identity; never a model-selected path. */
+  readonly assistantId?: string | null | undefined
+  /** Additional narrowing of the workspace policy. Empty means no tools. */
+  readonly toolAllowlist?: readonly string[] | undefined
+  readonly externalRequestTools?: readonly AgentExternalRequestTool[] | undefined
+  /** Registry-validated instruction skills, not arbitrary renderer paths. */
+  readonly skillPaths?: readonly string[] | undefined
   readonly prompt: string
   readonly cwd: string
   /** App-owned Pi profile directory. Required; there is no ambient default. */
@@ -177,6 +194,8 @@ export interface AgentAuthChannel {
 /** The write-back half of the credential boundary: Pi talks to a
  * `CredentialStore`, and every mutation is persisted by Electron Main. */
 export interface AgentCredentialBridge {
+  /** Fresh host read used only inside the shared provider mutation lock. */
+  readLatest?: (providerId: string) => Promise<Credential | null>
   read(providerId: string): Promise<Credential | null>
   list(): Promise<ReadonlyArray<{ readonly provider: string; readonly credential: Credential }>>
   /** Persist one provider credential. `null` deletes it. Resolves only after
@@ -186,7 +205,7 @@ export interface AgentCredentialBridge {
 }
 
 export { EventQueue, isolatedRuntimeEnvironment, labelRuntimeProfileDir } from './support.js'
-export { controlledPiResourcePaths, PiInProcessAdapter, type ControlledPiResourcePathInput, type ControlledPiResourcePaths, type PiRuntimeAdapterOptions } from './pi/adapter.js'
+export { assistantRuntimePaths, controlledPiResourcePaths, PiInProcessAdapter, type ControlledPiResourcePathInput, type ControlledPiResourcePaths, type PiRuntimeAdapterOptions } from './pi/adapter.js'
 export { AppCredentialStore } from './pi/credential-store.js'
 export { parseCredential, parseRuntimeCredentials, type CredentialEnvelopeEntry } from './pi/credentials.js'
 export {

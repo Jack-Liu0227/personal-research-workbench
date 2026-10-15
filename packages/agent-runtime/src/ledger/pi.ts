@@ -27,6 +27,8 @@ export class PiLedgerNormalizer extends BaseLedgerNormalizer {
   private reasoningOrdinal = 0
   private assistantKey: string | null = null
   private reasoningKey: string | null = null
+  private readonly textBlocks = new Map<number, string>()
+  private readonly thinkingBlocks = new Map<number, string>()
   /** Provider-visible tool name back to the workbench name it was registered
    * from. A tool is registered as `tasks_search` and documented as
    * `tasks.search`, and the ledger is read by people, so it shows the latter. */
@@ -192,7 +194,23 @@ export class PiLedgerNormalizer extends BaseLedgerNormalizer {
     // coordinator already persisted as the run's `user` record.
     if (role !== null && role !== 'assistant') return []
     if (type === 'message_update') return this.messageUpdate(event, createdAt)
-    const fullText = ledgerText(message?.['content'])
+    const content = message?.['content']
+    const fullText = assistantText(content)
+    if (type === 'message_start') {
+      if (this.assistantKey !== null && this.openStatus(this.assistantKey) === 'completed') {
+        this.assistantKey = null
+        this.reasoningKey = null
+      }
+      this.textBlocks.clear()
+      this.thinkingBlocks.clear()
+      if (Array.isArray(content)) {
+        content.forEach((block, index) => {
+          const part = asRecord(block)
+          if (part?.['type'] === 'text') this.textBlocks.set(index, ledgerText(part))
+          if (part?.['type'] === 'thinking') this.thinkingBlocks.set(index, ledgerText(part))
+        })
+      } else if (fullText) this.textBlocks.set(0, fullText)
+    }
     const recordKey = this.assistant()
     if (type === 'message_start') {
       const isNew = this.touch(recordKey, createdAt, 'assistant', 'running')
@@ -255,6 +273,7 @@ export class PiLedgerNormalizer extends BaseLedgerNormalizer {
       const chunk = eventType === 'text_end'
         ? asString(assistantEvent['content']) ?? ''
         : asString(assistantEvent['delta']) ?? ''
+      const text = this.updateBlock(this.textBlocks, assistantEvent, chunk, eventType === 'text_delta')
       const isNew = this.touch(recordKey, createdAt, 'assistant', 'running')
       return [{
         recordKey,
@@ -263,7 +282,7 @@ export class PiLedgerNormalizer extends BaseLedgerNormalizer {
         turn: this.currentTurn(),
         step: this.step,
         title: 'Pi',
-        detail: this.accumulate(recordKey, chunk, eventType === 'text_delta'),
+        detail: this.accumulate(recordKey, text, false),
         ...(isNew ? { startedAt: createdAt } : {})
       }]
     }
@@ -272,6 +291,7 @@ export class PiLedgerNormalizer extends BaseLedgerNormalizer {
       const chunk = eventType === 'thinking_end'
         ? asString(assistantEvent['content']) ?? ''
         : asString(assistantEvent['delta']) ?? ''
+      const text = this.updateBlock(this.thinkingBlocks, assistantEvent, chunk, eventType === 'thinking_delta')
       const isNew = this.touch(recordKey, createdAt, 'reasoning', 'running')
       return [{
         recordKey,
@@ -280,7 +300,7 @@ export class PiLedgerNormalizer extends BaseLedgerNormalizer {
         turn: this.currentTurn(),
         step: this.step,
         title: 'Thinking',
-        detail: this.accumulate(recordKey, chunk, eventType === 'thinking_delta'),
+        detail: this.accumulate(recordKey, text, false),
         ...(isNew ? { startedAt: createdAt } : {})
       }]
     }
@@ -304,6 +324,13 @@ export class PiLedgerNormalizer extends BaseLedgerNormalizer {
     // `start`, `text_start`, `thinking_start`, `toolcall_start`, `toolcall_delta`
     // and `done` carry no text of their own.
     return []
+  }
+
+  private updateBlock(blocks: Map<number, string>, event: Record<string, unknown>, chunk: string, isDelta: boolean): string {
+    const index = typeof event['contentIndex'] === 'number' ? event['contentIndex'] : 0
+    blocks.set(index, isDelta ? (blocks.get(index) ?? '') + chunk : chunk)
+    // text_end/thinking_end is one block snapshot, not the entire message.
+    return [...blocks].sort(([left], [right]) => left - right).map(([, text]) => text).join('')
   }
 
   private tool(type: string, event: Record<string, unknown>, createdAt: string): AgentRunRecordDraft[] {
@@ -364,6 +391,8 @@ export class PiLedgerNormalizer extends BaseLedgerNormalizer {
     // Reset the per-turn message identities so the next turn keys new records.
     this.assistantKey = null
     this.reasoningKey = null
+    this.textBlocks.clear()
+    this.thinkingBlocks.clear()
     if (usage === null) return records
     return records.map((record, index) => index === records.length - 1 ? { ...record, usage } : record)
   }
@@ -427,6 +456,12 @@ export class PiLedgerNormalizer extends BaseLedgerNormalizer {
       startedAt: createdAt
     }]
   }
+}
+
+function assistantText(content: unknown): string {
+  if (typeof content === 'string') return content
+  if (!Array.isArray(content)) return ''
+  return content.filter((block) => asRecord(block)?.['type'] === 'text').map((block) => ledgerText(block)).join('')
 }
 
 function asStringArray(value: unknown): string[] {

@@ -1,4 +1,6 @@
 import {
+  AgentProfilePayloadSchemas, AgentBindingCatalogSchema, AgentResourcePayloadSchemas,
+  type AgentAssistant, type AgentBindingCatalog,
   ArtifactKindSchema,
   CalendarRangeInputSchema,
   CalendarMarkerRangeInputSchema,
@@ -98,7 +100,11 @@ import {
   type BulkOperationResult,
   type BulkTaskCommandInput
 } from '@prw/contracts'
-import type { WorkbenchRepository } from '@prw/database'
+import { WorkbenchDatabaseError, type WorkbenchRepository } from '@prw/database'
+import { workspaceReadTools, workspaceWriteTools, workspaceExternalRequestTools } from '@prw/agent-runtime'
+import { describeAgentSkillCatalog, isInstructionSkillKey, resolveAgentSkill } from './skill-registry.js'
+import type { AgentTeamCoordinator } from './agent-teams.js'
+import type { AgentResourceCoordinator } from './agent-resources.js'
 import { z } from 'zod'
 import { fetchRssSources, previewRssFeed } from './rss-feed.js'
 import {
@@ -194,6 +200,8 @@ interface DispatchInput {
 /** V2 CRUD services remain isolated from the Agent dispatcher; Agent RPC is
  * routed through a separate validated method family by the host. */
 export interface CoreServices {
+  readonly agentResources?: AgentResourceCoordinator
+  readonly agentTeams?: AgentTeamCoordinator
   readonly repository: WorkbenchRepository
   readonly integrations: IntegrationCoordinator
   readonly literature: LiteratureCoordinator
@@ -339,9 +347,137 @@ export function redactSecretValue(value: unknown, secret: string): unknown {
   return value
 }
 
+function agentBindingCatalog(repository: WorkbenchRepository): AgentBindingCatalog {
+  return AgentBindingCatalogSchema.parse({
+    tools: [
+      ...workspaceReadTools.map((name) => ({ name, kind: 'read' })),
+      ...workspaceWriteTools.map((name) => ({ name, kind: 'local-write' })),
+      ...workspaceExternalRequestTools.map((name) => ({ name, kind: 'external-request' })),
+      ...repository.agentResources.listMcpServers().filter((server) => server.enabled && server.lastProbe?.status === 'ok')
+        .flatMap((server) => server.tools.map((tool) => ({ name: tool.key, kind: 'external-request' })))
+    ],
+    skills: [...describeAgentSkillCatalog()
+      .filter((skill) => isInstructionSkillKey(skill.key) && resolveAgentSkill(skill.key).kind === 'instruction')
+      .map((skill) => ({ key: skill.key, name: skill.label })),
+      ...repository.agentResources.listInstructionSkills().filter((skill) => skill.enabled).map((skill) => ({ key: skill.id, name: skill.name }))],
+    remoteMcpSupported: true
+  })
+}
+
+function assertBindingRevision(current: AgentAssistant, expectedRevision: number): void {
+  if (current.revision !== expectedRevision) {
+    throw new WorkbenchDatabaseError('REVISION_CONFLICT', 'Agent configuration changed; reload before saving.', { retryable: true })
+  }
+}
+
+function validateAssistantBindings(
+  next: Pick<AgentAssistant, 'toolProfile' | 'toolAllowlist' | 'skillKeys'>,
+  catalog: AgentBindingCatalog, current?: AgentAssistant
+): void {
+  const tools = new Map(catalog.tools.map((tool) => [tool.name, tool.kind]))
+  const skills = new Set(catalog.skills.map((skill) => skill.key))
+  // Obsolete bindings may stay while a user removes them one cell at a time;
+  // neither kind may gain an unknown key, and switching to read-only must drop writes.
+  for (const key of next.toolAllowlist) {
+    const kind = tools.get(key)
+    if (kind === undefined && !current?.toolAllowlist.includes(key)) {
+      throw new IntegrationRuntimeError('UNSUPPORTED_CAPABILITY', 'Tool is not in the app-owned binding catalog.')
+    }
+    if (kind !== undefined && kind !== 'read' && next.toolProfile === 'read-only'
+      && !(current?.toolProfile === 'read-only' && current.toolAllowlist.includes(key))) {
+      throw namedValidationError('Read-only assistants cannot enable write or external-request tools.')
+    }
+  }
+  if (next.skillKeys.some((key) => !skills.has(key) && !current?.skillKeys.includes(key))) {
+    throw new IntegrationRuntimeError('UNSUPPORTED_CAPABILITY', 'Skill has no available instruction-only execution contract.')
+  }
+}
+
 async function execute(services: CoreServices, metadata: CoreMetadata, request: RpcRequest, credential?: CredentialContext, context?: AgentCallContext): Promise<unknown> {
   const repository = services.repository
   switch (request.method) {
+    case 'agentMcpServers.list': z.null().parse(request.payload); return repository.agentResources.listMcpServers()
+    case 'agentMcpServers.save': {
+      const input = AgentResourcePayloadSchemas['agentMcpServers.save'].parse(request.payload)
+      const saved = repository.agentResources.saveMcpServer(input)
+      services.agentResources?.cancelServer(input.id)
+      return saved
+    }
+    case 'agentMcpServers.probe': {
+      if (!services.agentResources) throw new IntegrationRuntimeError('UNSUPPORTED_CAPABILITY', 'Controlled MCP runtime is unavailable.')
+      return services.agentResources.probe(request.payload)
+    }
+    case 'agentMcpServers.remove': {
+      const input = AgentResourcePayloadSchemas['agentMcpServers.remove'].parse(request.payload)
+      repository.agentResources.removeMcpServer(input)
+      services.agentResources?.cancelServer(input.id)
+      return null
+    }
+    case 'agentMcpServers.setCredential': throw namedValidationError('MCP credentials are handled only by Electron Main.')
+    case 'agentInstructionSkills.list': z.null().parse(request.payload); return repository.agentResources.listInstructionSkills()
+    case 'agentInstructionSkills.get': return repository.agentResources.getInstructionSkill(AgentResourcePayloadSchemas['agentInstructionSkills.get'].parse(request.payload).id)
+    case 'agentInstructionSkills.save': return repository.agentResources.saveInstructionSkill(AgentResourcePayloadSchemas['agentInstructionSkills.save'].parse(request.payload))
+    case 'agentInstructionSkills.remove': repository.agentResources.removeInstructionSkill(AgentResourcePayloadSchemas['agentInstructionSkills.remove'].parse(request.payload)); return null
+    case 'agentMcpCalls.list': {
+      const input = AgentResourcePayloadSchemas['agentMcpCalls.list'].parse(request.payload)
+      return repository.agentResources.listMcpCalls({ limit: input.limit, ...(input.runId ? { runId: input.runId } : {}) })
+    }
+    case 'agentMcpCalls.decide': {
+      if (!services.agentResources) throw new IntegrationRuntimeError('UNSUPPORTED_CAPABILITY', 'Controlled MCP runtime is unavailable.')
+      return services.agentResources.decide(AgentResourcePayloadSchemas['agentMcpCalls.decide'].parse(request.payload))
+    }
+    case 'assistants.list': return repository.agentProfiles.listAssistants()
+    case 'assistants.save': {
+      const input = AgentProfilePayloadSchemas['assistants.save'].parse(request.payload)
+      const current = repository.agentProfiles.listAssistants().find((assistant) => assistant.id === input.id)
+      validateAssistantBindings(input, agentBindingCatalog(repository), current)
+      return repository.agentProfiles.saveAssistant(input)
+    }
+    case 'assistants.archive': return repository.agentProfiles.archiveAssistant(request.payload)
+    case 'agentTeams.list': return repository.agentProfiles.listTeams()
+    case 'agentTeams.save': return repository.agentProfiles.saveTeam(AgentProfilePayloadSchemas['agentTeams.save'].parse(request.payload))
+    case 'agentTeams.archive': return repository.agentProfiles.archiveTeam(request.payload)
+    case 'agentBindings.catalog': z.null().parse(request.payload); return agentBindingCatalog(repository)
+    case 'agentBindings.matrix': {
+      z.null().parse(request.payload)
+      return { catalog: agentBindingCatalog(repository), assistants: repository.agentProfiles.listAssistants() }
+    }
+    case 'agentBindings.saveMatrix': {
+      const input = AgentProfilePayloadSchemas['agentBindings.saveMatrix'].parse(request.payload)
+      const catalog = agentBindingCatalog(repository)
+      for (const update of input.updates) {
+        const current = repository.agentProfiles.getAssistant(update.assistantId)
+        assertBindingRevision(current, update.expectedRevision)
+        validateAssistantBindings({ toolProfile: current.toolProfile,
+          toolAllowlist: update.toolAllowlist ?? current.toolAllowlist,
+          skillKeys: update.skillKeys ?? current.skillKeys }, catalog, current)
+      }
+      return repository.agentProfiles.saveBindingMatrix(input)
+    }
+    case 'agentBindings.set': {
+      const input = AgentProfilePayloadSchemas['agentBindings.set'].parse(request.payload)
+      const current = repository.agentProfiles.getAssistant(input.assistantId)
+      assertBindingRevision(current, input.expectedRevision)
+      const field = input.kind === 'tool' ? 'toolAllowlist' : 'skillKeys'
+      if (input.enabled) {
+        validateAssistantBindings({ toolProfile: current.toolProfile,
+          toolAllowlist: input.kind === 'tool' ? [input.key] : [],
+          skillKeys: input.kind === 'skill' ? [input.key] : [] }, agentBindingCatalog(repository))
+      }
+      const bindings = input.enabled ? [...new Set([...current[field], input.key])] : current[field].filter((key) => key !== input.key)
+      return repository.agentProfiles.saveBindingMatrix({ updates: [{ assistantId: input.assistantId,
+        expectedRevision: input.expectedRevision, [field]: bindings }] })[0]!
+    }
+    case 'agentTeams.runs.start': {
+      if (!services.agentTeams) throw new IntegrationRuntimeError('UNSUPPORTED_CAPABILITY', '团队运行时不可用。')
+      return services.agentTeams.start(AgentProfilePayloadSchemas['agentTeams.runs.start'].parse(request.payload))
+    }
+    case 'agentTeams.runs.list': return repository.agentProfiles.listTeamRuns(AgentProfilePayloadSchemas['agentTeams.runs.list'].parse(request.payload).limit)
+    case 'agentTeams.runs.get': return repository.agentProfiles.getTeamRun(AgentProfilePayloadSchemas['agentTeams.runs.get'].parse(request.payload).id)
+    case 'agentTeams.runs.cancel': {
+      if (!services.agentTeams) throw new IntegrationRuntimeError('UNSUPPORTED_CAPABILITY', '团队运行时不可用。')
+      return services.agentTeams.cancel(AgentProfilePayloadSchemas['agentTeams.runs.cancel'].parse(request.payload))
+    }
     case 'projects.list': z.null().parse(request.payload); return repository.listProjects()
     case 'projects.create': return repository.createProject(CreateProjectInputSchema.parse(request.payload))
     case 'projects.update': return repository.updateProject(UpdateProjectInputSchema.parse(request.payload))

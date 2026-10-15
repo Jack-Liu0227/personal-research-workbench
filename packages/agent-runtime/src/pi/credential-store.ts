@@ -1,6 +1,12 @@
 import type { AuthOperationOptions, Credential, CredentialInfo, CredentialStore } from '@earendil-works/pi-ai'
 import type { AgentCredentialBridge } from '../index.js'
 
+const providerChains = new Map<string, Promise<unknown>>()
+export interface AppCredentialStoreOptions {
+  readonly scopeKey?: string
+  readonly readLatest?: (providerId: string) => Promise<Credential | null>
+}
+
 /**
  * Pi's `CredentialStore`, backed by Electron Main's `safeStorage` vault.
  *
@@ -29,7 +35,7 @@ export class AppCredentialStore implements CredentialStore {
   private readonly chains = new Map<string, Promise<unknown>>()
   private hydrated: Promise<void> | null = null
 
-  constructor(private readonly bridge: AgentCredentialBridge) {}
+  constructor(private readonly bridge: AgentCredentialBridge, private readonly options: AppCredentialStoreOptions = {}) {}
 
   async read(providerId: string, options?: AuthOperationOptions): Promise<Credential | undefined> {
     options?.signal?.throwIfAborted()
@@ -52,8 +58,15 @@ export class AppCredentialStore implements CredentialStore {
     await this.hydrate()
     return this.enqueue(providerId, async () => {
       options?.signal?.throwIfAborted()
+      if (this.options.readLatest) {
+        const latest = await this.options.readLatest(providerId)
+        options?.signal?.throwIfAborted()
+        if (latest) this.credentials.set(providerId, latest)
+        else this.credentials.delete(providerId)
+      }
       const current = this.credentials.get(providerId)
       const next = await fn(current)
+      options?.signal?.throwIfAborted()
       // `undefined` means "leave the entry unchanged" in Pi's contract; an
       // explicit deletion goes through `delete`.
       if (next === undefined) return current
@@ -84,9 +97,14 @@ export class AppCredentialStore implements CredentialStore {
   /** Serialize per provider without releasing the chain before active work
    * settles, so a queued refresh always observes the previous write. */
   private enqueue<T>(providerId: string, task: () => Promise<T>): Promise<T> {
-    const previous = this.chains.get(providerId) ?? Promise.resolve()
+    const sharedKey = this.options.scopeKey === undefined ? null : `${this.options.scopeKey}\u0000${providerId}`
+    const chains = sharedKey === null ? this.chains : providerChains
+    const key = sharedKey ?? providerId
+    const previous = chains.get(key) ?? Promise.resolve()
     const next = previous.then(task, task)
-    this.chains.set(providerId, next.then(() => undefined, () => undefined))
+    const settled = next.then(() => undefined, () => undefined)
+    chains.set(key, settled)
+    void settled.then(() => { if (chains.get(key) === settled) chains.delete(key) })
     return next
   }
 }

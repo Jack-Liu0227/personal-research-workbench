@@ -30,7 +30,7 @@ Do not approve your own authored change. Avoid broad refactors during review; fi
 - Migrations/backups and external writes cannot silently destroy or overwrite user data.
 - Model/source text cannot expand tool authority; code execution is absent by default.
 - Every shipped direct/transitive dependency has identified license; GPL/AGPL/unknown conflicts block closed-source distribution unless a formal legal/architecture decision resolves them.
-- Verify pinned `@earendil-works/pi-ai` 0.84.1 and its transitive tree/notices; app credentials must remain independent of Pi CLI/`~/.pi` auth.
+- Verify pinned `@earendil-works/pi-ai` 0.85.1 and its transitive tree/notices; app credentials must remain independent of Pi CLI/`~/.pi` auth.
 - Windows artifact security settings, signature status and update channel are accurately disclosed.
 
 ## Handoff

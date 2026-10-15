@@ -143,7 +143,7 @@ export class AgentModelCoordinator {
     for (const [loginId, login] of this.logins) {
       if (login.provider === input.provider) this.loginCancel({ loginId })
     }
-    await this.catalogInstance(credentials).logout(input.provider)
+    await this.catalogInstance(credentials, input.provider).logout(input.provider)
   }
 
   /**
@@ -201,7 +201,7 @@ export class AgentModelCoordinator {
         throw new Error(`模型提供方 "${provider}" 没有可用的交互式登录方式。`)
       }
       this.options.publishAuthEvent({ kind: 'started', loginId, provider, authType })
-      await this.catalogInstance(credentials).login(provider, authType, this.createChannel(loginId, login), loginId, login.abort.signal)
+      await this.catalogInstance(credentials, provider).login(provider, authType, this.createChannel(loginId, login), loginId, login.abort.signal)
       this.options.publishAuthEvent({ kind: 'done', loginId, ok: true, provider, error: null })
     } catch (error) {
       this.options.publishAuthEvent({
@@ -254,17 +254,20 @@ export class AgentModelCoordinator {
     }
   }
 
-  private catalogInstance(credentials: readonly AgentRuntimeCredential[]): PiModelCatalog {
-    return new PiModelCatalog(this.options.profileDir, this.createBridge(credentials))
+  private catalogInstance(credentials: readonly AgentRuntimeCredential[], selectedProvider?: string): PiModelCatalog {
+    return new PiModelCatalog(this.options.profileDir, this.createBridge(credentials, selectedProvider))
   }
 
-  /** Credentials travel as typed values from Main, so the bridge only hands
-   * back what this RPC carried and forwards every write to Main. */
-  private createBridge(credentials: readonly AgentRuntimeCredential[]): AgentCredentialBridge {
+  /** Seed from this RPC; serialized mutations reread only its allowed providers
+   * from Main so another assistant's refresh cannot leave this snapshot stale. */
+  private createBridge(credentials: readonly AgentRuntimeCredential[], selectedProvider?: string): AgentCredentialBridge {
     return {
       read: async (providerId) => credentials.find((entry) => entry.provider === providerId)?.credential ?? null,
       list: async () => credentials.map((entry) => ({ provider: entry.provider, credential: entry.credential })),
-      persist: (providerId, credential) => this.options.persistCredential(providerId, credential)
+      persist: (providerId, credential) => this.options.persistCredential(providerId, credential),
+      ...(this.options.readCredential ? { readLatest: (providerId: string) =>
+        providerId === selectedProvider || credentials.some((entry) => entry.provider === providerId)
+          ? this.options.readCredential!(providerId) : Promise.resolve(null) } : {})
     }
   }
 }
@@ -278,6 +281,8 @@ export interface AgentModelCoordinatorOptions {
   /** Persist one credential through Electron Main and resolve only after Main
    * acknowledged it. */
   readonly persistCredential: AgentCredentialBridge['persist']
+  /** Fresh, single-provider Main vault read inside the shared mutation lock. */
+  readonly readCredential?: AgentCredentialBridge['read']
 }
 
 interface ActiveLogin {

@@ -388,6 +388,7 @@ function cmdBuild() {
     'nsis',
     '--x64',
     `-c.directories.output=${desktopRelative(out)}`,
+    '--publish=never',
   ]
 
   if (flag('skip-gate')) {
@@ -416,6 +417,17 @@ function cmdBuild() {
   }
   fs.mkdirSync(path.dirname(out), { recursive: true })
   const logFile = path.join(path.dirname(out), `build-${stamp()}.log`)
+
+  if (flag('force-electron-dist')) {
+    const dist = prepareElectronDist(version, false)
+    const result = pnpmRun([...buildArgs, `-c.electronDist=${desktopRelative(dist)}`], DESKTOP_DIR)
+    fs.writeFileSync(logFile, result.out, 'utf8')
+    printTail(result.out, result.code === 0 ? 12 : 30)
+    if (result.code !== 0) fail(`Explicit electronDist build failed; log ${logFile}`)
+    evidence('build', [`log ${logFile}`, `output ${out}`, `path explicit electronDist (${dist})`,
+      'deviation: may retain inert resources/default_app.asar; production fuses remain enabled'])
+    return
+  }
 
   const first = pnpmRun(buildArgs, DESKTOP_DIR)
   fs.writeFileSync(logFile, first.out, 'utf8')
@@ -466,6 +478,24 @@ function cmdVerify() {
   const appAsar = path.join(resources, 'app.asar')
   const defaultAsar = path.join(resources, 'default_app.asar')
 
+  if (sig.productVersion !== version) fail(`Installer ProductVersion mismatch: ${sig.productVersion}`)
+  for (const required of [appAsar, blockmap, path.join(unpacked, EXECUTABLE_NAME), path.join(outputDir(version), 'latest.yml')])
+    if (!fs.existsSync(required)) fail(`Required package payload missing: ${required}`)
+  if (sidecars.length) fail('Retired sidecars must not be packaged.')
+
+  const effectiveFile = path.join(out, 'builder-effective-config.yaml')
+  if (!fs.existsSync(effectiveFile)) fail('Missing effective builder configuration.')
+  const effective = fs.readFileSync(effectiveFile, 'utf8')
+  if (!/^appId: com\.personalworkshop\.researchworkbench\s*$/m.test(effective) ||
+      !/^nsis:\s*\r?\n(?:(?:[ \t]+[^\r\n]*|[ \t]*)\r?\n)*?[ \t]+runAfterFinish: false\s*$/m.test(effective))
+    fail('Cannot attest installer identity and disabled automatic launch.')
+  const attestationFile = path.join(out, 'installed-smoke-attestation.json')
+  const attestation = {
+    schemaVersion: 1, version, setupSha256: hashFile(installer).toLowerCase(),
+    runAfterFinish: false, appId: 'com.personalworkshop.researchworkbench',
+  }
+  if (!flag('dry-run')) fs.writeFileSync(attestationFile, `${JSON.stringify(attestation, null, 2)}\n`)
+
   if (skills.includes('windows-release')) {
     warn('resources/skills contains windows-release: the electron-builder filter is missing !**/windows-release/**')
   }
@@ -475,6 +505,7 @@ function cmdVerify() {
     `sha256       ${hashFile(installer)}`,
     `signature    ${sig.status} / ${sig.signer}`,
     `productVer   ${sig.productVersion}`,
+    `attestation  ${attestationFile}${flag('dry-run') ? ' (dry-run: not written)' : ''}`,
     `blockmap     ${fs.existsSync(blockmap) ? `${path.basename(blockmap)} (${fs.statSync(blockmap).size} bytes)` : 'MISSING'}`,
   ])
   evidence('packaged payload (win-unpacked)', [
@@ -483,192 +514,25 @@ function cmdVerify() {
     `app.asar     ${fs.existsSync(appAsar) ? `${fs.statSync(appAsar).size} bytes` : 'MISSING'}`,
     `default.asar ${fs.existsSync(defaultAsar) ? `${fs.statSync(defaultAsar).size} bytes (electronDist fallback artifact)` : 'absent'}`,
     `skills       ${skills.join(', ') || 'MISSING'}`,
-    `sidecars     ${sidecars.join(', ') || 'MISSING'}`,
+    `sidecars     ${sidecars.join(', ') || 'absent (retired)'}`,
   ])
   log('\n(expected skill mirror: grill-me, grilling, last30days, literature-matrix, literature-review-push, ponytail, ui-ux-pro-max)')
 }
 
 // ------------------------------------------------------------------- smoke
 
-function processCount(image) {
-  const out = run('tasklist', ['/FI', `IMAGENAME eq ${image}`, '/NH']).out.toLowerCase()
-  return out.split('\n').filter((line) => line.includes(image.toLowerCase())).length
-}
-
-function killApp() {
-  if (processCount(EXECUTABLE_NAME) === 0) return 0
-  run('taskkill', ['/IM', EXECUTABLE_NAME, '/F'])
-  waitFor(`${EXECUTABLE_NAME} to exit`, () => processCount(EXECUTABLE_NAME) === 0, 30_000)
-  return processCount(EXECUTABLE_NAME)
-}
-
-function findUninstaller(installDir) {
-  return listDir(installDir)
-    .filter((name) => name.toLowerCase().startsWith('uninstall') && name.toLowerCase().endsWith('.exe'))
-    .map((name) => path.join(installDir, name))[0]
-}
-
-function sqliteEvidence(dbPath) {
-  const dir = (() => {
-    const store = path.join(REPO, 'node_modules', '.pnpm')
-    if (!fs.existsSync(store)) return null
-    const entry = listDir(store).filter((name) => name.startsWith('better-sqlite3@')).sort().pop()
-    return entry ? path.join(store, entry, 'node_modules', 'better-sqlite3') : null
-  })()
-  if (!dir) return ['skipped: better-sqlite3 is not installed in this checkout']
-  try {
-    const Database = require(dir)
-    const db = new Database(dbPath, { readonly: true, fileMustExist: true })
-    const tables = db.prepare("select name from sqlite_master where type='table' order by name").all().map((r) => r.name)
-    const migrationTable = tables.find((name) => /migration/i.test(name))
-    const lines = [
-      `header       ${fs.readFileSync(dbPath).subarray(0, 15).toString('latin1')}`,
-      `tables       ${tables.length}`,
-      migrationTable
-        ? `migrations   ${db.prepare(`select count(*) as c from ${migrationTable}`).get().c} rows, max id ${db.prepare(`select max(id) as m from ${migrationTable}`).get().m}`
-        : 'migrations   MISSING',
-    ]
-    if (tables.includes('schedules')) {
-      const rules = db.prepare('select id, workflow_key, enabled, cron, timezone from schedules order by id').all()
-      lines.push(`schedules    ${rules.length} rows`)
-      for (const rule of rules) {
-        lines.push(`  ${rule.id} workflow=${rule.workflow_key} enabled=${rule.enabled} cron=${rule.cron} tz=${rule.timezone}`)
-      }
-    }
-    const counts = ['tasks', 'papers', 'projects']
-      .filter((table) => tables.includes(table))
-      .map((table) => `${table}=${db.prepare(`select count(*) as c from ${table}`).get().c}`)
-    lines.push(`row counts   ${counts.join(', ')}`)
-    db.close()
-    return lines
-  } catch (error) {
-    return [`skipped: ${error.message}`]
-  }
-}
-
-function removable(dir) {
-  try {
-    fs.rmSync(dir, { recursive: true, force: true, maxRetries: 3 })
-    return true
-  } catch (error) {
-    warn(`could not clear ${dir} (${error.code ?? error.message}); continuing`)
-    return false
-  }
-}
-
-function shortcutState() {
-  const candidates = [
-    path.join(process.env.USERPROFILE ?? '', 'Desktop', `${PRODUCT_NAME}.lnk`),
-    path.join(process.env.APPDATA ?? '', 'Microsoft', 'Windows', 'Start Menu', 'Programs', `${PRODUCT_NAME}.lnk`),
-  ]
-  return candidates.map((file) => `${fs.existsSync(file) ? 'present' : 'absent '} ${file}`)
-}
-
-function registryState() {
-  const result = run('reg', [
-    'query',
-    'HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Uninstall',
-    '/s',
-    '/f',
-    PRODUCT_NAME,
-  ])
-  return result.code === 0 ? `${PRODUCT_NAME} uninstall entry present` : 'no uninstall entry'
-}
-
 function cmdSmoke() {
   requireWindows()
+  if (option('install') || option('profile')) fail('Custom smoke directories are forbidden; the smoke creates a unique TEMP sandbox.')
+  if (flag('keep')) fail('--keep is obsolete: the smoke always preserves its unique evidence directory.')
   const version = currentVersion()
-  const dryRun = flag('dry-run')
-  const setupSource = path.resolve(option('setup') ?? findInstaller(version))
-  if (!fs.existsSync(setupSource)) fail(`no installer at ${setupSource}`)
-  const installDir = path.resolve(option('install') ?? path.join(os.tmpdir(), `prw-smoke-${version}`))
-  const profileDir = path.resolve(option('profile') ?? path.join(os.tmpdir(), `prw-profile-${version}`))
-  for (const [label, dir] of [
-    ['install', installDir],
-    ['profile', profileDir],
-  ]) {
-    if (dir.includes(' ')) fail(`${label} directory must not contain spaces (NSIS /D= and cmd quoting): ${dir}`)
-  }
-  // NSIS `/D=` is unquoted and must stay last, and cmd cannot round-trip spaces,
-  // so the installer is copied out of the (space-containing) repository path.
-  const setup = path.join(os.tmpdir(), `prw-setup-${version}.exe`)
-  const dbPath = path.join(profileDir, 'data', 'workspace.sqlite3')
-
-  step(`smoke install of ${path.basename(setupSource)}`)
-  log(`  installer ${setupSource}`)
-  log(`  install   ${installDir}`)
-  log(`  profile   ${profileDir}`)
-  log(`  mode      ${dryRun ? 'dry-run' : flag('keep') ? 'keep the installation' : 'install, launch, uninstall'}`)
-  if (dryRun) return
-
-  killApp()
-  removable(installDir)
-  removable(profileDir)
-  if (path.resolve(setup) !== setupSource) fs.copyFileSync(setupSource, setup)
-
-  step('1/5 silent install (cmd /c "<setup> /S /D=<dir>")')
-  const install = run('cmd.exe', ['/d', '/s', '/c', `${setup} /S /D=${installDir}`])
-  if (install.code !== 0) {
-    printTail(install.out, 10)
-    fail(`installer exited with ${install.code}`)
-  }
-  const installed = waitFor('the installation to appear', () => fs.existsSync(path.join(installDir, EXECUTABLE_NAME)), 180_000)
-  if (!installed) fail(`nothing installed into ${installDir}`)
-  const entries = listDir(installDir)
-  const resources = path.join(installDir, 'resources')
-  evidence('install', [
-    `entries      ${entries.length}: ${entries.slice(0, 6).join(', ')}${entries.length > 6 ? ', ...' : ''}`,
-    `executable   ${EXECUTABLE_NAME}`,
-    `uninstaller  ${path.basename(findUninstaller(installDir) ?? 'MISSING')}`,
-    `app.asar     ${fs.existsSync(path.join(resources, 'app.asar')) ? `${fs.statSync(path.join(resources, 'app.asar')).size} bytes` : 'MISSING'}`,
-    `default.asar ${fs.existsSync(path.join(resources, 'default_app.asar')) ? `${fs.statSync(path.join(resources, 'default_app.asar')).size} bytes` : 'absent'}`,
-    `skills       ${listDir(path.join(resources, 'skills')).join(', ') || 'MISSING'}`,
-    `sidecars     ${listDir(path.join(resources, 'sidecars')).join(', ') || 'MISSING'}`,
-    `processes    ${processCount(EXECUTABLE_NAME)} running (the NSIS installer starts the app)`,
-  ])
-
-  step('2/5 launch with an isolated --prw-user-data-dir profile')
-  killApp()
-  const exe = path.join(installDir, EXECUTABLE_NAME)
-  const child = spawn(exe, [`--prw-user-data-dir=${profileDir}`], { cwd: installDir, detached: true, stdio: 'ignore' })
-  child.unref()
-  waitFor('the isolated profile database', () => fs.existsSync(dbPath), 120_000)
-  if (!fs.existsSync(dbPath)) fail(`no database in ${profileDir}; the profile flag may have been ignored`)
-  evidence('first run (isolated profile)', [
-    `profile      ${listDir(profileDir).join(', ')}`,
-    ...sqliteEvidence(dbPath),
-  ])
-
-  step('3/5 stop the application')
-  const leftover = killApp()
-  log(leftover === 0 ? `  all ${EXECUTABLE_NAME} processes stopped` : `  ${leftover} process(es) still running`)
-
-  if (flag('keep')) {
-    step('4/5 uninstall skipped (--keep)')
-  } else {
-    step('4/5 silent uninstall')
-    const uninstaller = findUninstaller(installDir)
-    if (!uninstaller) fail('no uninstaller in the install directory')
-    const result = run(uninstaller, ['/S'], { cwd: installDir })
-    log(`  exit code ${result.code}`)
-    if (result.code !== 0) warn('the uninstaller reported a non-zero exit code')
-    waitFor('the uninstaller to finish', () => !fs.existsSync(path.join(installDir, EXECUTABLE_NAME)), 180_000)
-    const remaining = listDir(installDir)
-    evidence('uninstall', [
-      `exit code    ${result.code}`,
-      `remaining    ${remaining.length} entries${remaining.length ? `: ${remaining.join(', ')}` : ''}`,
-      ...shortcutState(),
-      registryState(),
-    ])
-    if (remaining.length > 0) {
-      warn('leftovers are usually the transient .asar lock; retry the deletion later and do not report it as an app defect')
-    }
-  }
-
-  step('5/5 summary')
-  log(`  install dir   ${removable(installDir) ? 'cleared' : 'still present'}`)
-  log(`  profile dir   ${removable(profileDir) ? 'cleared' : 'still present'}`)
-  log('  record only the steps that ran; signing, auto-update and packaged UI regression are still unverified')
+  const setup = path.resolve(option('setup') ?? findInstaller(version))
+  if (!fs.existsSync(setup)) fail('Smoke installer does not exist.')
+  const args = [path.join(REPO, 'scripts', 'e2e-installed-release.cjs'), '--setup', setup, '--version', version]
+  if (flag('dry-run')) args.push('--dry-run')
+  const result = run(process.execPath, args)
+  log(result.out)
+  if (result.code !== 0) fail(`Isolated installed smoke failed with ${result.code}; evidence is preserved, never automatically removed.`)
 }
 
 // ----------------------------------------------------------------- publish
@@ -702,7 +566,8 @@ function cmdPublish() {
   }
 
   const installer = findInstaller(version)
-  const assets = [installer, `${installer}.blockmap`].filter((file) => fs.existsSync(file))
+  const assets = [installer, `${installer}.blockmap`, path.join(outputDir(version), 'latest.yml')]
+  for (const asset of assets) if (!fs.existsSync(asset)) fail(`Required release asset missing: ${asset}`)
   const sig = authenticode(installer)
   if (sig.status !== 'Valid') {
     warn(`the installer signature is ${sig.status}; the release notes must say the build is unsigned`)
@@ -772,7 +637,7 @@ Commands
   version <x.y.z>            write the version into every package + MCP identity
   version --check            fail when the version files disagree
   build                      pnpm typecheck + build, then electron-builder NSIS x64
-  verify                     installer identity + packaged skills/sidecars
+  verify                     installer identity + packaged skills (legacy sidecars retired)
   smoke                      install, launch (isolated profile), DB evidence, uninstall
   publish --version <x.y.z>  tag, push the tag, create the GitHub release
 
@@ -783,8 +648,8 @@ Options
   --force-electron-dist  skip the default electron-builder attempt
   --skip-gate        skip pnpm typecheck/build (assumes an earlier pass)
   --setup <exe>      smoke an existing installer instead of the current build
-  --install <dir>    --profile <dir>  space-free smoke directories
-  --keep             keep the smoke installation (skip uninstall)
+  --install / --profile  forbidden; unique TEMP sandbox only
+  Smoke evidence is always preserved; no recursive cleanup or global process kills.
   --notes-file <path>  release notes (default docs/changelog/v<version>.md)
   --yes              required acknowledgement for publish
   --allow-dirty      publish with uncommitted changes (discouraged)

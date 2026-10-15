@@ -1,3 +1,5 @@
+import { AgentProfilePayloadSchemas, AgentProfileResultSchemas } from '@prw/contracts'
+import { AgentResourcePayloadSchemas, AgentResourceResultSchemas } from '@prw/contracts'
 import type {
   AgentApprovalDecisionInput,
   AgentConnectorSaveInput,
@@ -448,6 +450,45 @@ const ArtifactFilterSchema = z.object({
 const IntegrationTestResultSchema = z.object({ ok: z.boolean(), message: z.string() })
 
 const api: WorkbenchApiV2 = {
+  agentMcpServers: {
+    list: () => invoke('agentMcpServers.list', null, AgentResourceResultSchemas['agentMcpServers.list']),
+    save: (input) => invoke('agentMcpServers.save', AgentResourcePayloadSchemas['agentMcpServers.save'].parse(input), AgentResourceResultSchemas['agentMcpServers.save']),
+    probe: (input) => invoke('agentMcpServers.probe', AgentResourcePayloadSchemas['agentMcpServers.probe'].parse(input), AgentResourceResultSchemas['agentMcpServers.probe']),
+    remove: (input) => invoke('agentMcpServers.remove', AgentResourcePayloadSchemas['agentMcpServers.remove'].parse(input), AgentResourceResultSchemas['agentMcpServers.remove']),
+    setCredential: (input) => invoke('agentMcpServers.setCredential', AgentResourcePayloadSchemas['agentMcpServers.setCredential'].parse(input), AgentResourceResultSchemas['agentMcpServers.setCredential'])
+  },
+  agentInstructionSkills: {
+    list: () => invoke('agentInstructionSkills.list', null, AgentResourceResultSchemas['agentInstructionSkills.list']),
+    get: (id) => invoke('agentInstructionSkills.get', AgentResourcePayloadSchemas['agentInstructionSkills.get'].parse({ id }), AgentResourceResultSchemas['agentInstructionSkills.get']),
+    save: (input) => invoke('agentInstructionSkills.save', AgentResourcePayloadSchemas['agentInstructionSkills.save'].parse(input), AgentResourceResultSchemas['agentInstructionSkills.save']),
+    remove: (input) => invoke('agentInstructionSkills.remove', AgentResourcePayloadSchemas['agentInstructionSkills.remove'].parse(input), AgentResourceResultSchemas['agentInstructionSkills.remove'])
+  },
+  agentMcpCalls: {
+    list: (input) => invoke('agentMcpCalls.list', AgentResourcePayloadSchemas['agentMcpCalls.list'].parse(input ?? {}), AgentResourceResultSchemas['agentMcpCalls.list']),
+    decide: (input) => invoke('agentMcpCalls.decide', AgentResourcePayloadSchemas['agentMcpCalls.decide'].parse(input), AgentResourceResultSchemas['agentMcpCalls.decide'])
+  },
+  assistants: {
+    list: () => invoke('assistants.list', null, AgentProfileResultSchemas['assistants.list']),
+    save: (input) => invoke('assistants.save', AgentProfilePayloadSchemas['assistants.save'].parse(input), AgentProfileResultSchemas['assistants.save']),
+    archive: (input) => invoke('assistants.archive', AgentProfilePayloadSchemas['assistants.archive'].parse(input), AgentProfileResultSchemas['assistants.archive'])
+  },
+  agentTeams: {
+    list: () => invoke('agentTeams.list', null, AgentProfileResultSchemas['agentTeams.list']),
+    save: (input) => invoke('agentTeams.save', AgentProfilePayloadSchemas['agentTeams.save'].parse(input), AgentProfileResultSchemas['agentTeams.save']),
+    archive: (input) => invoke('agentTeams.archive', AgentProfilePayloadSchemas['agentTeams.archive'].parse(input), AgentProfileResultSchemas['agentTeams.archive']),
+    runs: {
+      start: (input) => invoke('agentTeams.runs.start', AgentProfilePayloadSchemas['agentTeams.runs.start'].parse(input), AgentProfileResultSchemas['agentTeams.runs.start']),
+      list: (input) => invoke('agentTeams.runs.list', AgentProfilePayloadSchemas['agentTeams.runs.list'].parse(input ?? {}), AgentProfileResultSchemas['agentTeams.runs.list']),
+      get: (id) => invoke('agentTeams.runs.get', AgentProfilePayloadSchemas['agentTeams.runs.get'].parse({ id }), AgentProfileResultSchemas['agentTeams.runs.get']),
+      cancel: (input) => invoke('agentTeams.runs.cancel', AgentProfilePayloadSchemas['agentTeams.runs.cancel'].parse(input), AgentProfileResultSchemas['agentTeams.runs.cancel'])
+    }
+  },
+  agentBindings: {
+    catalog: () => invoke('agentBindings.catalog', null, AgentProfileResultSchemas['agentBindings.catalog']),
+    matrix: () => invoke('agentBindings.matrix', null, AgentProfileResultSchemas['agentBindings.matrix']),
+    saveMatrix: (input) => invoke('agentBindings.saveMatrix', AgentProfilePayloadSchemas['agentBindings.saveMatrix'].parse(input), AgentProfileResultSchemas['agentBindings.saveMatrix']),
+    set: (input) => invoke('agentBindings.set', AgentProfilePayloadSchemas['agentBindings.set'].parse(input), AgentProfileResultSchemas['agentBindings.set'])
+  },
   projects: {
     list: () => invoke('projects.list', null, z.array(ProjectSchema)),
     create: (input) =>

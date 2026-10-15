@@ -2008,15 +2008,9 @@ export const UpdateStateSchema = z.strictObject({
 export type UpdateState = z.infer<typeof UpdateStateSchema>
 
 /**
- * Main-owned embedded-sidecar state.
- *
- * The Python 「科研工作」 application is started and supervised by the Main
- * process and rendered inside its own workbench-owned window, so the renderer
- * never learns the child pid, the launch arguments, or the sidecar's internal
- * API surface.  It receives only this finite state machine, mirroring the
- * update controller above.  `dataDir` is the application's own data root — the
- * renderer needs it to tell the user where their data lives, and it is the
- * user's own local path, never a secret.
+ * Retired embedded-sidecar compatibility state. Main returns a fixed error
+ * without launching Python or exposing an internal API. Keep the DTO shape
+ * for existing clients; this is not an executable sidecar capability.
  */
 export const SidecarPhaseSchema = z.enum(['stopped', 'starting', 'running', 'stopping', 'error'])
 export type SidecarPhase = z.infer<typeof SidecarPhaseSchema>

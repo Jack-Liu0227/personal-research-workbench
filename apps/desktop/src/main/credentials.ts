@@ -15,7 +15,7 @@ export interface SecretCryptography {
   decrypt(value: Buffer): string
 }
 
-export type CredentialKind = 'integration' | 'provider' | 'engine'
+export type CredentialKind = 'integration' | 'provider' | 'engine' | 'mcp'
 
 export type CredentialVaultErrorCode =
   | 'CREDENTIAL_DECRYPTION_FAILED'
@@ -55,7 +55,7 @@ export function credentialKey(kind: CredentialKind, id: string): string {
  * one place to register instead of silently breaking existing profiles.
  */
 export function isCredentialStoreKey(key: string): boolean {
-  return key === AGENT_CREDENTIAL_INDEX_KEY || /^v2:(integration|provider|engine):/.test(key)
+  return key === AGENT_CREDENTIAL_INDEX_KEY || /^v2:(integration|provider|engine|mcp):/.test(key)
 }
 
 export function electronSecretCryptography(): SecretCryptography {

@@ -14,7 +14,13 @@
 | Zotero Collections/Items/本地导入、Better BibTeX 批量导出与 RIS/BibTeX 中转包 | 已实现基础功能，待发布门禁 | `features/zotero.tsx`、`packages/connectors/src/zotero.ts` |
 | Workspace Service + V2 Preload + 本机 MCP | 已实现基础链路 | `packages/workspace-service`、`packages/workspace-mcp` |
 | 进程内 Pi Agent、run/event/ledger/inbox、MCP 业务工具、应用存活期间自动化 | 已接入，外部写入仍需用户确认；待 QA/Security 独立验收 | `packages/agent-runtime`、`packages/workspace-mcp`、`features/agent/index.tsx`、[Agent 计划](plan/08-Agent运行时.md) |
+| 多助手配置、团队/绑定设置、有界只读 director-loop | 已接入本地链路，IN_REVIEW；真实模型与安装器门禁单独验收 | [P0 映射](design/AI_ASSISTANT_TEAM_MAPPING.md)、[实现 27](implementation/27-agent-assistants-teams.md)、migration 38 |
+| 双来源整体视觉升级、全部设置左侧导航、工具/技能跨助手启停矩阵 | 本地前后端链路已实现，IN_REVIEW；原子保存、实际 SDK 注入/撤销已验证，不包含第三方 MCP 或技能安装 | [设计令牌](design/SOURCE_DESIGN_MAPPING.md)、[最终增量证据](implementation/28-source-design-and-binding-matrix.md) |
 | Windows 安装器、真实外部服务、完整发布门禁 | 未重新验收 | 见当前代码和发布环境 |
+
+## 0.0.6 增量
+
+第三方 HTTP MCP 管理/逐次审批、SQLite 指令技能安装编辑、migration 39 与 safeStorage 凭据闭环已接入；不再沿用上文历史阶段“远程 MCP 未实现”的结论。全部 16 个设置为左侧导航。当前本地与发布门禁见[实现 29](implementation/29-agent-resources-and-0.0.6.md)。Python sidecar 已退役；真实在线服务、签名、跨版本安装升级分别验收。
 
 ## 阅读路径
 
@@ -23,6 +29,8 @@
 
 - [后端实现：进程内 Pi Agent](implementation/24-pi-inprocess-agent-backend.md)
 - [前端实现：Agent 对话与设置](implementation/25-agent-conversation-ui-and-settings.md)
+- [多助手与团队接入：实现及验证](implementation/27-agent-assistants-teams.md)
+- [真实双来源整体设计与能力矩阵](implementation/28-source-design-and-binding-matrix.md)
 - [仪表盘](plan/00-仪表盘.md)
 - [日历](plan/01-日历.md)
 - [任务](plan/02-任务.md)

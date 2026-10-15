@@ -1935,6 +1935,66 @@ const migrations: readonly Migration[] = [
       CREATE INDEX rss_items_published_idx ON rss_items(published_at);
     `
   }
+  , {
+    id: 38,
+    name: 'agent_assistants_teams_and_bindings',
+    sql: `
+      CREATE TABLE agent_assistants (id TEXT PRIMARY KEY NOT NULL, data_json TEXT NOT NULL CHECK (json_valid(data_json))) STRICT;
+      CREATE TABLE agent_assistant_bindings (
+        assistant_id TEXT NOT NULL REFERENCES agent_assistants(id) ON DELETE RESTRICT,
+        kind TEXT NOT NULL CHECK (kind IN ('tool', 'skill')), binding_key TEXT NOT NULL,
+        PRIMARY KEY (assistant_id, kind, binding_key)
+      ) STRICT;
+      CREATE TABLE agent_teams (id TEXT PRIMARY KEY NOT NULL, data_json TEXT NOT NULL CHECK (json_valid(data_json))) STRICT;
+      CREATE TABLE agent_team_members (
+        team_id TEXT NOT NULL REFERENCES agent_teams(id) ON DELETE RESTRICT,
+        assistant_id TEXT NOT NULL REFERENCES agent_assistants(id) ON DELETE RESTRICT,
+        role TEXT NOT NULL CHECK (role IN ('director', 'researcher', 'reviewer')),
+        instructions TEXT NOT NULL, position INTEGER NOT NULL CHECK (position >= 0),
+        PRIMARY KEY (team_id, assistant_id), UNIQUE (team_id, position)
+      ) STRICT;
+      CREATE TABLE agent_team_runs (
+        id TEXT PRIMARY KEY NOT NULL, team_id TEXT NOT NULL REFERENCES agent_teams(id) ON DELETE RESTRICT,
+        project_id TEXT REFERENCES projects(id) ON DELETE SET NULL,
+        idempotency_key TEXT NOT NULL UNIQUE,
+        request_fingerprint TEXT NOT NULL CHECK (length(request_fingerprint) = 64),
+        data_json TEXT NOT NULL CHECK (json_valid(data_json))
+      ) STRICT;
+      CREATE INDEX agent_team_runs_team_idx ON agent_team_runs(team_id);
+      ALTER TABLE agent_runs ADD COLUMN assistant_id TEXT REFERENCES agent_assistants(id) ON DELETE RESTRICT;
+      ALTER TABLE agent_runs ADD COLUMN team_id TEXT REFERENCES agent_teams(id) ON DELETE RESTRICT;
+      ALTER TABLE agent_runs ADD COLUMN team_run_id TEXT REFERENCES agent_team_runs(id) ON DELETE RESTRICT;
+      CREATE INDEX agent_runs_assistant_idx ON agent_runs(assistant_id, created_at);
+      CREATE INDEX agent_runs_team_run_idx ON agent_runs(team_run_id, created_at);
+      CREATE TABLE agent_run_requests (
+        run_id TEXT PRIMARY KEY NOT NULL REFERENCES agent_runs(id) ON DELETE CASCADE,
+        fingerprint TEXT NOT NULL CHECK (length(fingerprint) = 64)
+      ) STRICT;
+      INSERT INTO agent_assistants (id, data_json)
+      SELECT 'assistant.default', json_object(
+        'id', 'assistant.default', 'name', 'Research assistant', 'description', '',
+        'enabled', json('true'), 'systemPrompt', '', 'provider', provider, 'model', model,
+        'thinking', thinking, 'toolProfile', 'read-only', 'archivedAt', NULL,
+        'createdAt', updated_at, 'updatedAt', updated_at, 'revision', 0
+      ) FROM agent_settings LIMIT 1;
+      INSERT INTO agent_assistant_bindings (assistant_id, kind, binding_key)
+      SELECT 'assistant.default', 'tool', 'projects.search'
+      WHERE EXISTS (SELECT 1 FROM agent_assistants WHERE id = 'assistant.default');
+      INSERT INTO agent_assistant_bindings (assistant_id, kind, binding_key)
+      SELECT 'assistant.default', 'tool', 'tasks.search'
+      WHERE EXISTS (SELECT 1 FROM agent_assistants WHERE id = 'assistant.default');
+    `
+  }
+  , {
+    id: 39,
+    name: 'agent_managed_instruction_skills_and_http_mcp',
+    sql: `
+      CREATE TABLE agent_mcp_servers (id TEXT PRIMARY KEY NOT NULL, data_json TEXT NOT NULL CHECK(json_valid(data_json))) STRICT;
+      CREATE TABLE agent_instruction_skills (id TEXT PRIMARY KEY NOT NULL, data_json TEXT NOT NULL CHECK(json_valid(data_json))) STRICT;
+      CREATE TABLE agent_mcp_calls (id TEXT PRIMARY KEY NOT NULL, data_json TEXT NOT NULL CHECK(json_valid(data_json))) STRICT;
+      CREATE INDEX agent_mcp_calls_run_idx ON agent_mcp_calls(json_extract(data_json, '$.runId'));
+    `
+  }
 ]
 
 /** Row count of what migration 30 *deletes* and a user would miss, used to

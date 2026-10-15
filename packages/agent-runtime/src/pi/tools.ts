@@ -83,6 +83,7 @@ export const workspaceBlockedToolPatterns: readonly RegExp[] = [
 ]
 
 export interface WorkspaceToolPolicyInput {
+  readonly toolAllowlist?: readonly string[] | undefined
   readonly permissionMode?: AgentPermissionMode | undefined
   readonly toolProfile: AgentToolProfile
 }
@@ -132,7 +133,8 @@ export function selectWorkspaceTools(
   input: WorkspaceToolPolicyInput
 ): WorkspaceToolDescriptor[] {
   const allowed = workspaceToolAllowlist(input)
-  return advertised.filter((tool) => allowed.has(tool.name) && !isBlockedWorkspaceTool(tool.name))
+  const bound = input.toolAllowlist === undefined ? null : new Set(input.toolAllowlist)
+  return advertised.filter((tool) => allowed.has(tool.name) && !isBlockedWorkspaceTool(tool.name) && (bound === null || bound.has(tool.name)))
 }
 
 /** OpenAI-compatible tool names: `^[a-zA-Z0-9_-]{1,64}$`. */

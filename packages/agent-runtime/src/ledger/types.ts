@@ -247,9 +247,8 @@ export function ledgerText(value: unknown, depth = 0): string {
  * deltas, so a snapshot may never be treated as an increment.
  */
 export function applyStreamText(current: string, chunk: string, isDelta: boolean): string {
-  if (!chunk) return current
   if (isDelta) return current + chunk
-  return chunk.length >= current.length ? chunk : current
+  return chunk
 }
 
 /**

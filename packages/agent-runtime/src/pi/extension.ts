@@ -1,5 +1,5 @@
 import type * as Pi from '@earendil-works/pi-coding-agent'
-import type { AgentWorkspaceToolClient } from '../index.js'
+import type { AgentWorkspaceToolClient, AgentExternalRequestTool } from '../index.js'
 import type { Typebox } from './loader.js'
 import { agentToolNames, promptSnippet, toToolParameters, type WorkspaceToolDescriptor } from './tools.js'
 
@@ -7,6 +7,7 @@ export interface WorkspaceExtensionInput {
   readonly typebox: Typebox
   readonly client: AgentWorkspaceToolClient
   readonly tools: readonly WorkspaceToolDescriptor[]
+  readonly externalRequestTools?: readonly AgentExternalRequestTool[] | undefined
   /** Reports a failed tool call so the run can record a diagnostic. The tool
    * still returns the error text to the model: the Agent needs to see why a
    * write was rejected in order to try something else. */
@@ -49,7 +50,8 @@ function errorMessage(error: unknown): string {
 export function createWorkspaceExtension(input: WorkspaceExtensionInput): Pi.InlineExtension {
   // The names the model sees, computed once: the extension registers these and
   // the ledger prints the MCP name back, so both must come from one mapping.
-  const names = agentToolNames(input.tools.map((spec) => spec.name))
+  const external = input.externalRequestTools ?? []
+  const names = agentToolNames([...input.tools.map((spec) => spec.name), ...external.map((spec) => spec.name)])
   const factory: Pi.ExtensionFactory = (pi) => {
     for (const spec of input.tools) {
       const description = spec.description ?? spec.name
@@ -61,7 +63,8 @@ export function createWorkspaceExtension(input: WorkspaceExtensionInput): Pi.Inl
         parameters: toToolParameters(input.typebox, spec.inputSchema) as never,
         execute: async (_toolCallId, params, signal): Promise<Pi.AgentToolResult<WorkspaceToolDetails>> => {
           try {
-            const result = await input.client.callTool({ name: spec.name, arguments: params as Record<string, unknown> })
+            const result = await input.client.callTool({ name: spec.name, arguments: params as Record<string, unknown> }, undefined,
+              signal ? { signal } : undefined)
             const call = result as { content?: unknown; isError?: boolean }
             const text = contentToText(call.content)
             if (call.isError === true) input.onToolError?.(spec.name, text)
@@ -82,5 +85,23 @@ export function createWorkspaceExtension(input: WorkspaceExtensionInput): Pi.Inl
       })
     }
   }
-  return { name: 'workbench-workspace', factory }
+  return { name: 'workbench-workspace', factory: (pi) => {
+    factory(pi)
+    for (const spec of external) {
+      pi.registerTool({ name: names.get(spec.name) ?? spec.name, label: spec.name, description: spec.description,
+        promptSnippet: 'Queue a third-party MCP request for separate human approval; never executes remotely.',
+        parameters: toToolParameters(input.typebox, spec.inputSchema) as never,
+        execute: async (_toolCallId, params, signal): Promise<Pi.AgentToolResult<WorkspaceToolDetails>> => {
+          try {
+            signal?.throwIfAborted()
+            return { content: [{ type: 'text', text: await spec.request(params, signal) }], details: { tool: spec.name } }
+          } catch (error) {
+            if (signal?.aborted) throw error
+            const message = 'MCP approval request rejected by the app-owned policy.'
+            input.onToolError?.(spec.name, message)
+            return { content: [{ type: 'text', text: message }], details: { tool: spec.name, ok: false } }
+          }
+        } })
+    }
+  } }
 }

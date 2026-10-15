@@ -1,4 +1,6 @@
 import { mkdirSync } from 'node:fs'
+import { AgentProfileRepository } from './agent-profile-repository.js'
+import { AgentResourceRepository } from './agent-resource-repository.js'
 import { randomUUID } from 'node:crypto'
 import { dirname, resolve } from 'node:path'
 import type {
@@ -536,6 +538,9 @@ function toAgentProxyBinding(row: typeof agentProxyBindings.$inferSelect): Agent
 
 function toManagedAgentRun(row: typeof agentRuns.$inferSelect): AgentRunRecord {
   return ManagedAgentRunSchema.parse({
+    assistantId: row.assistantId ?? null,
+    teamId: row.teamId ?? null,
+    teamRunId: row.teamRunId ?? null,
     id: row.id,
     jobId: row.jobId ?? null,
     conversationId: row.conversationId ?? null,
@@ -787,6 +792,8 @@ function promptTemplateForWorkflow(workflowKey: import('@prw/contracts').AgentWo
 }
 
 export class WorkbenchRepository {
+  readonly agentProfiles: AgentProfileRepository
+  readonly agentResources: AgentResourceRepository
   readonly databasePath: string
   private readonly sqlite: BetterSqlite3.Database
   private readonly database: BetterSQLite3Database<typeof schema>
@@ -816,6 +823,8 @@ export class WorkbenchRepository {
     this.database = drizzle(this.sqlite, { schema })
     this.now = options.now ?? (() => new Date())
     this.researchRepository = new ResearchRepository(this.database, this.now)
+    this.agentProfiles = new AgentProfileRepository(this.sqlite, this.now, (text) => redactAgentText(text) ?? '', () => this.getAgentSettings())
+    this.agentResources = new AgentResourceRepository(this.sqlite, this.now, (text) => redactAgentText(text) ?? '')
   }
 
   close(): void {
@@ -2780,6 +2789,47 @@ export class WorkbenchRepository {
       .where(eq(agentConversations.id, id)).run()
   }
 
+  setAgentConversationAssistant(id: string, assistantId: string): void {
+    this.sqlite.transaction(() => {
+      const current = this.getAgentConversation(id)
+      const assistant = this.agentProfiles.getAssistant(assistantId)
+      if (!assistant.enabled || assistant.archivedAt || current.archivedAt) throw new WorkbenchDatabaseError('VALIDATION_FAILED', 'Assistant or conversation unavailable.')
+      if (current.assistantKey === assistantId) return
+      const history = this.sqlite.prepare('SELECT 1 FROM agent_runs WHERE conversation_id=? LIMIT 1').get(id)
+      const messages = this.sqlite.prepare('SELECT 1 FROM agent_messages WHERE conversation_id=? LIMIT 1').get(id)
+      if (history || messages || current.assistantKey?.startsWith('assistant.')) throw new WorkbenchDatabaseError('REVISION_CONFLICT', 'Create a new conversation to switch assistants.')
+      this.database.update(agentConversations).set({ assistantKey: assistantId, runtimeSessionId: null, updatedAt: this.now().toISOString(), revision: current.revision + 1 }).where(eq(agentConversations.id, id)).run()
+    }).immediate()
+  }
+
+  setAgentRunIdentity(id: string, identity: { assistantId: string | null; teamId?: string | null; teamRunId?: string | null }): void {
+    this.sqlite.transaction(() => {
+      const current = this.getManagedAgentRun(id)
+      const teamId = identity.teamId ?? null
+      const teamRunId = identity.teamRunId ?? null
+      if (current.assistantId !== null && (current.assistantId !== identity.assistantId || current.teamId !== teamId || current.teamRunId !== teamRunId)) throw new WorkbenchDatabaseError('REVISION_CONFLICT', 'Run identity is immutable.')
+      if (teamRunId) {
+        const parent = this.agentProfiles.getTeamRun(teamRunId)
+        if (parent.teamId !== teamId || !parent.snapshot.assistants.some((assistant) => assistant.id === identity.assistantId)) throw new WorkbenchDatabaseError('VALIDATION_FAILED', 'Run identity does not belong to the team snapshot.')
+      } else if (teamId) throw new WorkbenchDatabaseError('VALIDATION_FAILED', 'Team identity requires a team run.')
+      this.database.update(agentRuns).set({ assistantId: identity.assistantId, teamId, teamRunId }).where(eq(agentRuns.id, id)).run()
+    }).immediate()
+  }
+
+  getAgentRunRequestFingerprint(id: string): string | null {
+    const row = this.sqlite.prepare('SELECT fingerprint FROM agent_run_requests WHERE run_id=?').get(id) as { fingerprint: string } | undefined
+    return row?.fingerprint ?? null
+  }
+
+  setAgentRunRequestFingerprint(id: string, fingerprint: string): void {
+    if (!/^[a-f0-9]{64}$/u.test(fingerprint)) throw new WorkbenchDatabaseError('VALIDATION_FAILED', 'Invalid run request fingerprint.')
+    this.sqlite.transaction(() => {
+      const current = this.getAgentRunRequestFingerprint(id)
+      if (current !== null && current !== fingerprint) throw new WorkbenchDatabaseError('REVISION_CONFLICT', 'Run request identity is immutable.')
+      this.sqlite.prepare('INSERT OR IGNORE INTO agent_run_requests (run_id, fingerprint) VALUES (?, ?)').run(id, fingerprint)
+    }).immediate()
+  }
+
   saveAgentConnector(inputValue: AgentConnectorSaveInput): AgentConnector {
     const input = AgentConnectorSaveInputSchema.parse(inputValue)
     const id = input.id ?? `builtin.agent.${input.runtime}`
@@ -3054,6 +3104,9 @@ export class WorkbenchRepository {
   }
 
   startManagedAgentRun(input: {
+    readonly assistantId?: string | null | undefined
+    readonly teamId?: string | null
+    readonly teamRunId?: string | null
     readonly jobId?: string | null
     readonly conversationId?: string | null
     readonly runtime: AgentRuntimeKind
@@ -3073,6 +3126,7 @@ export class WorkbenchRepository {
     readonly credentialSource?: 'app-safeStorage' | 'none'
     readonly idempotencyKey?: string | null
   }): AgentRunRecord {
+    return this.sqlite.transaction(() => {
     if (input.idempotencyKey) {
       const existing = this.database.select().from(agentRuns)
         .where(eq(agentRuns.idempotencyKey, input.idempotencyKey))
@@ -3091,6 +3145,9 @@ export class WorkbenchRepository {
     })
     this.database.update(agentRuns).set({
       jobId: input.jobId ?? null,
+      assistantId: input.assistantId ?? null,
+      teamId: input.teamId ?? null,
+      teamRunId: input.teamRunId ?? null,
       conversationId: input.conversationId ?? null,
       idempotencyKey: input.idempotencyKey ?? null,
       runtime: input.runtime,
@@ -3104,6 +3161,7 @@ export class WorkbenchRepository {
       agentStatus: 'queued'
     }).where(eq(agentRuns.id, legacy.id)).run()
     return this.getManagedAgentRun(legacy.id)
+    }).immediate()
   }
 
   /**

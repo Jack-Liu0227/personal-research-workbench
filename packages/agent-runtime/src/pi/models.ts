@@ -26,6 +26,11 @@ export class PiModelCatalog {
     private readonly bridge: AgentCredentialBridge
   ) {}
 
+  private credentialStore(): AppCredentialStore {
+    return new AppCredentialStore(this.bridge, { scopeKey: this.profileDir,
+      ...(this.bridge.readLatest ? { readLatest: this.bridge.readLatest } : {}) })
+  }
+
   /**
    * Enumerate every provider the SDK knows about, with the thinking levels each
    * model actually supports.
@@ -39,7 +44,7 @@ export class PiModelCatalog {
   async list(): Promise<AgentModelCatalogEntry[]> {
     const sdk = await loadPiSdk(this.profileDir)
     const runtime = await sdk.ModelRuntime.create({
-      credentials: new AppCredentialStore(this.bridge),
+      credentials: this.credentialStore(),
       refreshOnCreate: false
     })
     // A provider that appears in models.json is user-defined even when it
@@ -69,7 +74,7 @@ export class PiModelCatalog {
     const file = readPiModelsFile(this.profileDir)
     const sdk = await loadPiSdk(this.profileDir)
     const runtime = await sdk.ModelRuntime.create({
-      credentials: new AppCredentialStore(this.bridge),
+      credentials: this.credentialStore(),
       refreshOnCreate: false
     })
     const runtimeError = runtime.getError()
@@ -104,7 +109,7 @@ export class PiModelCatalog {
   async login(provider: string, authType: AgentAuthType, channel: AgentAuthChannel, loginId: string, signal: AbortSignal): Promise<void> {
     const sdk = await loadPiSdk(this.profileDir)
     const runtime = await sdk.ModelRuntime.create({
-      credentials: new AppCredentialStore(this.bridge),
+      credentials: this.credentialStore(),
       refreshOnCreate: false
     })
     await runtime.login(provider, authType as AuthType, createAuthInteraction(channel, loginId, signal))
@@ -121,7 +126,7 @@ export class PiModelCatalog {
   async logout(provider: string): Promise<void> {
     const sdk = await loadPiSdk(this.profileDir)
     const runtime = await sdk.ModelRuntime.create({
-      credentials: new AppCredentialStore(this.bridge),
+      credentials: this.credentialStore(),
       refreshOnCreate: false
     })
     await runtime.logout(provider)

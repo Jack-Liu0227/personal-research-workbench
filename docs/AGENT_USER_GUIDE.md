@@ -2,6 +2,20 @@
 
 本文档描述当前内嵌 Pi Agent 的真实能力边界。Agent 在 Core utility process 内运行，Workbench MCP 通过 `InMemoryTransport` 连接同一个 Workspace Service；不是外部 CLI，不读取个人 Pi 配置。
 
+## 多助手与团队（2026-10 增量）
+
+「设置」提供 AI 助手、协作团队、工具与 MCP、技能绑定四个分区。助手是非秘密配置，不是单独的账号/vault：各助手选择 Provider/model，但认证统一由 Main 管理。指定 Provider 时必须同时选择模型，或两者同时留空继承默认值；Thinking 留空继承默认值。显式工具绑定与权限策略取交集，空绑定意味着没有工具。
+
+工具/技能页的跨助手矩阵使用稳定助手 ID 与能力 key。单格启停和批量保存只更新绑定；批量中任一助手版本过期、能力非法或 SQL 写入失败都会整体回滚，不会覆盖模型、名称或其他配置。错误时保留草稿，重新载入后再修改，不能把界面勾选当保存成功。启停在下一次新运行生效，当前运行和团队快照不热变；需要立即中断请使用停止入口。历史消息不会因停用技能而被删除。来源中以浏览器缓存保存的技能文件/任意 MCP JSON 不是 PRW 的安装或执行入口。
+
+Agent 页选择助手后发送新对话，会话固定该助手，不能把已存在历史切给另一个助手。每助手的 Pi session/settings 缓存隔离；SQLite 历史及 ledger 仍是权威源。未选择助手的既有对话继续按原流程使用。
+
+团队需要 2–8 个唯一成员，恰好一个 director，其余为 researcher/reviewer。提交任务时冻结全部配置和有效默认模型；中途编辑助手或全局设置不会改变这次运行。每次 director/member 调用均计入 2–12 次总预算，成员调用强制只读。director 只能选择现有成员或结束报告，不能扩展权限或改模型。
+
+团队运行卡提供状态、子运行账本和停止入口。凭据缺失、模型未配置、非法 director JSON、子运行失败、超时或预算耗尽都会显式失败。应用关闭/重启会把未完成团队标记为中断，不自动继续收费调用。归档配置保留历史数据；保存/停止使用 revision 检查，过期操作需刷新重试。旧单运行没有请求指纹时不允许幂等重放，重新发起需用新键。
+
+当前不支持远程 MCP、团队并行执行或无人值守外部写入。绑定 skill 仅载入已安装且允许的指令；依赖 shell/Python engine 的技能不会因绑定而获得执行引擎。真实 Provider/OAuth 与安装器验证状态见 [实现 27](implementation/27-agent-assistants-teams.md)。
+
 ## 1. Agent 能看到什么
 
 每个 run 会得到：
@@ -123,6 +137,14 @@ pnpm test:literature-skills
 - 不把 secret 写入 prompt、tool result、ledger 或日志；
 - 通过 typed Workbench service 做业务操作；
 - 增加工具 allowlist/阻断测试后再纳入发布包。
+
+## 第三方 MCP 与 SQLite 指令技能（0.0.6）
+
+设置全部使用左侧导航。在「工具与 MCP 绑定」注册 Streamable HTTP 服务，保存配置、单独保存只写入 Main safeStorage 的 Bearer token，再手动探测；探测不自动授权。公网仅 HTTPS，loopback 可 HTTP，不支持 stdio/command/env/任意 headers。配置、凭据与 schema 改变会使旧探测/授权失效。
+
+远端工具只可在 approved-write 普通手动助手的矩阵启用；团队/计划/只读助手不可使用。模型调用先返回 pending 请求，真实调用在用户独立确认后执行一次，不自动继续模型。完成的 run 可批准未过期请求，失败/取消/重启则失效。审批展示冻结 endpoint、工具、参数与指纹；拒绝不执行。外部副作用不可撤销，取消不是回滚。
+
+「技能绑定」可创建/编辑纯文本 SKILL.md，预览原文而不执行 HTML；保存要求明确审阅。文本存 SQLite，修改后原子撤销绑定并递增助手 revision，重新启用不自动重新绑定。不授予 shell、文件、npm 或 Git 权限。Python sidecar 及 Python Scholar 来源已明确退役。实现、测试和在线未验收路径见[实现 29](implementation/29-agent-resources-and-0.0.6.md)。
 
 ## 8. 故障排查
 

@@ -52,6 +52,60 @@ describe('PiLedgerNormalizer', () => {
     assert.equal(byKind(drafts, 'assistant').at(-1)?.detail, '完整回答')
   })
 
+  it('replaces overshot mutable message snapshots with the shorter final text, including an empty result', () => {
+    const drafts = feed([
+      { type: 'turn_start' },
+      { type: 'message_start', message: { role: 'assistant', content: [{ type: 'text', text: 'Answer' }] } },
+      { type: 'message_update', assistantMessageEvent: { type: 'text_delta', contentIndex: 0, delta: 'Answer' } },
+      { type: 'message_update', assistantMessageEvent: { type: 'text_end', contentIndex: 0, content: 'Answer' } },
+      { type: 'message_end', message: { role: 'assistant', content: [{ type: 'text', text: 'Answer' }] } }
+    ])
+    const assistant = byKind(drafts, 'assistant')
+    assert.equal(assistant[1]?.detail, 'AnswerAnswer', 'SDK partial objects can already hold later text at message_start')
+    assert.equal(assistant[2]?.detail, 'Answer')
+    assert.equal(assistant.at(-1)?.detail, 'Answer')
+    assert.equal(new Set(assistant.map((draft) => draft.recordKey)).size, 1)
+    const empty = feed([
+      { type: 'message_update', assistantMessageEvent: { type: 'text_delta', delta: 'Discarded draft' } },
+      { type: 'message_end', message: { role: 'assistant', content: [] } }
+    ])
+    assert.equal(byKind(empty, 'assistant').at(-1)?.detail, '')
+  })
+
+  it('keeps indexed text blocks distinct, corrects each snapshot and excludes thinking and tools from final answer', () => {
+    const drafts = feed([
+      { type: 'turn_start' },
+      { type: 'message_start', message: { role: 'assistant', content: [] } },
+      { type: 'message_update', assistantMessageEvent: { type: 'thinking_delta', contentIndex: 0, delta: 'Private reasoning' } },
+      { type: 'message_update', assistantMessageEvent: { type: 'text_delta', contentIndex: 1, delta: 'First draft' } },
+      { type: 'message_update', assistantMessageEvent: { type: 'text_end', contentIndex: 1, content: 'First' } },
+      { type: 'message_update', assistantMessageEvent: { type: 'text_delta', contentIndex: 3, delta: 'Second draft' } },
+      { type: 'message_update', assistantMessageEvent: { type: 'text_end', contentIndex: 3, content: 'Second' } },
+      { type: 'message_end', message: { role: 'assistant', content: [
+        { type: 'thinking', thinking: 'Private reasoning' }, { type: 'text', text: 'First' },
+        { type: 'toolCall', id: 'tool-1', name: 'tasks_search', arguments: {} }, { type: 'text', text: 'Second' }
+      ] } }
+    ])
+    assert.equal(byKind(drafts, 'assistant').at(-2)?.detail, 'FirstSecond')
+    assert.equal(byKind(drafts, 'assistant').at(-1)?.detail, 'FirstSecond')
+    assert.equal(byKind(drafts, 'reasoning').at(-1)?.status, 'completed')
+    assert.equal(byKind(drafts, 'reasoning')[0]?.detail, 'Private reasoning')
+  })
+
+  it('preserves identical legitimate answers in separate messages instead of deduplicating text', () => {
+    const drafts = feed([
+      { type: 'turn_start' },
+      { type: 'message_start', message: { role: 'assistant', content: [] } },
+      { type: 'message_end', message: { role: 'assistant', content: [{ type: 'text', text: 'Same answer' }] } },
+      { type: 'message_start', message: { role: 'assistant', content: [] } },
+      { type: 'message_end', message: { role: 'assistant', content: [{ type: 'text', text: 'Same answer' }] } }
+    ])
+    const completed = byKind(drafts, 'assistant').filter((draft) => draft.status === 'completed')
+    assert.equal(completed.length, 2)
+    assert.notEqual(completed[0]?.recordKey, completed[1]?.recordKey)
+    assert.deepEqual(completed.map((draft) => draft.detail), ['Same answer', 'Same answer'])
+  })
+
   it('maps thinking deltas to a reasoning record and closes it with the message', () => {
     const drafts = feed([
       { type: 'turn_start' },

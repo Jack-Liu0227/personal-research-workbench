@@ -12,6 +12,8 @@ import { noAgentCredentials, type AgentCredentialSource, type AgentRunCredential
 import { dispatchRpc, type AgentCallContext } from './dispatcher.js'
 import { AgentExternalActionCoordinator } from './agent-external-actions.js'
 import { AgentCoordinator } from './agent-coordinator.js'
+import { AgentTeamCoordinator } from './agent-teams.js'
+import { AgentResourceCoordinator } from './agent-resources.js'
 import { deliverDailyLiterature, type DailyLiteratureDelivery } from './daily-literature.js'
 import { deliverFeishuMessage, type FeishuMessageDelivery, type FeishuMessageWriter } from './feishu-message.js'
 import { IntegrationCoordinator } from './integration-runtime.js'
@@ -53,6 +55,7 @@ export interface WorkspaceServiceHostOptions {
  * and the Agent's in-process MCP backend all pass the same object around. */
 type WorkspaceServices = Parameters<typeof dispatchRpc>[0] & {
   agent: AgentCoordinator
+  agentTeams: AgentTeamCoordinator
   models: AgentModelCoordinator
   /** The host always builds one; `CoreServices` keeps it optional only so a
    * service set assembled for a unit test can omit it. */
@@ -140,6 +143,7 @@ export function startWorkspaceService(options: WorkspaceServiceHostOptions): voi
     writeCredential(options.parentPort, pendingCredentialWrites, providerId, credential)
   const runtimeAdapter = new PiInProcessAdapter({
     persistCredential: credentialSink,
+    readCredential: async (providerId) => (await readCredential(options.parentPort, pendingCredentialReads, providerId))?.credential ?? null,
     // The workspace is reached through the same MCP server external clients use,
     // but over an in-memory transport: the packaged app ships no node binary, so
     // `fork`/`spawn` cannot carry a stdio MCP server.
@@ -160,8 +164,17 @@ export function startWorkspaceService(options: WorkspaceServiceHostOptions): voi
     }
   })
   const literature = new LiteratureCoordinator(repository)
-  const services = {
+  const agentResources = new AgentResourceCoordinator({ repository,
+    readSecret: async (versionedId) => {
+      const match = /^(mcp\.[a-z0-9][a-z0-9_-]{0,48}):r(\d+)$/u.exec(versionedId)
+      if (!match) throw new Error('Invalid MCP credential reference.')
+      const server = repository.agentResources.getMcpServer(match[1]!)
+      if (server.archivedAt || !server.enabled || server.revision !== Number(match[2])) throw new Error('MCP credential revision changed.')
+      return readIntegrationSecret(options.parentPort, pendingIntegrationReads, versionedId)
+    }, recordLedger: (runId, draft) => services.agent.recordExternalReceipt(runId, draft) })
+  const baseServices = {
     repository,
+    agentResources,
     integrations,
     literature,
     knowledgeEngines: new KnowledgeEngineCoordinator(repository),
@@ -184,6 +197,7 @@ export function startWorkspaceService(options: WorkspaceServiceHostOptions): voi
       requestIntegrationSecret: (profileId) => readIntegrationSecret(options.parentPort, pendingIntegrationReads, profileId)
     }),
     agent: new AgentCoordinator(repository, {
+      agentResources,
       runRoot: join(dirname(options.databasePath), 'agent-runs'),
       // App-owned runtime profiles live beside the database, never in the user's
       // `~/.codex`/`~/.pi`. A probe or run therefore cannot inherit a personal
@@ -218,19 +232,25 @@ export function startWorkspaceService(options: WorkspaceServiceHostOptions): voi
         const url = authEventUrl(event)
         if (url !== null) options.parentPort.postMessage({ type: 'open-external', url })
       },
-      persistCredential: credentialSink
+      persistCredential: credentialSink,
+      readCredential: async (provider) => (await readCredential(options.parentPort, pendingCredentialReads, provider))?.credential ?? null
     })
   }
+  const services = { ...baseServices, agentTeams: new AgentTeamCoordinator(repository, baseServices.agent) }
   const scheduleTimer = setInterval(() => { void services.agent.tickSchedules() }, 30_000)
   scheduleTimer.unref?.()
   services.agent.reconcileInterruptedRuns()
+  agentResources.reconcile()
+  services.agentTeams.reconcileInterruptedRuns()
   void services.agent.tickSchedules()
   let closed = false
   const close = (): void => {
     if (closed) return
     closed = true
     clearInterval(scheduleTimer)
+    services.agentTeams.dispose()
     services.agent.dispose()
+    agentResources.dispose()
     repository.close()
     pipeServer?.close()
     if (options.serviceInfoPath) {

@@ -1,6 +1,6 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import type { AgentAuthPromptKind, AgentAuthPromptOption, AgentAuthType, AgentConnector, AgentCredentialStatus, AgentModelCatalogEntry, AgentPermissionMode, AgentProxyProfile, AgentRuntimeKind, AgentSettingsSaveInput, AgentToolProfile, ArchiveBulkResult, IntegrationProfile, IntegrationProvider, KnowledgeEngineConfig, KnowledgeEngineKind, Project, SidecarState, SyncRun, UpdateState } from '@prw/contracts'
-import { Cable, CheckCircle2, ChevronDown, ChevronUp, Download, Edit3, ExternalLink, FolderOpen, KeyRound, Plus, RefreshCw, Save, TestTube2, Trash2 } from 'lucide-react'
+import type { AgentAuthPromptKind, AgentAuthPromptOption, AgentAuthType, AgentConnector, AgentCredentialStatus, AgentModelCatalogEntry, AgentPermissionMode, AgentProxyProfile, AgentRuntimeKind, AgentSettingsSaveInput, AgentToolProfile, ArchiveBulkResult, IntegrationProfile, IntegrationProvider, KnowledgeEngineConfig, KnowledgeEngineKind, Project, SyncRun, UpdateState } from '@prw/contracts'
+import { BookOpen, Bot, Cable, CheckCircle2, ChevronDown, ChevronUp, Download, Edit3, ExternalLink, FlaskConical, FolderOpen, Info, KeyRound, Network, PanelLeftClose, PanelLeftOpen, Plus, Puzzle, RefreshCw, Rss, Save, Settings2, Shield, TestTube2, Trash2, Users, Wrench } from 'lucide-react'
 import { Fragment, useEffect, useId, useRef, useState, type FormEvent, type ReactElement } from 'react'
 import { ArchiveReceiptList, SelectionBar, SelectionCheckbox } from '../../components/selection'
 import { ExternalUrlLink } from '../../components/external-link'
@@ -11,10 +11,71 @@ import { defaultSelectionIssue, defaultSelectionSummary } from '../../lib/model-
 import { getWorkbenchAgentApi, getWorkbenchApi } from '../../lib/workbench'
 import { queryKeys, useIntegrationsQuery, useSyncRunsQuery } from '../queries'
 import { CustomProviderSection } from './custom-providers'
-import { describeSyncRun, MutationFeedback, ResearchPanel, ResearchTabs, StatusBadge, SyncRunList } from './shared'
+import { describeSyncRun, MutationFeedback, ResearchPanel, StatusBadge, SyncRunList } from './shared'
 import { RssSourceSettings } from './rss-source-settings'
+import { AssistantSettingsPanel, AgentTeamSettingsPanel, AssistantBindingsPanel } from './agent-profiles'
 
-type SettingsTab = 'general' | 'workspace' | 'literature' | 'sidecar' | 'proxy' | 'connectors' | 'rss' | 'agent' | 'engines' | 'mcp' | 'security' | 'about'
+type SettingsTab = 'general' | 'workspace' | 'literature' | 'sidecar' | 'proxy' | 'connectors' | 'rss' | 'agent' | 'assistants' | 'teams' | 'agent-tools' | 'agent-skills' | 'engines' | 'mcp' | 'security' | 'about'
+
+const workbenchAccents = {
+  ocean: { label: '海蓝', light: '#176b87', dark: '#79c8e0' },
+  teal: { label: '青绿', light: '#0e756b', dark: '#62d6c4' },
+  slate: { label: '石墨', light: '#52657d', dark: '#a7bdd7' },
+  copper: { label: '铜棕', light: '#99632c', dark: '#e1b17b' }
+} as const
+type WorkbenchAccent = keyof typeof workbenchAccents | 'custom'
+
+function readCustomAccent(): string {
+  try { const value = localStorage.getItem('workbench-custom-accent'); if (value && /^#[0-9a-f]{6}$/i.test(value)) return value } catch { /* optional appearance preference */ }
+  return '#176b87'
+}
+
+function accessibleAccent(hex: string, dark: boolean): string {
+  const channels = [1, 3, 5].map((offset) => parseInt(hex.slice(offset, offset + 2), 16))
+  const luminance = (rgb: number[]): number => rgb.map((channel) => { const value = channel / 255; return value <= .04045 ? value / 12.92 : ((value + .055) / 1.055) ** 2.4 }).reduce((sum, value, index) => sum + value * [0.2126, 0.7152, 0.0722][index]!, 0)
+  // Preserve the chosen hue while keeping button text readable in both themes.
+  let adjusted = channels
+  for (let step = 0; step <= 100; step++) {
+    const amount = step / 100
+    adjusted = channels.map((channel) => Math.round(channel * (1 - amount) + (dark ? 255 : 0) * amount))
+    if (dark ? (luminance(adjusted) + .05) / (luminance([11, 24, 32]) + .05) >= 4.5 : 1.05 / (luminance(adjusted) + .05) >= 4.5) break
+  }
+  return `#${adjusted.map((channel) => channel.toString(16).padStart(2, '0')).join('')}`
+}
+
+function readWorkbenchAccent(): WorkbenchAccent {
+  try {
+    const key = localStorage.getItem('workbench-accent')
+    if (key === 'custom' || (key && Object.hasOwn(workbenchAccents, key))) return key as WorkbenchAccent
+  } catch { /* optional appearance preference */ }
+  return 'ocean'
+}
+
+export function applyWorkbenchAccent(): void {
+  const key = readWorkbenchAccent()
+  const preset = key === 'custom' ? { light: accessibleAccent(readCustomAccent(), false), dark: accessibleAccent(readCustomAccent(), true) } : workbenchAccents[key]
+  document.documentElement.style.setProperty('--workbench-accent-light', preset.light)
+  document.documentElement.style.setProperty('--workbench-accent-dark', preset.dark)
+}
+
+const settingsSections: Array<{ value: SettingsTab; label: string; icon: typeof Settings2 }> = [
+  { value: 'general', label: '通用', icon: Settings2 },
+  { value: 'workspace', label: '工作区与数据', icon: FolderOpen },
+  { value: 'literature', label: '文献检索', icon: BookOpen },
+  { value: 'sidecar', label: '科研工作', icon: FlaskConical },
+  { value: 'proxy', label: '代理', icon: Network },
+  { value: 'connectors', label: '工具连接', icon: Cable },
+  { value: 'rss', label: 'RSS 来源', icon: Rss },
+  { value: 'agent', label: '模型与 Agent', icon: Bot },
+  { value: 'assistants', label: 'AI 助手', icon: Bot },
+  { value: 'teams', label: '协作团队', icon: Users },
+  { value: 'agent-tools', label: '工具与 MCP 绑定', icon: Wrench },
+  { value: 'agent-skills', label: '技能绑定', icon: Puzzle },
+  { value: 'engines', label: '知识引擎', icon: BookOpen },
+  { value: 'mcp', label: 'MCP Server', icon: Network },
+  { value: 'security', label: '安全与审计', icon: Shield },
+  { value: 'about', label: '关于与更新', icon: Info }
+]
 
 /**
  * Deep-link target requested by another surface before it navigates here.
@@ -589,6 +650,17 @@ function GeneralSettingsPanel(): React.JSX.Element {
       return 'comfortable'
     }
   })
+  const [accent, setAccent] = useState(readWorkbenchAccent)
+  const [customAccent, setCustomAccent] = useState(readCustomAccent)
+
+  const publishCustomAccent = (color: string): void => {
+    if (!/^#[0-9a-f]{6}$/i.test(color)) return
+    setCustomAccent(color)
+    setAccent('custom')
+    try { localStorage.setItem('workbench-custom-accent', color); localStorage.setItem('workbench-accent', 'custom') } catch { /* optional appearance preference */ }
+    applyWorkbenchAccent()
+    window.dispatchEvent(new Event('workbench-preferences-change'))
+  }
 
   const publish = (nextTheme: 'light' | 'dark', nextScale: 'compact' | 'comfortable' | 'large'): void => {
     try {
@@ -601,54 +673,15 @@ function GeneralSettingsPanel(): React.JSX.Element {
     window.dispatchEvent(new Event('workbench-preferences-change'))
   }
 
-  return <SettingInfoPanel eyebrow="SETTINGS / GENERAL" title="通用"><div className="grid gap-3 sm:grid-cols-2"><label className="grid gap-1.5 text-xs font-semibold text-foreground" htmlFor="general-theme"><span>主题</span><select className="select-control" id="general-theme" onChange={(event) => { const next = event.target.value as 'light' | 'dark'; setTheme(next); publish(next, fontScale) }} value={theme}><option value="dark">深色</option><option value="light">浅色</option></select></label><label className="grid gap-1.5 text-xs font-semibold text-foreground" htmlFor="general-font-scale"><span>字号</span><select className="select-control" id="general-font-scale" onChange={(event) => { const next = event.target.value as 'compact' | 'comfortable' | 'large'; setFontScale(next); publish(theme, next) }} value={fontScale}><option value="compact">紧凑（13px）</option><option value="comfortable">标准（14px）</option><option value="large">大号（16px）</option></select></label></div><p>主题和字号会保存在当前用户配置并立即应用；左侧底部主题按钮与此处保持同步。</p><p>全局快捷创建支持顶部 Todo 输入；Ctrl K 搜索入口当前跳转到文献检索工作区。</p></SettingInfoPanel>
+  return <SettingInfoPanel eyebrow="SETTINGS / GENERAL" title="通用"><div className="grid gap-3 sm:grid-cols-2"><label className="grid gap-1.5 text-xs font-semibold text-foreground" htmlFor="general-theme"><span>主题</span><select className="select-control" id="general-theme" onChange={(event) => { const next = event.target.value as 'light' | 'dark'; setTheme(next); publish(next, fontScale) }} value={theme}><option value="dark">深色</option><option value="light">浅色</option></select></label><label className="grid gap-1.5 text-xs font-semibold text-foreground" htmlFor="general-font-scale"><span>字号</span><select className="select-control" id="general-font-scale" onChange={(event) => { const next = event.target.value as 'compact' | 'comfortable' | 'large'; setFontScale(next); publish(theme, next) }} value={fontScale}><option value="compact">紧凑（13px）</option><option value="comfortable">标准（14px）</option><option value="large">大号（16px）</option></select></label></div><fieldset className="theme-accent-picker"><legend>工作台主色</legend><div>{Object.entries(workbenchAccents).map(([key, preset]) => <button aria-label={`主色：${preset.label}`} aria-pressed={accent === key} key={key} onClick={() => { setAccent(key as WorkbenchAccent); try { localStorage.setItem('workbench-accent', key) } catch { /* optional appearance preference */ }; applyWorkbenchAccent(); window.dispatchEvent(new Event('workbench-preferences-change')) }} style={{ '--swatch-color': preset.light } as React.CSSProperties} type="button"><span aria-hidden="true" />{preset.label}</button>)}</div><label className="theme-custom-accent">自定义主色<input aria-label="自定义主色" onChange={(event) => publishCustomAccent(event.target.value)} type="color" value={customAccent} /><code>{customAccent}</code><Button aria-pressed={accent === 'custom'} onClick={() => publishCustomAccent(customAccent)} size="sm">使用自定义主色</Button>{accent === 'custom' ? <span>当前使用</span> : null}</label><p>主色只影响交互与强调；面板、边界和文字保持双主题的中性色层级。自定义颜色按主题调整亮度，保持按钮文字对比度。</p></fieldset><p>主题和字号会保存在当前用户配置并立即应用；左侧底部主题按钮与此处保持同步。</p><p>全局快捷创建支持顶部 Todo 输入；Ctrl K 搜索入口当前跳转到文献检索工作区。</p></SettingInfoPanel>
 }
 
 function SidecarSettingsPanel(): React.JSX.Element {
-  const [state, setState] = useState<SidecarState | null>(null)
-  const [busy, setBusy] = useState<'open' | 'stop' | null>(null)
-  const [error, setError] = useState<string | null>(null)
-
-  useEffect(() => {
-    let active = true
-    const api = getWorkbenchApi().sidecar
-    void api.state().then((value) => { if (active) setState(value) }).catch((reason) => { if (active) setError(getErrorMessage(reason)) })
-    const unsubscribe = api.onState((value) => { if (active) setState(value) })
-    return () => { active = false; unsubscribe() }
-  }, [])
-
-  const run = async (operation: 'open' | 'stop'): Promise<void> => {
-    if (busy) return
-    setBusy(operation)
-    setError(null)
-    try {
-      const api = getWorkbenchApi().sidecar
-      setState(operation === 'open' ? await api.open() : await api.stop())
-    } catch (reason) {
-      setError(getErrorMessage(reason))
-    } finally {
-      setBusy(null)
-    }
-  }
-
-  const phase = state?.phase ?? 'starting'
-  const phaseLabel: Record<SidecarState['phase'], string> = {
-    stopped: '未运行', starting: '正在启动', running: '运行中', stopping: '正在停止', error: '启动失败'
-  }
-  const transitional = phase === 'starting' || phase === 'stopping'
-  return <SettingInfoPanel eyebrow="SETTINGS / WORKSPACE APP" title="科研工作（内嵌应用）">
-    <p>十步科研工作流（创新点审查 → 论文搜索 → 下载精读 → 论文翻译 → 确认大纲 → 梓理精读 → 文章撑写 → 稿件审查 → 中译英 → 格式转换）作为内嵌窗口运行，由主进程启动、监控并回收；它在独立会话中渲染，不持有预加载脚本，也不接触工作台数据库。</p>
-    <div className="flex flex-wrap items-center gap-3">
-      <span className={cn('status-led', phase === 'running' ? 'bg-online' : phase === 'error' ? 'bg-danger' : 'bg-muted-foreground')} />
-      <strong className="text-foreground">{phaseLabel[phase]}</strong>
-      {state?.port !== null && state?.port !== undefined ? <code className="font-mono text-xs text-muted-foreground">127.0.0.1:{state.port}</code> : null}
-      <Button disabled={busy !== null || transitional} onClick={() => void run('open')} size="sm" variant="primary"><ExternalLink aria-hidden="true" className="size-3.5" />{phase === 'running' ? '切到该窗口' : '打开'}</Button>
-      <Button disabled={busy !== null || transitional || phase === 'stopped'} onClick={() => void run('stop')} size="sm" variant="secondary">停止</Button>
-    </div>
-    {state?.message ? <p className="text-xs leading-5 text-muted-foreground">{state.message}</p> : null}
-    {error ? <p className="text-xs leading-5 text-danger">{error}</p> : null}
-    {state ? <div className="grid gap-2 rounded-md border border-border bg-muted/30 p-3 text-xs"><span>数据目录：<code className="break-all font-mono text-foreground">{state.dataDir}</code></span><span>十步工作流、助手团队、笔记、邮箱与翻译输出全部写入该目录，与工作台自身的 <code className="font-mono text-foreground">workspace.sqlite3</code> 相互独立。</span></div> : null}
-    <p className="text-xs leading-5 text-muted-foreground">内嵌应用需要本机 Python 3.10+ 与 <code className="font-mono text-foreground">sidecars/research-workbench-py/requirements.txt</code>；应用不会静默安装 Python 依赖。</p>
+  return <SettingInfoPanel eyebrow="SETTINGS / RETIRED SIDECAR" title="科研工作（旧侧车已退休）">
+    <p className="font-semibold text-foreground">旧 Python 科研工作侧车已退休，不可启动。</p>
+    <p>当前版本不再附带、启动或恢复旧 Python 应用，也不会安装 Python、依赖或打开侧车窗口。此设置分组仅保留迁移说明，不表示旧功能已就绪。</p>
+    <p>科研工作 1.0 的设计语言已吸收到工作台界面；AI 助手、协作团队、工具与 MCP 绑定、指令技能均使用工作台原生 Renderer / Core / SQLite 与进程内 Pi Agent。</p>
+    <p>旧侧车数据不会自动导入或删除；如果本机另存有旧数据，请保留原件。此处不会读取旧路径、执行迁移脚本或把旧侧车产物标记为工作台数据。</p>
   </SettingInfoPanel>
 }
 
@@ -726,8 +759,8 @@ function WorkspaceSettingsPanel(): React.JSX.Element {
 }
 
 function LiteratureSettingsPanel(): React.JSX.Element {
-  const sources = [['Crossref', 'https://api.crossref.org/works'], ['OpenAlex', 'https://api.openalex.org/works'], ['PubMed', 'https://eutils.ncbi.nlm.nih.gov/entrez/eutils'], ['arXiv', 'https://export.arxiv.org/api/query'], ['Semantic Scholar', 'https://api.semanticscholar.org/graph/v1/paper/search'], ['Google Scholar', 'scholarly sidecar（用户触发、逐页）']]
-  return <SettingInfoPanel eyebrow="SETTINGS / LITERATURE" title="文献检索"><p>默认使用全部免费来源并行检索，每页 50 条；失败来源按部分失败显示，不伪造成功。排序支持相关性、年份、影响因子、标题和开放引用代理指标。</p><div className="grid gap-2">{sources.map(([name, url]) => <div className="flex flex-wrap items-center justify-between gap-2 rounded-md border border-border px-3 py-2 text-xs" key={name}><span className="font-semibold text-foreground">{name}</span><code className="break-all font-mono text-muted-foreground">{url}</code></div>)}</div><p>Crossref/OpenAlex 等公共元数据源不提供 JCR 期刊影响因子；页面只展示来源明确提供的影响因子及获取时间，并将公开引用指标单独标为“公开引用指标”。各来源 API Key（如有）通过连接配置的凭据字段保存到 Main safeStorage；不会写入 SQLite、localStorage 或日志。Google Scholar 通过本机 scholarly 侧车按用户触发、逐页运行，遇到验证码或限流立即停止。首次使用请安装项目附带的 <code className="font-mono text-foreground">sidecars/requirements.txt</code>，应用不会静默安装 Python 依赖。</p><p>检索结果导入 Zotero 固定走 API 预览 → 明确确认 → 逐条回执。权限不足、版本冲突或网络错误会显示为失败，并可从失败项重新预览和再次导入；不会把生成文件误报为已写入。</p></SettingInfoPanel>
+  const sources = [['Crossref', 'https://api.crossref.org/works'], ['OpenAlex', 'https://api.openalex.org/works'], ['PubMed', 'https://eutils.ncbi.nlm.nih.gov/entrez/eutils'], ['arXiv', 'https://export.arxiv.org/api/query'], ['Semantic Scholar', 'https://api.semanticscholar.org/graph/v1/paper/search'], ['Google Scholar', '不可用：旧 Python scholarly 侧车已退休']]
+  return <SettingInfoPanel eyebrow="SETTINGS / LITERATURE" title="文献检索"><p>默认使用可用免费来源并行检索，每页 50 条；失败或不可用来源如实显示，不伪造成功。排序支持相关性、年份、影响因子、标题和开放引用代理指标。</p><div className="grid gap-2">{sources.map(([name, url]) => <div className="flex flex-wrap items-center justify-between gap-2 rounded-md border border-border px-3 py-2 text-xs" key={name}><span className="font-semibold text-foreground">{name}</span><code className="break-all font-mono text-muted-foreground">{url}</code></div>)}</div><p>Crossref/OpenAlex 等公共元数据源不提供 JCR 期刊影响因子；页面只展示来源明确提供的影响因子及获取时间，并将公开引用指标单独标为“公开引用指标”。各来源 API Key（如有）通过连接配置的凭据字段保存到 Main safeStorage；不会写入 SQLite、localStorage 或日志。Google Scholar 的旧 Python scholarly 侧车已退休，当前明确不可用，不会启动 Python 或安装依赖；Crossref、OpenAlex 等原生公共元数据来源不受影响。</p><p>检索结果导入 Zotero 固定走 API 预览 → 明确确认 → 逐条回执。权限不足、版本冲突或网络错误会显示为失败，并可从失败项重新预览和再次导入；不会把生成文件误报为已写入。</p></SettingInfoPanel>
 }
 
 function ProxySettingsPanel(): React.JSX.Element {
@@ -1103,7 +1136,7 @@ function ProviderSetupList({ answerPending, catalog, disabled, entries, filter, 
       const editing = keyTarget === entry.provider
       const keyLabel = entry.credentialPresent && entry.authType === 'api_key' ? '更换 API Key' : '设置 API Key'
       const activeLogin = login?.provider === entry.provider ? login : null
-      return <div className="settings-row rounded-md border border-border" key={entry.provider}>
+      return <div className="settings-row agent-provider-card rounded-md border border-border" key={entry.provider}>
         <div className="min-w-0 flex-1">
           <button className="agent-runtime-name" onClick={() => onSelect(entry.provider)} type="button"><span aria-hidden="true" className={cn('agent-runtime-dot', entry.credentialPresent ? 'agent-runtime-dot-online' : 'agent-runtime-dot-muted')} />{entry.label}</button>
           <span className="ml-2 text-xs text-muted-foreground">{entry.credentialPresent ? `已配置${entry.authType ? ` · ${authTypeLabels[entry.authType]}` : ''}${entry.updatedAt ? ` · ${formatDateTime(entry.updatedAt)}` : ''}` : '未配置'} · 可用认证：{authTypes.length > 0 ? authTypes.map((type) => authTypeLabels[type]).join(' / ') : '未声明'}</span>
@@ -1247,7 +1280,7 @@ function EnginesPanel(): React.JSX.Element {
 
 function McpSettingsPanel(): React.JSX.Element {
   const status = useQuery({ queryKey: ['workspace-status'], queryFn: () => getWorkbenchApi().workspace.status(), refetchInterval: 5000 })
-  return <SettingInfoPanel eyebrow="SETTINGS / MCP" title="MCP Server"><p>首期仅本机 stdio MCP，不开放远程 Streamable HTTP。当前状态：<strong className="text-foreground">{status.data?.mcp ?? '检测中'}</strong>。</p><div className="rounded-md border border-border bg-muted/30 p-3 text-xs leading-5"><p className="font-semibold text-foreground">给其他 Agent 的配置</p><code className="mt-2 block whitespace-pre-wrap font-mono">workspace-mcp --transport stdio{`\n`}# Resources：只读检索/读取{`\n`}# Tools：写入前必须 preview + confirmed=true</code></div><p>启用/禁用由宿主进程和 MCP 客户端配置控制；页面只呈现真实探测状态和配置教程。</p></SettingInfoPanel>
+  return <SettingInfoPanel eyebrow="SETTINGS / MCP" title="MCP Server"><p>此处是工作台向其他 Agent 提供的本机 stdio Server，不是第三方 MCP 客户端。当前状态：<strong className="text-foreground">{status.data?.mcp ?? '检测中'}</strong>。</p><div className="rounded-md border border-border bg-muted/30 p-3 text-xs leading-5"><p className="font-semibold text-foreground">给其他 Agent 的配置</p><code className="mt-2 block whitespace-pre-wrap font-mono">workspace-mcp --transport stdio{`\n`}# Resources：只读检索/读取{`\n`}# Tools：写入前必须 preview + confirmed=true</code></div><p>启用/禁用由宿主进程和 MCP 客户端配置控制。第三方 Streamable HTTP 服务请到「工具与 MCP 绑定 → MCP 服务器」添加；第三方 stdio MCP 暂不支持。</p></SettingInfoPanel>
 }
 
 export function IntegrationsSettingsPage({ projects: _projects }: { projects: Project[] }): React.JSX.Element {
@@ -1316,5 +1349,23 @@ export function IntegrationsSettingsPage({ projects: _projects }: { projects: Pr
     pendingSection = null
     return requested
   })
-  return <div className="page-scroll"><PageHeader description="管理工作区、外部工具、代理、模型认证与知识引擎映射；页面仅显示后端真实状态。" eyebrow="SETTINGS / WORKSPACE" title="设置" /><div className="mt-4"><ResearchTabs items={[{ value: 'general', label: '通用' }, { value: 'workspace', label: '工作区与数据' }, { value: 'literature', label: '文献检索' }, { value: 'sidecar', label: '科研工作' }, { value: 'proxy', label: '代理' }, { value: 'connectors', label: '工具连接' }, { value: 'rss', label: 'RSS 来源' }, { value: 'agent', label: '模型与 Agent' }, { value: 'engines', label: '知识引擎' }, { value: 'mcp', label: 'MCP Server' }, { value: 'security', label: '安全与审计' }, { value: 'about', label: '关于与更新' }]} label="设置分区" onChange={setTab} value={tab} /></div><div className="mt-4">{tab === 'general' ? <GeneralSettingsPanel /> : null}{tab === 'workspace' ? <WorkspaceSettingsPanel /> : null}{tab === 'literature' ? <LiteratureSettingsPanel /> : null}{tab === 'sidecar' ? <SidecarSettingsPanel /> : null}{tab === 'proxy' ? <ProxySettingsPanel /> : null}{tab === 'connectors' ? <><ConnectorsPanel /><FeishuBindingPanel /><RssSourceSettings /></> : null}{tab === 'rss' ? <RssSourceSettings /> : null}{tab === 'agent' ? <AgentModelSettingsPanel authFeedback={authFeedback} authState={authState} onLoginAttempt={(provider) => { expectedLoginProvider.current = provider; setAuthFeedback(null) }} onLoginCancelled={(loginId) => { expectedLoginProvider.current = null; ownedLoginIds.current.delete(loginId); activeLoginId.current = null; setAuthState({ login: null, promptValue: '' }) }} onLoginPromptAnswered={(loginId) => setAuthState((current) => current.login?.loginId === loginId ? { ...current, promptValue: '', login: { ...current.login, prompt: null } } : current)} onLoginStarted={(loginId) => { ownedLoginIds.current.add(loginId); activeLoginId.current = loginId; expectedLoginProvider.current = null }} onPromptValueChange={(value) => setAuthState((current) => ({ ...current, promptValue: value }))} /> : null}{tab === 'engines' ? <EnginesPanel /> : null}{tab === 'mcp' ? <McpSettingsPanel /> : null}{tab === 'security' ? <SecuritySettingsPanel /> : null}{tab === 'about' ? <UpdatesSettingsPanel /> : null}</div></div>
+  const [profileDirty, setProfileDirty] = useState(false)
+  const [settingsNavExpanded, setSettingsNavExpanded] = useState(false)
+  const changeTab = (next: SettingsTab) => {
+    if (next === tab) { setSettingsNavExpanded(false); return }
+    if (profileDirty && !window.confirm('当前配置尚未保存。放弃修改并切换设置分区？')) return
+    setProfileDirty(false)
+    setTab(next)
+    setSettingsNavExpanded(false)
+  }
+  return <div className="page-scroll"><PageHeader description="管理工作区、外部工具、代理、模型认证与知识引擎映射；页面仅显示后端真实状态。" eyebrow="SETTINGS / WORKSPACE" title="设置" /><div className="settings-workspace"><div className="settings-layout"><nav aria-label="设置分区侧边栏" className={cn('settings-sidebar', settingsNavExpanded && 'settings-sidebar-expanded')} onKeyDown={(event) => {
+    if (event.key === 'Escape') { setSettingsNavExpanded(false); event.currentTarget.querySelector<HTMLButtonElement>('.settings-sidebar-toggle')?.focus(); return }
+    if (!['ArrowDown', 'ArrowUp', 'Home', 'End'].includes(event.key)) return
+    const buttons = [...event.currentTarget.querySelectorAll<HTMLButtonElement>('.settings-nav-item')]
+    const index = buttons.indexOf(document.activeElement as HTMLButtonElement)
+    if (index < 0) return
+    event.preventDefault()
+    const next = event.key === 'Home' ? 0 : event.key === 'End' ? buttons.length - 1 : (index + (event.key === 'ArrowDown' ? 1 : -1) + buttons.length) % buttons.length
+    buttons[next]?.focus()
+  }}><button aria-controls="settings-section-links" aria-expanded={settingsNavExpanded} aria-label={settingsNavExpanded ? '收起设置分区侧边栏' : '展开设置分区侧边栏'} className="settings-sidebar-toggle" onClick={() => setSettingsNavExpanded((current) => !current)} type="button">{settingsNavExpanded ? <PanelLeftClose aria-hidden="true" className="size-4" /> : <PanelLeftOpen aria-hidden="true" className="size-4" />}<span>设置分区</span></button><div className="settings-section-links" id="settings-section-links">{settingsSections.map(({ value, label, icon: Icon }) => <button aria-controls="settings-section-content" aria-current={tab === value ? 'page' : undefined} aria-label={label} className={cn('settings-nav-item', tab === value && 'settings-nav-item-active')} key={value} onClick={() => changeTab(value)} title={label} type="button"><Icon aria-hidden="true" className="size-4" /><span>{label}</span></button>)}</div></nav>{settingsNavExpanded ? <button aria-label="关闭设置分区抽屉" className="settings-sidebar-scrim" onClick={() => setSettingsNavExpanded(false)} type="button" /> : null}<div aria-label="当前设置分区" className="settings-section-content" id="settings-section-content">{tab === 'general' ? <GeneralSettingsPanel /> : null}{tab === 'workspace' ? <WorkspaceSettingsPanel /> : null}{tab === 'literature' ? <LiteratureSettingsPanel /> : null}{tab === 'sidecar' ? <SidecarSettingsPanel /> : null}{tab === 'proxy' ? <ProxySettingsPanel /> : null}{tab === 'connectors' ? <><ConnectorsPanel /><FeishuBindingPanel /><RssSourceSettings /></> : null}{tab === 'rss' ? <RssSourceSettings /> : null}{tab === 'agent' ? <AgentModelSettingsPanel authFeedback={authFeedback} authState={authState} onLoginAttempt={(provider) => { expectedLoginProvider.current = provider; setAuthFeedback(null) }} onLoginCancelled={(loginId) => { expectedLoginProvider.current = null; ownedLoginIds.current.delete(loginId); activeLoginId.current = null; setAuthState({ login: null, promptValue: '' }) }} onLoginPromptAnswered={(loginId) => setAuthState((current) => current.login?.loginId === loginId ? { ...current, promptValue: '', login: { ...current.login, prompt: null } } : current)} onLoginStarted={(loginId) => { ownedLoginIds.current.add(loginId); activeLoginId.current = loginId; expectedLoginProvider.current = null }} onPromptValueChange={(value) => setAuthState((current) => ({ ...current, promptValue: value }))} /> : null}{tab === 'assistants' ? <AssistantSettingsPanel key="assistants" onDirtyChange={setProfileDirty} /> : null}{tab === 'teams' ? <AgentTeamSettingsPanel key="teams" onDirtyChange={setProfileDirty} /> : null}{tab === 'agent-tools' ? <AssistantBindingsPanel key="tools" mode="tools" onDirtyChange={setProfileDirty} /> : null}{tab === 'agent-skills' ? <AssistantBindingsPanel key="skills" mode="skills" onDirtyChange={setProfileDirty} /> : null}{tab === 'engines' ? <EnginesPanel /> : null}{tab === 'mcp' ? <McpSettingsPanel /> : null}{tab === 'security' ? <SecuritySettingsPanel /> : null}{tab === 'about' ? <UpdatesSettingsPanel /> : null}</div></div></div></div>
 }

@@ -1,4 +1,6 @@
 import { z } from 'zod'
+import { AgentResourcePayloadSchemas, AgentResourceResultSchemas, type WorkbenchAgentResourcesApi } from './agent-resources.js'
+import { AgentProfilePayloadSchemas, AgentProfileResultSchemas, type WorkbenchAgentProfilesApi } from './agent-profiles.js'
 import { ExternalOpenUrlSchema } from './external-url.js'
 import { AgentExternalActionRequestResultSchema } from './agent.js'
 import {
@@ -304,6 +306,8 @@ import {
 export * from './research.js'
 export * from './v2.js'
 export * from './agent.js'
+export * from './agent-profiles.js'
+export * from './agent-resources.js'
 export * from './external-url.js'
 export * from './feishu.js'
 export * from './rss.js'
@@ -541,6 +545,8 @@ const rpc = <M extends string>(method: M, payload: z.ZodTypeAny) =>
 /** Every V2 RPC method has a closed payload schema. Legacy AI methods are not
  * represented here; migration-only routes must use a separately versioned API. */
 export const RpcMethodPayloadSchemas = {
+  ...AgentProfilePayloadSchemas,
+  ...AgentResourcePayloadSchemas,
   'projects.list': z.null(),
   'projects.create': strictPayload(CreateProjectInputSchema),
   'projects.update': strictPayload(UpdateProjectInputSchema),
@@ -689,6 +695,8 @@ export type RpcMethod = keyof typeof RpcMethodPayloadSchemas
  * dispatcher/preload may use this map to validate responses without exposing
  * a generic `unknown` payload. */
 export const RpcMethodResultSchemas = {
+  ...AgentProfileResultSchemas,
+  ...AgentResourceResultSchemas,
   'calendar.list': z.array(CalendarEventSchema),
   'calendar.create': CalendarEventSchema,
   'calendar.update': CalendarEventSchema,
@@ -787,6 +795,31 @@ export const RpcMethodResultSchemas = {
 export type RpcResultMethod = keyof typeof RpcMethodResultSchemas
 
 const RpcRequestVariants = [
+  rpc('agentMcpServers.list', AgentResourcePayloadSchemas['agentMcpServers.list']),
+  rpc('agentMcpServers.save', AgentResourcePayloadSchemas['agentMcpServers.save']),
+  rpc('agentMcpServers.probe', AgentResourcePayloadSchemas['agentMcpServers.probe']),
+  rpc('agentMcpServers.remove', AgentResourcePayloadSchemas['agentMcpServers.remove']),
+  rpc('agentMcpServers.setCredential', AgentResourcePayloadSchemas['agentMcpServers.setCredential']),
+  rpc('agentInstructionSkills.list', AgentResourcePayloadSchemas['agentInstructionSkills.list']),
+  rpc('agentInstructionSkills.get', AgentResourcePayloadSchemas['agentInstructionSkills.get']),
+  rpc('agentInstructionSkills.save', AgentResourcePayloadSchemas['agentInstructionSkills.save']),
+  rpc('agentInstructionSkills.remove', AgentResourcePayloadSchemas['agentInstructionSkills.remove']),
+  rpc('agentMcpCalls.list', AgentResourcePayloadSchemas['agentMcpCalls.list']),
+  rpc('agentMcpCalls.decide', AgentResourcePayloadSchemas['agentMcpCalls.decide']),
+  rpc('assistants.list', AgentProfilePayloadSchemas['assistants.list']),
+  rpc('assistants.save', AgentProfilePayloadSchemas['assistants.save']),
+  rpc('assistants.archive', AgentProfilePayloadSchemas['assistants.archive']),
+  rpc('agentTeams.list', AgentProfilePayloadSchemas['agentTeams.list']),
+  rpc('agentTeams.save', AgentProfilePayloadSchemas['agentTeams.save']),
+  rpc('agentTeams.archive', AgentProfilePayloadSchemas['agentTeams.archive']),
+  rpc('agentBindings.catalog', AgentProfilePayloadSchemas['agentBindings.catalog']),
+  rpc('agentBindings.matrix', AgentProfilePayloadSchemas['agentBindings.matrix']),
+  rpc('agentBindings.saveMatrix', AgentProfilePayloadSchemas['agentBindings.saveMatrix']),
+  rpc('agentBindings.set', AgentProfilePayloadSchemas['agentBindings.set']),
+  rpc('agentTeams.runs.start', AgentProfilePayloadSchemas['agentTeams.runs.start']),
+  rpc('agentTeams.runs.list', AgentProfilePayloadSchemas['agentTeams.runs.list']),
+  rpc('agentTeams.runs.get', AgentProfilePayloadSchemas['agentTeams.runs.get']),
+  rpc('agentTeams.runs.cancel', AgentProfilePayloadSchemas['agentTeams.runs.cancel']),
   rpc('projects.list', RpcMethodPayloadSchemas['projects.list']),
   rpc('projects.create', RpcMethodPayloadSchemas['projects.create']),
   rpc('projects.update', RpcMethodPayloadSchemas['projects.update']),
@@ -1022,7 +1055,7 @@ export type WorkbenchApiV1 = WorkbenchApiLegacy
 
 /** Renderer-facing V2 API. No AI Provider/Prompt/Agent/Schedule/Job routes are
  * present; those routes are intentionally isolated in WorkbenchApiLegacy. */
-export interface WorkbenchApiV2 {
+export interface WorkbenchApiV2 extends WorkbenchAgentProfilesApi, WorkbenchAgentResourcesApi {
   projects: {
     list(): Promise<Project[]>
     create(input: CreateProjectInput): Promise<Project>

@@ -1870,6 +1870,9 @@ export class ResearchRepository {
     const row: AgentRunRow = {
       id: uuidv7(),
       jobId: null,
+      assistantId: null,
+      teamId: null,
+      teamRunId: null,
       idempotencyKey: null,
       runtime: 'pi',
       transport: 'inprocess',

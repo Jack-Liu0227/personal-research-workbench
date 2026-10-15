@@ -44,7 +44,7 @@ const file = () => ({ isDirectory: () => false })
 console.log(`config   ${path.relative(REPO, CONFIG)}`)
 console.log(`patterns ${patterns.join(' ')}`)
 
-const excluded = ['windows-release/SKILL.md', 'windows-release/scripts/release.mjs']
+const excluded = ['windows-release/SKILL.md', 'windows-release/scripts/release.mjs', 'last30days/PRW-PIN.md']
 const included = [
   'literature-matrix/SKILL.md',
   'literature-review-push/SKILL.md',

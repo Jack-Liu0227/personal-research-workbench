@@ -4,13 +4,14 @@
  * This deliberately drives the real renderer/preload/core stack instead of
  * mocking IPC. It creates an isolated user-data directory and a temporary
  * Obsidian Vault, so the run cannot touch the developer's workbench database
- * or external notes. Set PRW_E2E_USER_DATA to retain a profile for debugging;
- * otherwise a new profile is created below the OS temp directory.
+ * or external notes. Every run creates a fresh profile below the OS temp
+ * directory; external profile overrides are rejected.
  */
 const { _electron: electron } = require('playwright-core')
 const fs = require('node:fs')
 const os = require('node:os')
 const path = require('node:path')
+const http = require('node:http')
 
 const APP_ROOT = path.resolve(__dirname, '..')
 const MAIN_ENTRY = path.join(APP_ROOT, 'apps', 'desktop', 'out', 'main', 'index.cjs')
@@ -25,20 +26,53 @@ const DEFAULT_ELECTRON = path.join(
   'electron.exe'
 )
 
-function absoluteNonRoot(value) {
-  const resolved = path.resolve(value)
-  const parsed = path.parse(resolved)
-  if (resolved === parsed.root) throw new Error(`Refusing root user-data path: ${resolved}`)
-  return resolved
-}
-
 function makeIsolatedProfile() {
-  if (process.env.PRW_E2E_USER_DATA) return absoluteNonRoot(process.env.PRW_E2E_USER_DATA)
+  if (process.env.PRW_E2E_USER_DATA) throw new Error('PRW_E2E_USER_DATA overrides are not allowed: this smoke requires a fresh isolated temp profile')
   return fs.mkdtempSync(path.join(os.tmpdir(), 'prw-workbench-e2e-'))
 }
 
 function assert(condition, message) {
   if (!condition) throw new Error(message)
+}
+
+async function startZoteroFixture() {
+  const requests = []
+  const violations = []
+  let readable = false
+  const collections = [{ key: 'COLL0001', version: 1, data: { name: 'Isolated smoke collection', parentCollection: false }, meta: { numItems: 1 } }]
+  const items = [{ key: 'ITEM0001', version: 1, data: { itemType: 'journalArticle', title: 'Isolated Zotero smoke', creators: [], tags: [], collections: ['COLL0001'], date: '2026' } }]
+  const server = http.createServer((request, response) => {
+    const url = new URL(request.url, 'http://127.0.0.1')
+    const knownPath = ['/api/', '/api/users/0/collections', '/api/users/0/items'].includes(url.pathname)
+    const knownQuery = [...url.searchParams].every(([key, value]) => key === 'format' ? value === 'json' : ['limit', 'start', 'since'].includes(key) && /^\d+$/.test(value))
+    const record = { method: request.method, path: url.pathname, query: url.search, readable }
+    requests.push(record)
+    if (request.method !== 'GET' || !knownPath || !knownQuery) {
+      violations.push(record)
+      response.writeHead(405, { 'Content-Type': 'application/json' })
+      response.end(JSON.stringify({ error: 'Fixture rejects unknown routes and all writes' }))
+      return
+    }
+    if (!readable) {
+      response.writeHead(503, { 'Content-Type': 'application/json' })
+      response.end(JSON.stringify({ error: 'Isolated fixture is unavailable' }))
+      return
+    }
+    const records = url.pathname.endsWith('/collections') ? collections : items
+    const start = Number(url.searchParams.get('start') || 0)
+    const limit = Number(url.searchParams.get('limit') || 100)
+    response.writeHead(200, { 'Content-Type': 'application/json', 'Zotero-Server-ID': 'isolated-smoke', 'Total-Results': String(records.length), 'Last-Modified-Version': '1' })
+    response.end(JSON.stringify(url.pathname === '/api/' ? {} : records.slice(start, start + limit)))
+  })
+  await new Promise((resolve, reject) => {
+    server.once('error', reject)
+    server.listen(0, '127.0.0.1', resolve)
+  })
+  return {
+    location: `http://127.0.0.1:${server.address().port}/api/`, requests, violations,
+    setReadable: (value) => { readable = value },
+    close: () => new Promise((resolve, reject) => { server.close((error) => error ? reject(error) : resolve()); server.closeAllConnections() })
+  }
 }
 
 /** Labels that live inside the collapsed “研究” group of the sidebar. They are
@@ -70,6 +104,13 @@ async function bodyText(page) {
   return page.locator('body').innerText()
 }
 
+async function clickSettingsSection(page, label) {
+  const sidebar = page.getByRole('navigation', { name: '设置分区侧边栏', exact: true })
+  const section = sidebar.getByRole('button', { name: label, exact: true })
+  await section.click()
+  assert(await section.getAttribute('aria-current') === 'page', `Settings sidebar did not activate ${label}`)
+}
+
 async function main() {
   assert(fs.existsSync(MAIN_ENTRY), `Build output not found: ${MAIN_ENTRY}`)
   const userData = makeIsolatedProfile()
@@ -83,32 +124,49 @@ async function main() {
   delete launchEnv.OBSIDIAN_DIR
   // Packaged code must use workbench://app, never a caller-provided dev URL.
   delete launchEnv.ELECTRON_RENDERER_URL
-  const app = await electron.launch({
-    executablePath: process.env.PRW_ELECTRON || DEFAULT_ELECTRON,
-    args: [MAIN_ENTRY, `--prw-user-data-dir=${userData}`],
-    env: launchEnv,
-    cwd: userData,
-    timeout: 90_000
-  })
+  delete launchEnv.PRW_E2E_USER_DATA
+  const zoteroFixture = await startZoteroFixture()
+  let app
   const errors = []
-  const captureErrors = (window) => {
-    window.on('pageerror', (error) => errors.push(error.message))
-    window.on('console', (message) => {
-      if (message.type() === 'error') errors.push(message.text())
-    })
-  }
-  app.on('window', captureErrors)
-  const page = await app.firstWindow({ timeout: 90_000 })
-  captureErrors(page)
-  page.on('dialog', async (dialog) => {
-    // All destructive actions in this smoke use an isolated profile.
-    await dialog.accept()
-  })
-
   try {
+    app = await electron.launch({
+      executablePath: process.env.PRW_ELECTRON || DEFAULT_ELECTRON,
+      args: [MAIN_ENTRY, `--prw-user-data-dir=${userData}`],
+      env: launchEnv,
+      cwd: userData,
+      timeout: 90_000
+    })
+    const captureErrors = (window) => {
+      window.on('pageerror', (error) => errors.push(error.message))
+      window.on('console', (message) => {
+        if (message.type() === 'error') errors.push(message.text())
+      })
+    }
+    app.on('window', captureErrors)
+    const page = await app.firstWindow({ timeout: 90_000 })
+    captureErrors(page)
+    page.on('dialog', async (dialog) => {
+      // All destructive actions in this smoke use an isolated profile.
+      await dialog.accept()
+    })
+
     await page.waitForSelector('text=仪表盘', { timeout: 90_000 })
     assert(page.url().startsWith('workbench://app/'), `Unexpected renderer origin: ${page.url()}`)
     console.log('shell: ok', await page.title())
+
+    // Real adapter/IPC/UI against isolated HTTP data, not a personal Zotero
+    // process or a mocked bridge. Fresh isolated profiles must have no keys.
+    const zoteroFixtureProfile = await page.evaluate(async (location) => {
+      const profiles = await window.workbench.v2.integrations.list()
+      const profile = profiles.find((entry) => entry.provider === 'zotero')
+      if (profile?.credentialPresent) throw new Error('Zotero smoke requires an isolated profile without saved credentials')
+      return window.workbench.v2.integrations.save({
+        ...(profile ? { id: profile.id } : {}), provider: 'zotero', name: 'Isolated Zotero smoke', enabled: true,
+        location, settings: { libraryType: 'users', libraryId: '0' }, expectedRevision: profile?.revision ?? null
+      })
+    }, zoteroFixture.location)
+    await page.reload()
+    await page.waitForSelector('text=仪表盘', { timeout: 90_000 })
 
     // The rail is the daily loop plus one deliberately collapsed group. Every
     // surface stays reachable, so the smoke walks the primary items first and
@@ -116,6 +174,15 @@ async function main() {
     const labels = ['Agent', '日历', '任务', '设置', ...researchNavLabels]
     for (const label of labels) {
       await clickNav(page, label)
+      if (label === 'Zotero') {
+        await page.locator('#zotero-profile').selectOption(zoteroFixtureProfile.id)
+        const unavailable = await page.evaluate((id) => window.workbench.v2.zotero.capability(id), zoteroFixtureProfile.id)
+        assert(unavailable.capability.read === false && unavailable.capability.write === false, 'Unavailable Zotero fixture falsely advertises capabilities')
+        await page.getByRole('heading', { name: '暂时无法读取', exact: true }).waitFor({ state: 'visible', timeout: 20_000 })
+        assert(await page.locator('.selection-bar').filter({ hasText: '全选已加载条目' }).count() === 0, 'Unavailable Zotero rendered readable-library controls')
+        await page.screenshot({ path: path.join(userData, 'zotero-unavailable-smoke.png'), fullPage: true })
+        console.log('Zotero isolated HTTP unavailable state: ok (not a real-service probe)')
+      }
       console.log(`nav ${label}: ok`)
     }
     assert(!(await bodyText(page)).includes('INSPECTOR / CONTEXT'), 'Global redundant Inspector is still rendered')
@@ -228,7 +295,8 @@ async function main() {
     assert((await bodyText(page)).includes('Codex') === false, 'Agent workspace still mentions the removed Codex runtime')
     assert(await page.locator('.agent-run-profile-link').count() >= 1, 'Agent run profile readout missing')
     assert((await page.locator('.agent-run-profile-link').innerText()).includes('Pi'), 'Agent run profile readout does not name the in-process runtime')
-    await page.locator('.agent-hint-link').first().waitFor({ state: 'visible', timeout: 20_000 })
+    const modelSettingsHint = page.getByRole('button', { name: '设置 → 模型与 Agent', exact: true })
+    await modelSettingsHint.waitFor({ state: 'visible', timeout: 20_000 })
     await page.screenshot({ path: path.join(userData, 'agent-smoke.png'), fullPage: true })
     const conversationItems = page.locator('button[aria-label^="删除对话："]')
     assert(await conversationItems.count() === 0, 'Opening the app created an unexpected conversation')
@@ -265,8 +333,9 @@ async function main() {
     assert(await paletteItems.count() >= 5, 'the `/` palette did not list the local commands')
     const paletteLayout = await page.locator('.agent-command-palette').evaluate((node) => {
       const palette = node.getBoundingClientRect()
-      const composer = node.parentElement?.querySelector('.agent-composer')?.getBoundingClientRect()
-      const input = node.parentElement?.querySelector('.agent-composer-input')
+      const owner = node.closest('.agent-thread')
+      const composer = owner?.querySelector('.agent-composer')?.getBoundingClientRect()
+      const input = owner?.querySelector('.agent-composer-input')
       return { position: getComputedStyle(node).position, paletteBottom: palette.bottom, composerTop: composer?.top ?? null, inputHeight: input?.getBoundingClientRect().height ?? null }
     })
     assert(paletteLayout.position === 'absolute', 'the command palette must overlay the composer instead of pushing it down')
@@ -286,10 +355,14 @@ async function main() {
     // The moved configuration must be reachable from the agent page: the
     // composer links into Settings → 模型与 Agent, where the provider catalog
     // and the real selectors live.
-    await page.locator('.agent-hint-link').first().click()
+    await modelSettingsHint.click()
     // The hint deep-links into the section instead of dropping the user on the
     // first Settings tab, so the provider list is already on screen.
     await page.getByText('SETTINGS / MODELS', { exact: true }).waitFor({ state: 'visible', timeout: 60_000 })
+    const settingsSidebar = page.getByRole('navigation', { name: '设置分区侧边栏', exact: true })
+    assert(await settingsSidebar.getByRole('button', { name: '模型与 Agent', exact: true }).getAttribute('aria-current') === 'page', 'Agent model hint did not deep-link to the owning settings section')
+    assert(await settingsSidebar.locator('.settings-nav-item').count() === 16, 'Settings sidebar is missing a section')
+    assert(await page.locator('.settings-workspace .research-tabs').count() === 0, 'Settings sections regressed to a top tab strip')
     // The panel is only fully rendered once the credential status, the model
     // catalog and the stored defaults have all answered; the embedded SDK is
     // warmed at Core boot, so this is a real response wait, not a retry loop.
@@ -368,16 +441,33 @@ async function main() {
     // The Agent page exposes two projections of the normalized ledger. The
     // trajectory tab must render its empty state without a run, and switching
     // tabs must not create a conversation or duplicate the runtime controls.
-    assert(await page.getByRole('button', { name: '对话', exact: true }).count() === 1, 'Agent conversation tab missing')
-    assert(await page.getByRole('button', { name: '轨迹' }).count() === 1, 'Agent trajectory tab missing')
-    await page.getByRole('button', { name: '轨迹' }).first().click()
+    const agentViews = page.getByRole('group', { name: 'Agent 视图', exact: true })
+    assert(await agentViews.getByRole('button', { name: '对话', exact: true }).count() === 1, 'Agent conversation tab missing')
+    assert(await agentViews.getByRole('button', { name: /^轨迹/ }).count() === 1, 'Agent trajectory tab missing')
+    const previousAgentWindowSize = await app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0].getSize())
+    await app.evaluate(({ BrowserWindow }) => { const window = BrowserWindow.getAllWindows()[0]; window.setMinimumSize(320, 400); window.setSize(1440, 900) })
+    await page.waitForTimeout(350)
+    const trajectoryRail = page.getByRole('complementary', { name: '并排运行轨迹', exact: true })
+    await trajectoryRail.waitFor({ state: 'visible' })
+    assert(await page.locator('.agent-thread-shell').evaluate((node) => getComputedStyle(node).gridTemplateColumns.split(' ').length === 3), 'Wide Agent must use three columns')
+    assert(await page.getByLabel('Agent 运行方式', { exact: true }).count() === 1 && await page.getByLabel('助手', { exact: true }).count() === 1, 'Wide trajectory rail duplicated runtime selectors')
+    await page.getByRole('button', { name: '收起侧栏轨迹', exact: true }).click()
+    assert(await trajectoryRail.count() === 0, 'Trajectory rail collapse did not remove the side projection')
+    await page.getByRole('button', { name: '并排显示轨迹', exact: true }).click()
+    await trajectoryRail.waitFor({ state: 'visible' })
+    await app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0].setSize(1024, 720))
+    await page.waitForTimeout(350)
+    assert(!(await trajectoryRail.isVisible()), 'Narrow Agent must not clip a third trajectory column')
+    await agentViews.getByRole('button', { name: /^轨迹/ }).click()
     await page.getByRole('heading', { name: '还没有运行轨迹' }).waitFor({ state: 'visible', timeout: 20_000 })
     await page.screenshot({ path: path.join(userData, 'agent-trajectory-empty-smoke.png'), fullPage: true })
-    await page.getByRole('button', { name: '对话', exact: true }).first().click()
+    await agentViews.getByRole('button', { name: '对话', exact: true }).click()
     await page.getByRole('heading', { name: '准备好开始了吗？' }).waitFor({ state: 'visible', timeout: 20_000 })
     await page.locator('textarea').first().waitFor({ state: 'visible', timeout: 20_000 })
     assert(await conversationItems.count() === 0, 'Switching Agent tabs created an unexpected conversation')
-    console.log('agent conversation/trajectory tabs: ok')
+    await app.evaluate(({ BrowserWindow }, size) => { const window = BrowserWindow.getAllWindows()[0]; window.setMinimumSize(1080, 680); window.setSize(size[0], size[1]) }, previousAgentWindowSize)
+    await page.waitForTimeout(350)
+    console.log('agent wide three-column rail and narrow conversation/trajectory tabs: ok')
 
     // Literature keeps its live import preview in the local right Inspector.
     await clickNav(page, '文献检索')
@@ -474,14 +564,19 @@ async function main() {
     await page.screenshot({ path: path.join(userData, 'literature-smoke.png'), fullPage: true })
     console.log('literature Inspector/live preview: ok')
 
-    // Zotero page must expose the real bridge and never surface the old Zod
-    // shape error. The actual BBT RPC is smoke-tested separately against the
-    // running local Zotero process; this check covers packaged IPC/UI wiring.
+    // The read-only fixture now becomes available. Keep all existing library
+    // assertions; wait for real capability/adapter results, not fixed sleeps.
+    zoteroFixture.setReadable(true)
     const zoteroNavigationStarted = Date.now()
     await clickNav(page, 'Zotero')
     await page.getByRole('heading', { name: 'Zotero', exact: true }).waitFor({ state: 'visible', timeout: 20_000 })
+    await page.locator('#zotero-profile').selectOption(zoteroFixtureProfile.id)
+    const readable = await page.evaluate((id) => window.workbench.v2.zotero.capability(id), zoteroFixtureProfile.id)
+    assert(readable.status === 'connected' && readable.capability.read === true && readable.capability.write === false, 'Zotero fixture must be readable without granting remote writes')
+    await page.getByRole('button', { name: '重新探测并刷新', exact: true }).click()
+    await page.locator('.selection-bar').filter({ hasText: '全选已加载条目' }).waitFor({ state: 'visible', timeout: 20_000 })
+    await page.getByRole('button', { name: 'Isolated Zotero smoke', exact: false }).waitFor({ state: 'visible', timeout: 20_000 })
     console.log(`timing Zotero shell: ${Date.now() - zoteroNavigationStarted}ms`)
-    await page.waitForTimeout(1_200)
     text = await bodyText(page)
     assert(text.includes('Zotero'), 'Zotero page did not render')
     assert(!text.includes('The request did not match the expected shape.'), 'Zotero still shows the old expected-shape error')
@@ -506,7 +601,7 @@ async function main() {
     }
     assert(await page.getByRole('button', { name: '预览导入工作台' }).count() >= 1 || text.includes('尚未配置 Zotero'), 'Zotero Workbench bridge action missing')
     await page.screenshot({ path: path.join(userData, 'zotero-smoke.png'), fullPage: true })
-    console.log('Zotero bridge surface: ok')
+    console.log('Zotero bridge surface: ok (isolated read-only HTTP fixture; real Zotero/BBT not validated)')
 
     // Obsidian keeps edit/preview in one full-height central workspace and
     // exposes category selection/deletion without leaving the page.
@@ -686,12 +781,12 @@ async function main() {
     // Optional knowledge engines have real configuration fields and explicit
     // health-test actions; no service is reported connected by default.
     await clickNav(page, '设置')
-    await page.getByRole('button', { name: '代理' }).click()
+    await clickSettingsSection(page, '代理')
     await page.waitForTimeout(350)
     assert((await bodyText(page)).includes('统一网络代理'), 'Unified proxy settings missing')
     assert(await page.locator('input[placeholder="http://127.0.0.1:7897"]').count() >= 1, 'Proxy endpoint field missing')
     console.log('unified proxy settings: ok')
-    await page.getByRole('button', { name: '知识引擎' }).click()
+    await clickSettingsSection(page, '知识引擎')
     await page.waitForTimeout(450)
     assert(await page.locator('input[aria-label="AnythingLLM 服务地址"]').count() === 1, 'AnythingLLM settings missing')
     assert(await page.locator('input[aria-label="LLMWiki 服务地址"]').count() === 1, 'LLMWiki settings missing')
@@ -701,7 +796,7 @@ async function main() {
     // clear / bulk delete bar, with an exact scope sentence and a per-row
     // delete affordance. An empty list must stay disabled rather than claim a
     // bulk action over zero rows.
-    await page.getByRole('button', { name: '工具连接' }).click()
+    await clickSettingsSection(page, '工具连接')
     await page.waitForTimeout(450)
     const connectorBar = page.locator('.selection-bar[aria-label="连接记录批量操作"]')
     assert(await connectorBar.count() === 1, 'Connection bulk delete bar missing')
@@ -1051,11 +1146,16 @@ async function main() {
     console.log(`responsive screenshots: ${path.join(userData, 'shell-<width>.png')}`)
 
     assert(errors.length === 0, `Renderer console/page errors: ${JSON.stringify(errors.slice(0, 10))}`)
+    assert(zoteroFixture.violations.length === 0, `Zotero fixture rejected unexpected calls: ${JSON.stringify(zoteroFixture.violations)}`)
     console.log('e2e: PASS')
     console.log(`evidence: ${path.join(userData, 'schedule-smoke.png')}`)
     console.log(`date-range evidence: ${path.join(userData, 'date-range-picker-smoke.png')}`)
   } finally {
-    await app.close()
+    try { if (app) await app.close() }
+    finally {
+      await zoteroFixture.close()
+      fs.writeFileSync(path.join(userData, 'zotero-fixture-evidence.json'), JSON.stringify({ kind: 'isolated read-only HTTP fixture, not real Zotero validation', requests: zoteroFixture.requests, violations: zoteroFixture.violations }, null, 2))
+    }
   }
 }
 

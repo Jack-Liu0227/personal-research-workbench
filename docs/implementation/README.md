@@ -18,6 +18,10 @@
 
 ## 统一验收原则
 
+本轮多助手与团队增量见 [27-agent-assistants-teams.md](27-agent-assistants-teams.md)，状态 `IN_REVIEW`；P0 映射见 [AI_ASSISTANT_TEAM_MAPPING.md](../design/AI_ASSISTANT_TEAM_MAPPING.md)。migration 使用当前基线之后的 38，不覆盖历史版本。真实模型/OAuth 与 NSIS 门禁不因本地测试通过而完成。
+
+用户追加的真实远程视觉来源、局域网管理来源及跨助手启停矩阵见 [28-source-design-and-binding-matrix.md](28-source-design-and-binding-matrix.md)；以该文件最终执行证据判断新快照，不将来源缓存界面或未运行门禁当实现完成。
+
 - SQLite 是 Workbench 自有数据的权威源；正文由 Obsidian 文件权威，Zotero 由 Zotero API 权威。
 - 外部写入必须 capability probe、preview、显式确认、revision/CAS 和逐条回执。
 - `generated` 只表示生成 RIS/BibTeX，不表示已导入 Zotero。
@@ -43,3 +47,6 @@
 | 24 | `24-pi-inprocess-agent-backend.md` | 进程内嵌入 Pi Agent、契约收窄与 Codex 下线（后端） | IN_REVIEW（`pnpm -r typecheck`/`pnpm build`/`pnpm test:e2e`、`test:agent-runtime-pi` 32/32、`test:agent-custom-providers` 4/4、`test:agent-discovery` 4/4 与设置/凭据测试通过；真实 provider 网络 run、真实模型发现、打包态 OAuth/wasm 仍未验收） |
 | 25 | `25-agent-conversation-ui-and-settings.md` | 对话分组修复、Agent 页面瘦身、设置页模型认证、Provider Key/发现、魔法命令与研究 MCP 工具（前端） | IN_REVIEW（`pnpm -r typecheck`/`pnpm build`/`pnpm test:e2e`、`test:agent-ledger-grouping` 4/4、`agent-magic-commands` 2/2 与 MCP 工具面测试通过；真实 OAuth 往返、真实 Zotero/Obsidian Agent 外部写入确认流仍未验收） |
 | 26 | `QUICK_START.md` / `AGENT_USER_GUIDE.md` | Agent 可读业务工具、外部写入确认、受控 skill/extension、主题可读性与用户教程 | IN_REVIEW（`pnpm -r typecheck`/`pnpm build`/`pnpm test:e2e`、Agent live 10/10；真实外部写入与 Windows 发布 smoke 仍由 QA/Release 独立验收） |
+| 27 | `27-agent-assistants-teams.md` | migration 38、多助手隔离与有界只读团队 | IN_REVIEW（最终 profiles 42/42、Pi 57/57、typecheck/build、限定独立门禁 PASS；真实 Provider/OAuth/团队取消及 NSIS 未验收，最终证据见 28） |
+| 28 | `28-source-design-and-binding-matrix.md` | 双来源参考式视觉重构、16 个左侧设置分区、工具/技能矩阵前后端闭环 | IN_REVIEW（最终 focused 33 工作流/136 原生截图及同构建 general E2E PASS，独立限定本地 APPROVE；任意第三方 MCP/技能安装编辑未实现，真实服务与 P6 发布门禁未完成） |
+| 29 | `29-agent-resources-and-0.0.6.md` | HTTP MCP、指令技能、safeStorage/审批闭环与 0.0.6 发布 | 本地 tests/Electron/独立限定复核 PASS；实际发布结果按文内后续证据，不等于真实在线服务验收 |

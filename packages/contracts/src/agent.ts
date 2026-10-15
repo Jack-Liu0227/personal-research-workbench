@@ -1,4 +1,5 @@
 import { z } from 'zod'
+import { AssistantIdSchema, AgentTeamIdSchema } from './agent-profiles.js'
 import { AgentLookbackDaysSchema, AgentOutputFolderSchema, AgentResponseLanguageSchema, AgentSourceListSchema, AgentWorkflowKeySchema, ArchiveBulkInputSchema, ArtifactKindSchema, DEFAULT_DAILY_PUSH_SCHEDULE_INPUT } from './research.js'
 import type { AgentScheduleSkillCatalogEntry, ArchiveBulkInput, ArchiveBulkReceipt, ArchiveBulkResult } from './research.js'
 import { IdSchema, IsoInstantSchema, PageInputSchema, ProjectIdSchema } from './v2.js'
@@ -525,6 +526,9 @@ export const AgentSkillSnapshotSchema = z.strictObject({
 export type AgentSkillSnapshot = z.infer<typeof AgentSkillSnapshotSchema>
 
 export const AgentRunRecordSchema = z.strictObject({
+  assistantId: AssistantIdSchema.nullable().default(null),
+  teamId: AgentTeamIdSchema.nullable().default(null),
+  teamRunId: IdSchema.nullable().default(null),
   id: IdSchema,
   jobId: IdSchema.nullable(),
   conversationId: IdSchema.nullable(),
@@ -556,6 +560,7 @@ export const AgentRunRecordSchema = z.strictObject({
 export type AgentRunRecord = z.infer<typeof AgentRunRecordSchema>
 
 export const AgentRunStartInputSchema = z.strictObject({
+  assistantId: AssistantIdSchema.nullable().optional(),
   jobId: IdSchema.nullable().default(null),
   conversationId: IdSchema.nullable().default(null),
   runtime: AgentRuntimeKindSchema.nullable().default(null),

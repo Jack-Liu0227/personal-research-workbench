@@ -1,6 +1,6 @@
 import { afterEach, describe, it } from 'node:test'
-import { deepEqual, equal, rejects } from 'node:assert/strict'
-import { mkdtempSync, rmSync } from 'node:fs'
+import { deepEqual, equal, rejects, ok } from 'node:assert/strict'
+import { mkdtempSync, rmSync, readFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { WorkbenchRepository } from '@prw/database'
@@ -11,14 +11,6 @@ const roots: string[] = []
 const repositories: WorkbenchRepository[] = []
 const originalFetch = globalThis.fetch
 
-/**
- * The Google Scholar source is a Python sidecar child process, not `fetch`, so
- * the mocked `fetch` above cannot neutralise it: the real `python sidecars/
- * scholar.py` run blocks the file for the full 30s child-process timeout (and a
- * killed child can keep the runner alive).  Point the sidecar at a missing
- * script so it fails fast and the test stays a hermetic partial-source case.
- */
-const originalScholarSidecar = process.env['PRW_SCHOLAR_SIDECAR']
 
 function openRepository(): WorkbenchRepository {
   const root = mkdtempSync(join(tmpdir(), 'prw-workspace-literature-'))
@@ -53,8 +45,6 @@ function stagingInput(sourceId: string): Record<string, unknown> {
 
 afterEach(() => {
   globalThis.fetch = originalFetch
-  if (originalScholarSidecar === undefined) delete process.env['PRW_SCHOLAR_SIDECAR']
-  else process.env['PRW_SCHOLAR_SIDECAR'] = originalScholarSidecar
   // Windows keeps the SQLite handle locked until the repository is closed, and
   // a failed assertion aborts the test body before its own `close()`.  Release
   // every handle here (before the temp root is removed) so a red test can never
@@ -64,6 +54,17 @@ afterEach(() => {
 })
 
 describe('LiteratureCoordinator staging/search runtime', () => {
+  it('retired Scholar path fails closed without spawning Python or probing network', async () => {
+    let networkCalls = 0
+    globalThis.fetch = (async () => { networkCalls++; throw new Error('No network expected') }) as typeof fetch
+    const literature = new LiteratureCoordinator(openRepository())
+    await rejects(literature.search({ query: 'fixture', source: 'google_scholar', page: 1, pageSize: 20, filters: {} }),
+      (error: Error) => error.message.includes('retired Python sidecar'))
+    equal(networkCalls, 0)
+    const source = readFileSync(new URL('../src/literature-runtime.ts', import.meta.url), 'utf8')
+    ok(!source.includes('node:child_process') && !/\bspawn\(/u.test(source))
+    ok(!source.includes('PRW_PYTHON') && !source.includes('PRW_SCHOLAR_SIDECAR'))
+  })
   it('persists and revision-checks staging snapshots through repository methods', () => {
     const repository = openRepository()
     const literature = new LiteratureCoordinator(repository)
@@ -84,7 +85,6 @@ describe('LiteratureCoordinator staging/search runtime', () => {
   })
 
   it('reports partial status when one free source fails while others complete', async () => {
-    process.env['PRW_SCHOLAR_SIDECAR'] = join(tmpdir(), 'prw-missing-scholar-sidecar.py')
     globalThis.fetch = (async (request: RequestInfo | URL) => {
       const url = String(request)
       if (url.includes('api.crossref.org')) throw new Error('network unavailable')

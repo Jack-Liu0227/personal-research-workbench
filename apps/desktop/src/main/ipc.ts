@@ -1,9 +1,12 @@
 import { randomUUID } from 'node:crypto'
+import { mcpCredentialKey, readMcpCredential, replaceMcpCredential, withMcpCredentialLock } from './mcp-credentials.js'
 import { dirname, isAbsolute, join, relative, resolve, sep } from 'node:path'
 import { mkdir, writeFile } from 'node:fs/promises'
 import type { AgentAuthEvent, AgentLedgerPush, AgentRpcMethod, AgentRpcRequest, RpcRequest, RpcResponse } from '@prw/contracts'
 import {
   AgentCredentialSaveInputSchema,
+  AgentResourcePayloadSchemas,
+  AgentMcpServerSchema,
   AgentLedgerPushSchema,
   AgentLedgerSubscriptionInputSchema,
   AgentModelDiscoveryInputSchema,
@@ -264,6 +267,13 @@ export class SecureRpcRouter {
   async route(method: RpcRequest['method'], payload: unknown): Promise<RpcResponse> {
     try {
       switch (method) {
+        case 'agentMcpServers.list':
+        case 'agentMcpServers.save':
+        case 'agentMcpServers.probe':
+        case 'agentMcpServers.remove':
+        case 'agentMcpServers.setCredential':
+          if (method === 'agentMcpServers.list' || method === 'agentMcpServers.probe') return await this.routeMcpServer(method, payload)
+          return await withMcpCredentialLock(AgentResourcePayloadSchemas[method].parse(payload).id, () => this.routeMcpServer(method, payload))
         case 'integrations.save':
           return await this.saveIntegration(payload)
         case 'integrations.remove':
@@ -336,6 +346,47 @@ export class SecureRpcRouter {
     } catch (error) {
       return { id: 'secure-request', ok: false, error: normalizeMainError(error) }
     }
+  }
+
+  private async routeMcpServer(method: 'agentMcpServers.list' | 'agentMcpServers.save' | 'agentMcpServers.probe' | 'agentMcpServers.remove' | 'agentMcpServers.setCredential', payload: unknown): Promise<RpcResponse> {
+    const input = AgentResourcePayloadSchemas[method].parse(payload)
+    const key = mcpCredentialKey
+    if (method === 'agentMcpServers.setCredential') {
+      const change = AgentResourcePayloadSchemas['agentMcpServers.setCredential'].parse(input)
+      const listing = await this.client.request('agentMcpServers.list', null)
+      if (!listing.ok) return listing
+      const current = z.array(AgentMcpServerSchema).parse(listing.data).find((entry) => entry.id === change.id)
+      if (!current || current.revision !== change.expectedRevision)
+        return { id: listing.id, ok: false, error: appError('REVISION_CONFLICT', 'MCP configuration changed; reload before saving.', true) }
+      const saved = await replaceMcpCredential(this.credentialVault, current, change.token,
+        () => this.client.request('agentMcpServers.save', {
+          id: current.id, name: current.name, transport: current.transport, endpoint: current.endpoint,
+          enabled: current.enabled, expectedRevision: current.revision
+        }), (result) => result.ok ? AgentMcpServerSchema.parse(result.data) : null)
+      if (!saved.ok) return saved
+      return { ...saved, data: { ...AgentMcpServerSchema.parse(saved.data), credentialPresent: change.token !== null } }
+    }
+    const response = await this.client.request(method, input)
+    if (!response.ok) return response
+    if (method === 'agentMcpServers.save') {
+      const next = AgentMcpServerSchema.parse(response.data)
+      // After successful CAS only: a stale edit must not remove the current key.
+      await this.credentialVault.remove(key(next.id, next.revision))
+    }
+    if (method === 'agentMcpServers.remove') {
+      const removed = AgentResourcePayloadSchemas['agentMcpServers.remove'].parse(input)
+      await this.credentialVault.remove(key(removed.id, removed.expectedRevision))
+      return response
+    }
+    const servers = method === 'agentMcpServers.list'
+      ? z.array(AgentMcpServerSchema).parse(response.data) : [AgentMcpServerSchema.parse(response.data)]
+    const decorated = await Promise.all(servers.map(async (server) => ({ ...server,
+      credentialPresent: (await readMcpCredential(this.credentialVault, server)) !== null })))
+    if (method === 'agentMcpServers.save') {
+      const saved = AgentResourcePayloadSchemas['agentMcpServers.save'].parse(input)
+      if (saved.expectedRevision !== null) await this.credentialVault.remove(key(saved.id, saved.expectedRevision))
+    }
+    return { ...response, data: method === 'agentMcpServers.list' ? decorated : decorated[0]! }
   }
 
   async runSchedule(id: string): Promise<RpcResponse> {

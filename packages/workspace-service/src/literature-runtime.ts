@@ -1,6 +1,4 @@
 import { createHash, randomUUID } from 'node:crypto'
-import { spawn } from 'node:child_process'
-import { join } from 'node:path'
 import { ProxyAgent } from 'undici'
 import type {
   SearchInput,
@@ -130,73 +128,6 @@ type SearchContinuation = {
   nextRemotePage: number
   hasMore: boolean
   status: SearchResultPage['status']
-}
-
-type ScholarSidecarRecord = {
-  sourceId: string
-  title: string
-  authors: string[]
-  year: number | null
-  venue: string
-  abstract: string
-  doi: string | null
-  url: string | null
-  isOpenAccess: boolean | null
-  openMetric: number | null
-}
-
-async function runScholarSidecar(input: SearchInput, proxy: string | null): Promise<{ items: ScholarSidecarRecord[]; hasMore: boolean }> {
-  const python = process.env['PRW_PYTHON']?.trim() || (process.platform === 'win32' ? 'python' : 'python3')
-  const resourcesPath = (process as NodeJS.Process & { resourcesPath?: string }).resourcesPath
-  const packagedScript = typeof resourcesPath === 'string' && resourcesPath.trim()
-    ? join(resourcesPath, 'sidecars', 'scholar.py')
-    : join(process.cwd(), 'sidecars', 'scholar.py')
-  const script = process.env['PRW_SCHOLAR_SIDECAR']?.trim() || packagedScript
-  const payload = JSON.stringify({ query: input.query, page: input.page, pageSize: input.pageSize, proxy: proxy ?? '' })
-  try {
-    const stdout = await new Promise<string>((resolve, reject) => {
-      const child = spawn(python, [script], { stdio: ['pipe', 'pipe', 'pipe'], windowsHide: true })
-      let output = ''
-      let errorOutput = ''
-      const timer = setTimeout(() => { child.kill(); reject(new Error('请求超时')) }, 30_000)
-      child.stdout.setEncoding('utf8')
-      child.stderr.setEncoding('utf8')
-      child.stdout.on('data', (chunk: string) => { output += chunk })
-      child.stderr.on('data', (chunk: string) => { errorOutput += chunk })
-      child.once('error', (error) => { clearTimeout(timer); reject(error) })
-      child.once('close', (code) => {
-        clearTimeout(timer)
-        if (code === 0) resolve(output)
-        else reject(new Error(errorOutput.trim() || `sidecar exited with code ${code ?? 'unknown'}`))
-      })
-      child.stdin.end(payload)
-    })
-    const parsed: unknown = JSON.parse(stdout)
-    if (!parsed || typeof parsed !== 'object') throw new Error('Google Scholar sidecar 返回格式无效')
-    const record = parsed as { items?: unknown; hasMore?: unknown; error?: unknown }
-    if (typeof record.error === 'string' && record.error.trim()) throw new Error(record.error)
-    const items = Array.isArray(record.items) ? record.items.flatMap((item): ScholarSidecarRecord[] => {
-      if (!item || typeof item !== 'object') return []
-      const value = item as Record<string, unknown>
-      if (typeof value.title !== 'string' || !value.title.trim()) return []
-      return [{
-        sourceId: typeof value.sourceId === 'string' ? value.sourceId : randomUUID(),
-        title: value.title.trim(),
-        authors: Array.isArray(value.authors) ? value.authors.filter((author): author is string => typeof author === 'string') : [],
-        year: typeof value.year === 'number' ? value.year : null,
-        venue: typeof value.venue === 'string' ? value.venue : '',
-        abstract: typeof value.abstract === 'string' ? value.abstract : '',
-        doi: typeof value.doi === 'string' ? value.doi : null,
-        url: typeof value.url === 'string' ? value.url : null,
-        isOpenAccess: typeof value.isOpenAccess === 'boolean' ? value.isOpenAccess : null,
-        openMetric: typeof value.openMetric === 'number' ? value.openMetric : null
-      }]
-    }) : []
-    return { items, hasMore: record.hasMore === true }
-  } catch (error) {
-    const detail = error instanceof Error ? error.message : 'Google Scholar sidecar failed'
-    throw new IntegrationRuntimeError('TEMPORARILY_UNAVAILABLE', `Google Scholar：${detail}`)
-  }
 }
 
 function compareImpactFactor(left: number | null | undefined, right: number | null | undefined, descending: boolean): number {
@@ -1206,22 +1137,10 @@ export class LiteratureCoordinator {
     })
   }
 
-  private async googleScholarResults(input: SearchInput): Promise<SearchResult[]> {
-    const proxyProfile = this.repository.listAgentProxyProfiles().find((item) => item.enabled && (item.httpProxy || item.httpsProxy))
-    const response = await runScholarSidecar(input, proxyProfile?.httpsProxy ?? proxyProfile?.httpProxy ?? null)
-    return response.items.map((item) => this.toResult(input, item.sourceId, {
-      title: item.title,
-      authors: item.authors,
-      year: item.year,
-      venue: item.venue,
-      abstract: item.abstract,
-      doi: item.doi,
-      url: item.url,
-      isOpenAccess: item.isOpenAccess,
-      openMetric: item.openMetric
-    }, 'Google Scholar'))
+  private async googleScholarResults(_input: SearchInput): Promise<SearchResult[]> {
+    throw new IntegrationRuntimeError('UNSUPPORTED_CAPABILITY',
+      'Google Scholar is unavailable: the retired Python sidecar is not distributed or executed. Use Crossref, OpenAlex, PubMed, arXiv or Semantic Scholar.')
   }
-
   private toResult(
     input: SearchInput,
     sourceId: string,

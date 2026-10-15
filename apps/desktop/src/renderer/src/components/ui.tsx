@@ -28,6 +28,9 @@ export const Button = forwardRef<HTMLButtonElement, ButtonProps>(
   ({ className, variant = 'secondary', size = 'md', loading, children, disabled, title, ...props }, ref) => (
     <button
       ref={ref}
+      data-ui="button"
+      data-variant={variant}
+      data-size={size}
       className={cn(
         'inline-flex cursor-pointer items-center justify-center gap-2 rounded-md border text-sm font-semibold outline-none transition-colors duration-150',
         'focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background',
@@ -57,6 +60,7 @@ export const Input = forwardRef<HTMLInputElement, InputHTMLAttributes<HTMLInputE
   ({ className, ...props }, ref) => (
     <input
       ref={ref}
+      data-ui="input"
       className={cn(
         'h-9 w-full rounded-md border border-input bg-surface px-3 text-sm text-foreground outline-none transition-colors duration-150',
         'placeholder:text-muted-foreground focus:border-primary focus:ring-2 focus:ring-ring/25 disabled:cursor-not-allowed disabled:opacity-50',
@@ -72,6 +76,7 @@ export const Textarea = forwardRef<HTMLTextAreaElement, TextareaHTMLAttributes<H
   ({ className, ...props }, ref) => (
     <textarea
       ref={ref}
+      data-ui="textarea"
       className={cn(
         'min-h-24 w-full resize-y rounded-md border border-input bg-surface px-3 py-2 text-sm text-foreground outline-none transition-colors duration-150',
         'placeholder:text-muted-foreground focus:border-primary focus:ring-2 focus:ring-ring/25 disabled:cursor-not-allowed disabled:opacity-50',
@@ -98,7 +103,7 @@ export function Field({ label, htmlFor, error, hint, children }: {
       })
     : children
   return (
-    <div className="grid gap-1.5">
+    <div className="ui-field grid gap-1.5">
       <label className="text-xs font-semibold text-foreground" htmlFor={htmlFor}>{label}</label>
       {control}
       {error ? <p className="text-xs text-danger" id={descriptionId} role="alert">{error}</p> : null}

@@ -1,5 +1,25 @@
 # Agent 运行时与自动化计划
 
+## 2026-10-15 MCP/指令技能增量
+
+第三方 Streamable HTTP MCP、SQLite 纯文本指令技能和逐次审批已接入 typed IPC、CAS、冻结 run 配置。远端工具只可供 approved-write 手动助手使用，团队/计划/只读助手禁用；不执行模型提出的任意命令。用户技能内容改变会撤权，不自动重新授权，团队快照 revision 漂移 fail closed。全部设置使用左侧导航，Python sidecar 已退役。当前执行证据和未验收范围见[实现 29](../implementation/29-agent-resources-and-0.0.6.md)，历史阶段描述不覆盖本增量。
+
+## 2026-10-15 多助手与有界团队编排（当前增量）
+
+本次沿用锁定的 Pi `AgentSession`，不 spawn CLI，不引入 OpenMAIC 运行时或 pi-web。director-loop 只借鉴语义，按 PRW 共享合同和受控工具实现。
+
+- migration **38** 在既有 1–37 之后增加 assistants/bindings/teams/members/team_runs 和 run 维度/请求指纹；用户方案中的「33」不是当前库的可用版本号。历史 Pi 会话、账本和全局设置保留，种子默认助手为只读。
+- 每助手使用 `<app-owned pi profile>/assistants/<assistantId>/` 的 settings/session；Provider 注册表仍是共享 app-owned `models.json`，凭据不复制到助手目录。目录经过 ID/绝对路径/实路径校验；绑定与安全 allowlist 取交集，空绑定不开放工具。
+- 普通助手 Provider/model 和 Thinking 的继承在启动时解析。团队在一次数据库事务中冻结团队、成员助手及有效模型/Thinking 默认值，后续修改设置不会改变进行中的团队。
+- 每个 director/member 调用是新的助手固定会话，账本含 `assistantId/teamId/teamRunId`，父运行保留有序 `childRunIds`。跨助手会话/恢复被拒绝。
+- director 只能输出严格 JSON `delegate`（已有成员）或 `finish`。工具、成员、权限和 Provider 不能由输出改写；历史结果作为有界、不可信参考传递。当前串行执行，不承诺并行团队或自动三方冲突处理。
+- 团队总模型调用预算 ≤12，单 child 默认超时 5 分钟（包含异步启动），团队默认 30 分钟。取消信号贯穿凭据读取、SDK/session 创建与 prompt；晚到 child 仍挂链但不重开终态父运行。关闭/启动恢复标记中断，不自动重放。
+- 单运行和团队启动都比较完整规范化请求 SHA-256，冲突失败；旧单运行缺少指纹时幂等重放 fail closed，不能猜测旧请求等价。重新运行应使用新幂等键。
+- 运行和设置登录/退出的 `AppCredentialStore` 按 app profile + Provider 跨实例串行修改，并在锁内重新向 Main 读取该 Provider 当前值。此为 Core 内协调，不宣称跨进程 vault 原子 CAS。
+- 工具/技能启停矩阵复用同一 SQLite 助手绑定。单格及批量命令在共享目录和权限校验后提交 CAS；下一次运行由 coordinator 读取最新绑定，Pi 仅注册工具交集、仅注入绑定的已安装指令。进行中的运行/团队使用原快照，不热变，不因矩阵重新授权远程 MCP、shell/Python 或无人值守外部写入。
+
+状态 `IN_REVIEW`。见 [实现 27](../implementation/27-agent-assistants-teams.md)。fixture 编排与真实 SDK + loopback 模拟 Provider 只证明本地链路，不能代替真实模型/OAuth、外部写入或 Windows NSIS 验收。现有定时任务能力不因团队增量获得无人值守外部写入。
+
 ## 2026 · 进程内 Pi Agent（取代 CLI 运行时，以本节为准）
 
 Agent 不再 spawn 任何外部 CLI。运行时是**在 Core utility process 内嵌入 `@earendil-works/pi-coding-agent@0.85.1` 的 `AgentSession`**；Codex 的代码、契约、适配器、探测与凭据目录已全部删除，历史行由一次性迁移清理（见 `docs/implementation/24-pi-inprocess-agent-backend.md`）。

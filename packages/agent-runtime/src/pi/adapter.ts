@@ -1,9 +1,9 @@
 import { randomUUID } from 'node:crypto'
-import { existsSync, mkdirSync } from 'node:fs'
-import { dirname, join } from 'node:path'
+import { existsSync, mkdirSync, realpathSync } from 'node:fs'
+import { dirname, isAbsolute, join, parse, relative, resolve } from 'node:path'
 import { getSupportedThinkingLevels, type Api, type Credential, type Model } from '@earendil-works/pi-ai'
 import type * as Pi from '@earendil-works/pi-coding-agent'
-import type { AgentRunRecordDraft, AgentRuntimeKind, AgentRuntimeTransport } from '@prw/contracts'
+import { AssistantIdSchema, type AgentRunRecordDraft, type AgentRuntimeKind, type AgentRuntimeTransport } from '@prw/contracts'
 import type {
   AgentRuntimeAdapter,
   AgentRuntimeCapabilities,
@@ -48,6 +48,7 @@ export interface PiRuntimeAdapterOptions {
   /** Persist one provider credential through Electron Main. Resolves only after
    * Main acknowledged the write. */
   readonly persistCredential: (providerId: string, credential: Credential | null) => Promise<void>
+  readonly readCredential?: (providerId: string) => Promise<Credential | null>
   /** Wall-clock ceiling for one run. */
   readonly timeoutMs?: number
 }
@@ -149,9 +150,12 @@ export class PiInProcessAdapter implements AgentRuntimeAdapter {
   }
 
   async start(request: AgentRuntimeRequest): Promise<AgentRuntimeHandle> {
+    request.signal?.throwIfAborted()
     const sdk = await loadPiSdk(request.profileDir)
+    request.signal?.throwIfAborted()
     sdk.initTheme()
     const typebox = await loadTypebox()
+    request.signal?.throwIfAborted()
     const externalRunId = randomUUID()
     const queue = new EventQueue<AgentRuntimeEvent>()
     // Replaced once the tool list is known, so early diagnostics still work.
@@ -159,10 +163,19 @@ export class PiInProcessAdapter implements AgentRuntimeAdapter {
     const startedAt = Date.now()
 
     const cwd = request.cwd
-    const sessionDir = join(request.profileDir, 'sessions')
+    const { agentDir, sessionDir } = assistantRuntimePaths(request.profileDir, request.assistantId)
     mkdirSync(cwd, { recursive: true })
     mkdirSync(request.profileDir, { recursive: true })
     mkdirSync(sessionDir, { recursive: true })
+    const canonicalProfile = realpathSync(request.profileDir)
+    const expectedSession = assistantRuntimePaths(canonicalProfile, request.assistantId).sessionDir
+    const canonicalSession = realpathSync(sessionDir)
+    const samePath = process.platform === 'win32'
+      ? canonicalSession.toLowerCase() === resolve(expectedSession).toLowerCase()
+      : canonicalSession === resolve(expectedSession)
+    if (!isWithin(canonicalProfile, canonicalSession) || !samePath) {
+      throw new Error('Assistant session directory escaped the app-owned profile.')
+    }
 
     const client = await this.options.openWorkspaceClient({ runId: request.runId })
     const closeClient = async (): Promise<void> => {
@@ -190,31 +203,44 @@ export class PiInProcessAdapter implements AgentRuntimeAdapter {
     let settled = false
 
     try {
+      request.signal?.throwIfAborted()
       const { tools, blocked } = await this.workspaceTools(client, request)
-      normalizer = new PiLedgerNormalizer({ toolLabels: agentToolLabels(tools.map((tool) => tool.name)) })
+      const externalRequestTools = request.assistantId && request.toolProfile === 'approved-write' && effectivePermissionMode(request) !== 'read-only'
+        ? request.externalRequestTools ?? [] : []
+      request.signal?.throwIfAborted()
+      normalizer = new PiLedgerNormalizer({ toolLabels: agentToolLabels([...tools, ...externalRequestTools].map((tool) => tool.name)) })
       const sessionManager = this.createSessionManager(sdk, request, sessionDir, cwd)
-      const settingsManager = sdk.SettingsManager.create(cwd, request.profileDir, { projectTrusted: true })
+      const settingsManager = sdk.SettingsManager.create(cwd, agentDir, { projectTrusted: true })
       const modelRuntime = await sdk.ModelRuntime.create({
         credentials: new AppCredentialStore({
           read: async (providerId) => this.seedCredential(request, providerId),
           list: async () =>
             (request.credentials ?? []).map((entry) => ({ provider: entry.provider, credential: entry.credential })),
           persist: (providerId, credential) => this.options.persistCredential(providerId, credential)
-        }),
+        }, { scopeKey: request.profileDir,
+          ...(this.options.readCredential ? { readLatest: (providerId: string) =>
+            (request.credentials ?? []).some((entry) => entry.provider === providerId)
+              ? this.options.readCredential!(providerId) : Promise.resolve(null) } : {}) }),
         // The profile directory is app-owned and starts empty, so there is no
         // cached catalog to restore and no reason to hit the network while
         // creating a runtime for a single run.
-        refreshOnCreate: false
+        refreshOnCreate: false,
+        modelsPath: join(request.profileDir, 'models.json')
       })
+      request.signal?.throwIfAborted()
       const model = await this.resolveModel(modelRuntime, request)
+      request.signal?.throwIfAborted()
 
       const resourcePaths = controlledPiResourcePaths()
       const selectedSkillPath = request.skillPath?.trim() ?? ''
       const selectedSkillRoot = selectedSkillPath.length > 0 && existsSync(selectedSkillPath) ? dirname(selectedSkillPath) : null
-      const skillPaths = selectedSkillRoot === null ? [] : [selectedSkillRoot]
+      const skillPaths = [...new Set([
+        ...(selectedSkillRoot === null ? [] : [selectedSkillRoot]),
+        ...(request.skillPaths ?? []).map((path) => dirname(path))
+      ])]
       const services = await sdk.createAgentSessionServices({
         cwd,
-        agentDir: request.profileDir,
+        agentDir,
         settingsManager,
         modelRuntime,
         resourceLoaderOptions: {
@@ -222,12 +248,12 @@ export class PiInProcessAdapter implements AgentRuntimeAdapter {
           // cwd ancestors. These explicit roots are app-owned: checkout skills
           // in development, and the electron-builder mirror in packaged mode.
           ...(skillPaths.length > 0 ? { additionalSkillPaths: skillPaths } : {}),
-          ...(resourcePaths.extensionPaths.length > 0 ? { additionalExtensionPaths: [...resourcePaths.extensionPaths] } : {}),
+          ...(!request.assistantId && resourcePaths.extensionPaths.length > 0 ? { additionalExtensionPaths: [...resourcePaths.extensionPaths] } : {}),
           // Avoid scanning every app skill on ordinary chat runs. A selected
           // skill is passed explicitly by the coordinator and loaded from its
           // validated directory only.
-          noSkills: skillPaths.length === 0,
-          noExtensions: resourcePaths.extensionPaths.length === 0,
+          noSkills: !!request.assistantId || skillPaths.length === 0,
+          noExtensions: !!request.assistantId || resourcePaths.extensionPaths.length === 0,
           noPromptTemplates: true,
           noThemes: true,
           noContextFiles: true,
@@ -236,12 +262,15 @@ export class PiInProcessAdapter implements AgentRuntimeAdapter {
               typebox,
               client,
               tools,
+              externalRequestTools,
               onToolError: (toolName, message) => diagnose(`工具 ${toolName} 调用失败：${message}`)
             })
           ],
           ...(request.systemPromptAppend ? { appendSystemPrompt: [request.systemPromptAppend] } : {})
         }
       })
+
+      request.signal?.throwIfAborted()
 
       const { session } = await sdk.createAgentSessionFromServices({
         services,
@@ -251,6 +280,10 @@ export class PiInProcessAdapter implements AgentRuntimeAdapter {
         ...(model ? { model } : {}),
         ...(thinkingLevel(request.thinking) ? { thinkingLevel: thinkingLevel(request.thinking) as ThinkingLevel } : {})
       })
+      if (request.signal?.aborted) {
+        session.dispose()
+        request.signal.throwIfAborted()
+      }
 
       for (const diagnostic of services.diagnostics) {
         diagnose(`[${diagnostic.type}] ${diagnostic.message}`)
@@ -275,14 +308,27 @@ export class PiInProcessAdapter implements AgentRuntimeAdapter {
         settled = true
         clearTimeout(timeout)
         unsubscribe()
+        request.signal?.removeEventListener('abort', abort)
         const createdAt = new Date().toISOString()
         if (errorMessage) emit({ message: errorMessage }, createdAt, 'progress', normalizer.diagnostic(errorMessage, createdAt))
         const remaining = normalizer.finish(status, createdAt)
         const kind: AgentRuntimeEvent['kind'] =
           status === 'completed' ? 'completed' : status === 'canceled' ? 'canceled' : 'failed'
         emit({ status, durationMs: Date.now() - startedAt }, createdAt, kind, remaining)
-        await closeClient()
-        queue.end()
+        try { session.dispose() } finally {
+          await closeClient()
+          queue.end()
+        }
+      }
+
+      const abort = (): void => {
+        cancelRequested = true
+        void session.abort().then(() => finish('canceled'), () => finish('canceled'))
+      }
+      request.signal?.addEventListener('abort', abort, { once: true })
+      if (request.signal?.aborted) {
+        await finish('canceled')
+        request.signal.throwIfAborted()
       }
 
       // `prompt()` resolves when the run reaches a resting state, so it is the
@@ -326,7 +372,8 @@ export class PiInProcessAdapter implements AgentRuntimeAdapter {
 
   private createSessionManager(sdk: PiSdk, request: AgentRuntimeRequest, sessionDir: string, cwd: string): Pi.SessionManager {
     const previous = request.runtimeSessionId
-    if (previous && previous.trim().length > 0) {
+    if (previous && previous.trim().length > 0 && isWithin(sessionDir, previous)
+      && (!existsSync(previous) || isWithin(realpathSync(sessionDir), realpathSync(previous)))) {
       try {
         return sdk.SessionManager.open(previous, sessionDir, cwd)
       } catch {
@@ -393,7 +440,7 @@ export class PiInProcessAdapter implements AgentRuntimeAdapter {
     client: AgentWorkspaceToolClient,
     request: AgentRuntimeRequest
   ): Promise<{ tools: WorkspaceToolDescriptor[]; blocked: string[] }> {
-    const policy = { permissionMode: effectivePermissionMode(request), toolProfile: request.toolProfile }
+    const policy = { permissionMode: effectivePermissionMode(request), toolProfile: request.toolProfile, toolAllowlist: request.toolAllowlist }
     const listed = await client.listTools()
     const advertised: WorkspaceToolDescriptor[] = listed.tools.map((tool) => ({
       name: tool.name,
@@ -408,6 +455,20 @@ export class PiInProcessAdapter implements AgentRuntimeAdapter {
     // approve.
     return { tools, blocked: advertised.map((tool) => tool.name).filter((name) => !allowed.has(name)) }
   }
+}
+
+function isWithin(root: string, target: string): boolean {
+  const path = relative(resolve(root), resolve(target))
+  return path.length > 0 && path !== '..' && !path.startsWith(`..${process.platform === 'win32' ? '\\' : '/'}`) && !isAbsolute(path)
+}
+
+/** Keep Pi's model registry shared while assistant settings/transcripts are isolated. */
+export function assistantRuntimePaths(profileDir: string, assistantId?: string | null): { agentDir: string; sessionDir: string } {
+  if (!isAbsolute(profileDir) || resolve(profileDir) === parse(resolve(profileDir)).root) {
+    throw new Error('An absolute non-root app-owned Pi profile is required.')
+  }
+  const agentDir = assistantId == null ? profileDir : join(profileDir, 'assistants', AssistantIdSchema.parse(assistantId))
+  return { agentDir, sessionDir: join(agentDir, 'sessions') }
 }
 
 export interface ControlledPiResourcePaths {
