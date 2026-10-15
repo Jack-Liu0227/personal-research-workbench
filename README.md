@@ -8,17 +8,17 @@ Windows 本地优先的个人科研工作台。Electron + React 19 桌面端，T
 | --- | --- |
 | 平台 | Windows 10/11 x64（NSIS 安装包） |
 | 技术栈 | Electron 43.4.1、React 19.2.8、electron-vite 5.0.0、TypeScript |
-| 数据 | SQLite（`better-sqlite3` 13.0.3 + Drizzle 0.45.2），32 个版本化 migration |
+| 数据 | SQLite（`better-sqlite3` 13.0.3 + Drizzle 0.45.2），39 个版本化 migration |
 | AI | 固定 `@earendil-works/pi-ai` 0.85.1 与 `pi-coding-agent` 0.85.1（MIT），凭据走应用自有 `safeStorage` |
 | 构建 | Node.js ≥ 24、pnpm 11.5.2 |
 
-> 截图说明：下方所有界面截图由 `node scripts/capture-readme-shots.cjs` 在**隔离的临时用户目录**中自动生成，业务数据是通过真实 `window.workbench.v2` 命令面写入的**合成示例数据**（虚构项目、任务、日历与文献），不是任何真实用户的资料。文献检索页为一次真实 Crossref 查询的公开书目结果；Zotero 页展示的是**未连接本机服务时的状态**。证据见 [`docs/assets/screenshots/CAPTURE-REPORT.md`](docs/assets/screenshots/CAPTURE-REPORT.md)。
+> 截图说明：下方截图为上一轮界面基线，不代表 0.0.6 全部新样式。截图由 `node scripts/capture-readme-shots.cjs` 在**隔离的临时用户目录**中自动生成，业务数据是通过真实 `window.workbench.v2` 命令面写入的**合成示例数据**（虚构项目、任务、日历与文献），不是任何真实用户的资料。文献检索页为一次真实 Crossref 查询的公开书目结果；Zotero 页展示的是**未连接本机服务时的状态**。证据见 [`docs/assets/screenshots/CAPTURE-REPORT.md`](docs/assets/screenshots/CAPTURE-REPORT.md)。0.0.6 新界面与 Electron 回归证据见[实现 29](docs/implementation/29-agent-resources-and-0.0.6.md)。
 
 ## 下载与安装
 
 最新安装包见 [Releases](https://github.com/Jack-Liu0227/personal-research-workbench/releases/latest)（`Personal-Research-Workbench-<version>-Setup.exe`，Windows 10/11 x64，NSIS，**未签名**，SmartScreen 会提示未知发布者）。变更记录见 [docs/changelog](docs/changelog)。
 
-安装后默认使用当前 Windows 用户的 AppData 数据根（`data/workspace.sqlite3`、`config/`）；首次升级会从旧 exe 目录安全迁移已有数据，应用目录中的 `workbench/` 仍作为默认 Obsidian Vault。需要隔离 profile 时用 `research-workbench.exe --prw-user-data-dir="D:\path\to\profile"` 启动。设置页“关于与更新”支持检查、下载和重启安装。构建、安装、首次启动与卸载证据见 [`docs/implementation/21-windows-nsis-0.0.2-release.md`](docs/implementation/21-windows-nsis-0.0.2-release.md)。
+安装后默认使用当前 Windows 用户的 AppData 数据根（`data/workspace.sqlite3`、`config/`）；保留旧 exe 目录数据迁移逻辑，但 0.0.6 未执行跨版本安装器升级验收，不能据此承诺所有旧版本升级已验证。应用目录中的 `workbench/` 仍作为默认 Obsidian Vault。需要隔离 profile 时用 `research-workbench.exe --prw-user-data-dir="D:\path\to\profile"` 启动。设置页“关于与更新”支持检查、下载和重启安装，自动更新端到端另行验收。本轮构建、安装与发布证据见[实现 29](docs/implementation/29-agent-resources-and-0.0.6.md)；0.0.2 历史证据见[实现 21](docs/implementation/21-windows-nsis-0.0.2-release.md)。
 
 发版流程（版本自洽 → 门禁 → NSIS 打包 → 产物核对 → 安装/启动/卸载 smoke → tag + GitHub release）已做成项目内 skill：[`.agents/skills/windows-release/`](.agents/skills/windows-release/SKILL.md)。
 
@@ -54,7 +54,7 @@ Windows 本地优先的个人科研工作台。Electron + React 19 桌面端，T
 
 ![文献检索](docs/assets/screenshots/05-literature.png)
 
-联网检索工作区，可并行查询 Crossref、OpenAlex、PubMed、arXiv、Semantic Scholar 和 Google Scholar（scholarly）。结果支持按年份、影响因子和引用指标排序，分页显示（10／20／50），并可按项目分配。感兴趣的结果先进入「待分类」暂存区，再从暂存区**预览后**导入 Zotero；也可以导出 Better BibTeX 或 RIS。右侧 Inspector 显示文献信息、Zotero 导入状态、DOI 与摘要；其中「笔记」和「相关文献」两个分页目前只有外观，尚未实现交互。
+联网检索工作区，可并行查询 Crossref、OpenAlex、PubMed、arXiv 和 Semantic Scholar。Google Scholar 的 Python sidecar 已退役，当前明确显示不可用，不会后台启动 Python。结果支持按年份、影响因子和引用指标排序，分页显示（10／20／50），并可按项目分配。感兴趣的结果先进入「待分类」暂存区，再从暂存区**预览后**导入 Zotero；也可以导出 Better BibTeX 或 RIS。右侧 Inspector 显示文献信息、Zotero 导入状态、DOI 与摘要；其中「笔记」和「相关文献」两个分页目前只有外观，尚未实现交互。
 
 ### 情报日报 / RSS
 
@@ -82,6 +82,8 @@ Windows 本地优先的个人科研工作台。Electron + React 19 桌面端，T
 
 内置**进程内 Pi Agent**（`@earendil-works/pi-coding-agent`，不 spawn 外部 CLI），可在「设置 → 模型与 Agent」维护 API Key / OAuth、默认模型、Thinking、权限和工具范围，并编辑 Pi 格式的自定义 `models.json`。Agent 通过进程内 MCP 与任务、Todo、日历、文献检索、Obsidian、Zotero、定时任务和非秘密参数交互；外部写入只能生成 `.request` 待确认动作，用户确认后才由 IntegrationCoordinator 执行。一次运行产生归一化 run ledger，包含回答、reasoning、工具调用、token 用量和耗时；「对话」与「轨迹」是同一份 ledger 的两个投影。Skills 从仓库 `.agents/skills` 或打包 `resources/skills` 受控加载，extensions 不读取用户 `~/.pi`。
 
+0.0.6 增加按助手隔离的配置、目录与工具/技能授权，以及有界只读 director-loop 团队。矩阵经 typed IPC、SQLite 事务与 revision 校验保存，下一次真实 Pi run 按冻结配置加载，不是仅切换 UI。用户新建的指令技能保存于 SQLite，必须审阅后授权，修改内容会撤销绑定；它不是可执行插件。
+
 ### 定时任务
 
 ![定时任务](docs/assets/screenshots/09-automation.png)
@@ -94,11 +96,13 @@ Windows 本地优先的个人科研工作台。Electron + React 19 桌面端，T
 
 ![设置](docs/assets/screenshots/10-settings.png)
 
-十个分组：通用、工作区与数据、文献检索、代理、工具连接、模型与 Agent、知识引擎、MCP Server、安全与审计、关于与更新。页面只显示后端真实状态；Provider、OAuth、工具连接、skill 状态和探测结果统一在这里管理。
+全部 16 个分区采用**左侧纵向导航**，不是顶部标签栏；窄窗口可展开侧栏抽屉。分区为：通用、工作区与数据、文献检索、科研工作（退役说明）、代理、工具连接、RSS 来源、模型与 Agent、AI 助手、协作团队、工具与 MCP 绑定、技能绑定、知识引擎、MCP Server、安全与审计、关于与更新。页面显示后端真实状态；助手、团队、资源绑定、Provider、OAuth 和探测统一在这里管理。
+
+第三方 MCP 支持显式探测的 Streamable HTTP（公网 HTTPS 或 loopback HTTP），Bearer 凭据只在 Main `safeStorage`。远程工具仅限已授权的普通手动助手，模型只生成待批准请求，用户单独确认后执行一次；团队、定时与只读运行不可用。不支持 stdio、任意命令、环境变量或自定义 headers。
 
 ## 核心能力
 
-- **V2 Shell**：项目上下文、Quick Todo、工作区 Tabs、Inspector、底部服务状态栏、深色蓝黑主题（可切浅色）与字号档位。
+- **V2 Shell**：项目上下文、Quick Todo、工作区 Tabs、Inspector、底部服务状态栏、双主题、可推导主色与字号档位；吸收科研工作 1.0 设计语言，不复制许可不明的代码或资源。
 - **乐观并发**：所有写命令带 `expectedRevision`，冲突会被拒绝而不是静默覆盖；批量操作返回逐条结果。
 - **统一信任边界**：Renderer 没有 Node、SQLite、credential 或泛化 IPC 权限，Preload 只暴露 `window.workbench.v2` 和窄化的 `window.workbench.agent`。
 - **共享契约**：所有跨进程 DTO 由 `packages/contracts` 的 Zod schema 定义，在进程边界统一校验。
@@ -137,7 +141,7 @@ Core process ── Workspace Service ── SQLite (workspace.sqlite3)
 
 ## 尚未实现
 
-AnythingLLM／AgentScope／LLMWiki／MOSAIC 的 RAG 与索引执行、Headless 常驻调度、远程 MCP、完整持久化 AI Job／Event／Approval／checkpoint、PDF 与向量检索、富文本引用、三方冲突 UI、durable outbox、无人值守外部写回、备份恢复和代码签名仍在后续阶段；桌面端已支持从 GitHub Release 检查、下载并重启安装更新。
+AnythingLLM／AgentScope／LLMWiki／MOSAIC 的 RAG 与索引执行、Headless 常驻调度、MCP stdio 客户端与任意代码技能、完整通用 AI Job／Event／checkpoint、PDF 与向量检索、富文本引用、三方冲突 UI、durable outbox、无人值守外部写回、备份恢复和代码签名仍在后续阶段。HTTP MCP 待审批调用与收据已持久化；不等于通用 durable outbox。桌面端支持 GitHub Release 更新，但本轮未执行自动更新端到端或旧版安装器升级；真实 Provider/OAuth/外部 MCP/Zotero/Obsidian 写入与 clean-VM/OS 缩放仍需独立验收。
 
 已知的局部未完成项：文献检索 Inspector 的「笔记」与「相关文献」分页只渲染标签页外观，没有绑定交互（见 `features/research/literature.tsx:107`）。
 
@@ -189,3 +193,5 @@ node scripts/capture-readme-shots.cjs
 ## 许可
 
 仓库暂未附 LICENSE 文件。
+
+Windows 0.0.6 的第三方原文与依赖盘点见 `docs/legal/0.0.6/`，随安装包保留。门禁为 `PASS_WITH_DISCLOSED_EXCEPTIONS`：4 个 MIT 包缺少上游完整声明的发布限定例外已由独立审查接受，并非完整二进制 SBOM、法律保证或其他平台批准。

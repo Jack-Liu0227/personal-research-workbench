@@ -14,9 +14,9 @@
 | Zotero Collections/Items/本地导入、Better BibTeX 批量导出与 RIS/BibTeX 中转包 | 已实现基础功能，待发布门禁 | `features/zotero.tsx`、`packages/connectors/src/zotero.ts` |
 | Workspace Service + V2 Preload + 本机 MCP | 已实现基础链路 | `packages/workspace-service`、`packages/workspace-mcp` |
 | 进程内 Pi Agent、run/event/ledger/inbox、MCP 业务工具、应用存活期间自动化 | 已接入，外部写入仍需用户确认；待 QA/Security 独立验收 | `packages/agent-runtime`、`packages/workspace-mcp`、`features/agent/index.tsx`、[Agent 计划](plan/08-Agent运行时.md) |
-| 多助手配置、团队/绑定设置、有界只读 director-loop | 已接入本地链路，IN_REVIEW；真实模型与安装器门禁单独验收 | [P0 映射](design/AI_ASSISTANT_TEAM_MAPPING.md)、[实现 27](implementation/27-agent-assistants-teams.md)、migration 38 |
-| 双来源整体视觉升级、全部设置左侧导航、工具/技能跨助手启停矩阵 | 本地前后端链路已实现，IN_REVIEW；原子保存、实际 SDK 注入/撤销已验证，不包含第三方 MCP 或技能安装 | [设计令牌](design/SOURCE_DESIGN_MAPPING.md)、[最终增量证据](implementation/28-source-design-and-binding-matrix.md) |
-| Windows 安装器、真实外部服务、完整发布门禁 | 未重新验收 | 见当前代码和发布环境 |
+| 多助手配置、团队/绑定设置、有界只读 director-loop | 已接入并通过本地/SDK fixture 与 Electron 验证；真实在线模型验收仍为 IN_REVIEW | [P0 映射](design/AI_ASSISTANT_TEAM_MAPPING.md)、[实现 27](implementation/27-agent-assistants-teams.md)、migration 38 |
+| 双来源视觉升级、全部 16 设置左侧导航、工具/技能跨助手启停矩阵 | 原子保存、实际 SDK 注入/撤销及 Electron 回归通过；HTTP MCP/SQLite 指令技能见实现 29 | [设计令牌](design/SOURCE_DESIGN_MAPPING.md)、[矩阵证据](implementation/28-source-design-and-binding-matrix.md)、[最新实现 29](implementation/29-agent-resources-and-0.0.6.md) |
+| Windows x64 NSIS 0.0.6 本机验收 | 实际构建/安装/启动/重启/同版本重装/合成库迁移/卸载 PASS；未签名，在线服务/跨版本升级/自动更新仍未验收 | [产物与安装证据](implementation/29-agent-resources-and-0.0.6.md) |
 
 ## 0.0.6 增量
 

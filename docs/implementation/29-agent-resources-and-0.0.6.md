@@ -45,7 +45,7 @@ Supervisor 负责契约、Main、数据层和发布协调；Frontend/Agent Runti
 
 ## 发布门禁与剩余边界
 
-0.0.6 安装包、实际安装 smoke、远程提交/tag/release 的结果在执行后追加，不能以本文存在推断通过。发布使用原始生产熔丝，不为测试启用 Main inspector；安装 smoke 使用精确子进程与 loopback Renderer CDP，Main isPackaged 不可通过 app.evaluate 直接观测，必须分别报告静态包配置与真实 Renderer/落盘证据。
+0.0.6 实际安装 smoke 已通过，远程提交/tag/release 在执行后另记，不能以本文存在推断已发布。发布使用原始生产熔丝，不为测试启用 Main inspector；安装 smoke 使用精确子进程与 loopback Renderer CDP，Main isPackaged 不可通过 app.evaluate 直接观测，分别报告静态包配置与真实 Renderer/落盘证据。
 
 安装预检发现本机既有 `@prwdesktop-updater/installer.exe`，未覆盖/移动/删除。正式生产配置新增 `extraMetadata.name: personal-research-workbench`，修正 workspace scoped npm 名称污染 updater cache 的问题；源 workspace 名称仍为 `@prw/desktop`。独立 reviewer 亲读 builder metadata merge/AppInfo/NSIS/PublishManager，批准此候选配置后重建，要求实际 ASAR package name、app-update.yml 与 NSIS cache define 三处核对一致，旧缓存只读指纹不变；这不是安装/发布批准。AppId、productName、EXE、默认 profile 不变，旧版缓存不自动迁移，内部包归档名称随新 metadata 名改变。
 
@@ -53,6 +53,36 @@ Supervisor 负责契约、Main、数据层和发布协调；Frontend/Agent Runti
 - 真实 Windows OS 显示缩放矩阵未验收；Electron 200% 是应用缩放。已知 200% Agent 顶部长模型 pill 可截断，新增保存/审批控件可达，不宣称全壳层零裁切。
 - 安装器无 Authenticode 签名；自动更新端到端、旧版安装器升级单独报告。相同版本重装不叫跨版本升级，SQLite 38→39 迁移测试不叫安装器升级。
 - 发布时保持无新增生产依赖；完整生产许可证盘点/notice 见 `docs/legal/0.0.6/`，不能仅凭顶层 package 的 license 推断全部合规。
-- 未授权重置/清理工作区；原有 sidecars、artifacts 删除和其他用户变更保留且不混入提交。
+- 未执行重置/广泛清理；用户批准后只提交已审查的旧 sidecars、artifacts 与根目录过期产物删除，见[清理记录](30-repository-cleanup.md)。无关 `pnpm-workspace.yaml` 占位编辑与 last30days 未跟踪 `PRW-PIN.md` 保留本地，不提交、不打包。
 
-Next receiving role：QA、Review/Security、Desktop Backend。下一步为原始 x64 NSIS 安装、启动、重启、重装与卸载，并核验远程资产身份。
+## 实际 NSIS 包与安装验收
+
+生产输入提交：`8e7450cc08be615149cd43ec0ea6aa76d30a046a`。其后仅更新不进入载荷的验收文档；tag 可包含这些文档，但不能改动已验收产品输入。
+
+| 实际命令/产物 | 结果 |
+| --- | --- |
+| `node .agents/skills/windows-release/scripts/release.mjs build --skip-gate --out release-0.0.6/build` | exit 0；此前本轮完整 typecheck/build 已重跑通过，生产输出哈希不变；不是声称 helper 内重复执行门禁 |
+| `node .agents/skills/windows-release/scripts/release.mjs verify --out release-0.0.6/build` | exit 0；实际 ASAR/更新缓存/NSIS define/日志和配置 receipt/许可证/禁自动启动一致 |
+| `node .agents/skills/windows-release/scripts/release.mjs smoke --out release-0.0.6/build` | exit 0；2026-10-15 02:16:48–02:22:37 UTC，真实安装、4 次启动、重装、迁移和卸载 PASS |
+| Setup | `Personal-Research-Workbench-0.0.6-Setup.exe`，141028956 bytes，ProductVersion `0.0.6`，Authenticode `NotSigned` |
+| Setup SHA-256 | `B1F0D99AFAF50D498064AD009F71B0589EF71B8A07E3BA67EA6BD18018BC60E3` |
+| blockmap | 149849 bytes；SHA-256 `7861276A1B462584354CBBEFBA5515CFDEBCEB71778426A4C69F6A62AE8F1A02` |
+| latest.yml | SHA-256 `558FE7A5B72EFE04D73791B09AA3E249BD7EBA261506F1A55FAF81E48F476C2C`；记录版本/大小与 Setup SHA-512 |
+| app.asar | 136883269 bytes；SHA-256 `b8a3175b989155d99d5196c49764500d3faa07008e97f891e481d14d167e44d5` |
+
+默认 electron-builder 路径直接成功，没有 electronDist fallback，没有 `default_app.asar` 偏差。真实 makensis 两次调用均含正确产品缓存与 `HIDE_RUN_AFTER_FINISH`，不含 `RUN_AFTER_FINISH`/`ONE_CLICK`。保留原始生产熔丝；包内没有 sidecars、发布 skill、PRW-PIN、Git 历史或 pyc。独立 reviewer 亲自核验 7 个应用输出、1808 个 Pi unpacked 文件 integrity、280 个 legal 文件及 242 个 skill 文件；Electron/Chromium notice 逐字节与 Electron 43.4.1 本地官方 dist 一致。
+
+安装 smoke 只使用新建 `%TEMP%/prw-installed-smoke-BtbQJ5`，证据为其 `logs/installed-release-evidence.json`（20245 bytes，SHA-256 `7F69E58AA96A37FABC9CC02CE70FDAF6CD2F809D767EB31EBCEDEBE269A87BDA`），保留 4 张原生截图和 stdout/stderr。隔离安装 EXE 的四次实际启动均为 `workbench://app`，Main typed version 与 Core health 都是 `0.0.6`，Renderer 的 process/require/raw IPC/electron 均 undefined；故意注入的无效开发 Renderer URL 未被使用。
+
+- 首次安装、同版本重装、卸载各 exit 0；创建项目和任务并移动到 `in_progress`，revision 1，重启/重装后真实 SQLite 与界面均保持。
+- 数据库 39 条 migration、`integrity_check` 和 foreign key 检查全部通过；合成 v38 库经真实安装 EXE 升为 v39，项目/任务仍在。合成数据迁移与同版本重装均不是旧版安装器升级证据。
+- 卸载后产品进程、注册、快捷方式均回到空基线，真实默认 profile 未出现；刻意保留隔离 profile 与日志。即时观察安装目录仍有 `Uninstall research-workbench.exe`，新产品 updater cache 也保留：不是宣称所有文件零残留，更未自动删除。旧 scoped cache 与旧开发 profile 的全部内容/元数据指纹在 12 个阶段不变。
+- Windows PowerShell 7 不可用，helper 回退到系统 Windows PowerShell，仅用于只读检查与精确 PID 身份核验/关闭，不降低生产熔丝。
+
+许可证机械门禁 `PASS_WITH_DISCLOSED_EXCEPTIONS`：288 组/294 个精确 npm 版本/254 份原文；Windows 与构建闭包 native 缺口 0，15 个其他目标缺口保留且不批准相应平台。4 个 MIT 原文/署名缺失例外由独立 reviewer 限当前 Windows x64 版本接受，见 `docs/legal/0.0.6/`；不是二进制 SBOM、可复现构建或法律保证。
+
+构建日志、receipt、配置副本和 `source-equivalence.json` 保留在忽略的 `release-0.0.6/`：包内全部 7 个应用构建文件（5844739 bytes）与已测试输出逐字节相同；跟踪的生产源码、lockfile、legal 与 skills 未改。无关 workspace 占位编辑并非该安装包的安装输入，也不会发布到远程；现有 submodule 精确提交未变，其 PRW-PIN 被过滤。
+
+独立 Review/Security 已亲自运行只读断言、重算旧两树指纹并核对现状 snapshot；对该精确 SHA-256 的实际包与本机 NSIS smoke 给出限定 APPROVE，详见[独立发布审查](31-independent-0.0.6-release-review.md)。reviewer 没有运行安装器/Electron，不冒称独立重新安装。该批准不涵盖签名、clean-VM、旧版升级、在线服务或自动更新；改变生产/依赖/打包输入必须重新验收。
+
+Next receiving role：Supervisor 核对 branch/tag/GitHub Release 资产；真实在线服务、代码签名、跨版本安装升级与自动更新仍单独验收。
