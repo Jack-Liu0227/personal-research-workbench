@@ -18,6 +18,8 @@
 
 ## 统一验收原则
 
+2026-10-15 最新增量：HTTP MCP 与 SQLite 指令技能安装/编辑已在[实现 29](29-agent-resources-and-0.0.6.md)接入；原始 Windows x64 NSIS 的安装、重启、同版本重装、合成数据库迁移、卸载和独立复核均通过，`v0.0.6` 已正式发布并重新下载核对全部 3 个资产。下表/历史文件中的旧 NSIS 或“未实现远程 MCP”结论仅描述其当时快照，不能覆盖本轮证据；真实在线服务、旧版安装器升级、自动更新、clean-VM 与签名仍未验收。
+
 本轮多助手与团队增量见 [27-agent-assistants-teams.md](27-agent-assistants-teams.md)，状态 `IN_REVIEW`；P0 映射见 [AI_ASSISTANT_TEAM_MAPPING.md](../design/AI_ASSISTANT_TEAM_MAPPING.md)。migration 使用当前基线之后的 38，不覆盖历史版本。真实模型/OAuth 与 NSIS 门禁不因本地测试通过而完成。
 
 用户追加的真实远程视觉来源、局域网管理来源及跨助手启停矩阵见 [28-source-design-and-binding-matrix.md](28-source-design-and-binding-matrix.md)；以该文件最终执行证据判断新快照，不将来源缓存界面或未运行门禁当实现完成。
@@ -50,3 +52,5 @@
 | 27 | `27-agent-assistants-teams.md` | migration 38、多助手隔离与有界只读团队 | IN_REVIEW（最终 profiles 42/42、Pi 57/57、typecheck/build、限定独立门禁 PASS；真实 Provider/OAuth/团队取消及 NSIS 未验收，最终证据见 28） |
 | 28 | `28-source-design-and-binding-matrix.md` | 双来源参考式视觉重构、16 个左侧设置分区、工具/技能矩阵前后端闭环 | IN_REVIEW（最终 focused 33 工作流/136 原生截图及同构建 general E2E PASS，独立限定本地 APPROVE；任意第三方 MCP/技能安装编辑未实现，真实服务与 P6 发布门禁未完成） |
 | 29 | `29-agent-resources-and-0.0.6.md` | HTTP MCP、指令技能、safeStorage/审批闭环与 0.0.6 发布 | 本地 tests/Electron/独立限定复核 PASS；实际发布结果按文内后续证据，不等于真实在线服务验收 |
+| 30 | `30-repository-cleanup.md` | 用户授权的过期源码/生成产物清理 | 已随代码推送；不清理用户数据或无关本地编辑 |
+| 31 | `31-independent-0.0.6-release-review.md` | 精确 0.0.6 安装候选的独立 QA/Security | 实际包与本机 NSIS smoke 限定 APPROVE；不包含真实在线服务或签名 |

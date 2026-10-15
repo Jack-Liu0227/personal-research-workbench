@@ -45,7 +45,7 @@ Supervisor 负责契约、Main、数据层和发布协调；Frontend/Agent Runti
 
 ## 发布门禁与剩余边界
 
-0.0.6 实际安装 smoke 已通过，远程提交/tag/release 在执行后另记，不能以本文存在推断已发布。发布使用原始生产熔丝，不为测试启用 Main inspector；安装 smoke 使用精确子进程与 loopback Renderer CDP，Main isPackaged 不可通过 app.evaluate 直接观测，分别报告静态包配置与真实 Renderer/落盘证据。
+0.0.6 实际安装 smoke 已通过，远程提交/tag/release 也已实际完成并回读核验，证据见本文末节，不以本文存在推断通过。发布使用原始生产熔丝，不为测试启用 Main inspector；安装 smoke 使用精确子进程与 loopback Renderer CDP，Main isPackaged 不可通过 app.evaluate 直接观测，分别报告静态包配置与真实 Renderer/落盘证据。
 
 安装预检发现本机既有 `@prwdesktop-updater/installer.exe`，未覆盖/移动/删除。正式生产配置新增 `extraMetadata.name: personal-research-workbench`，修正 workspace scoped npm 名称污染 updater cache 的问题；源 workspace 名称仍为 `@prw/desktop`。独立 reviewer 亲读 builder metadata merge/AppInfo/NSIS/PublishManager，批准此候选配置后重建，要求实际 ASAR package name、app-update.yml 与 NSIS cache define 三处核对一致，旧缓存只读指纹不变；这不是安装/发布批准。AppId、productName、EXE、默认 profile 不变，旧版缓存不自动迁移，内部包归档名称随新 metadata 名改变。
 
@@ -86,3 +86,19 @@ Supervisor 负责契约、Main、数据层和发布协调；Frontend/Agent Runti
 独立 Review/Security 已亲自运行只读断言、重算旧两树指纹并核对现状 snapshot；对该精确 SHA-256 的实际包与本机 NSIS smoke 给出限定 APPROVE，详见[独立发布审查](31-independent-0.0.6-release-review.md)。reviewer 没有运行安装器/Electron，不冒称独立重新安装。该批准不涵盖签名、clean-VM、旧版升级、在线服务或自动更新；改变生产/依赖/打包输入必须重新验收。
 
 Next receiving role：Supervisor 核对 branch/tag/GitHub Release 资产；真实在线服务、代码签名、跨版本安装升级与自动更新仍单独验收。
+
+## 实际远程发布与回读
+
+用户授权的远程推送与发布已执行，不是 dry-run。`git push origin master` 成功；正式发布命令 `node .agents/skills/windows-release/scripts/release.mjs publish --yes --allow-dirty --out release-0.0.6/build` exit 0。仅因保留两处已知无关本地改动而使用 `--allow-dirty`，事前已证明包内输入与提交一致，不豁免产品代码未提交或验收。
+
+- GitHub Release：<https://github.com/Jack-Liu0227/personal-research-workbench/releases/tag/v0.0.6>，ID `413358223`；发布于 `2026-10-15T02:28:10Z`。
+- tag `v0.0.6`：annotated tag object `77a73b379338f2a61e3afb5335d790f0fc605740`，peeled commit `bcd7e89d4c7dbf61af12c109681fe21b309aa668`；发布时 `origin/master` 同一提交。
+- 该 tag 相对生产输入 `8e7450c` 仅增加 6 份 README/证据文档，`apps`、`packages`、lockfile、根 manifest、legal、skills 生产输入 diff 为空；现有 submodule revision 未改变。
+- `gh api .../releases/tags/v0.0.6` 和 `.../releases/latest` 实际回读均确认正式、非 draft、非 prerelease，Latest 为 `v0.0.6`。3 个 asset 均为 uploaded，大小及 API `digest` 与本文表格匹配。
+- 再次用 `gh release download v0.0.6 --repo Jack-Liu0227/personal-research-workbench --dir <唯一新TEMP目录>` 下载全部 3 个资产；逐项重算 SHA-256，与本机验收产物完全相同。Setup 141028956 bytes、blockmap 149849 bytes、latest.yml 383 bytes。
+
+下载核验保留在 `%TEMP%/prw-release-download-check-1df50c3804be4fd0934e75df3b6106bc`，摘要在忽略的 `release-0.0.6/build/remote-asset-verification.json`。不覆盖已有 tag，不 force push；发布后文档补记可由后续 docs-only commit 进入 master，不移动 `v0.0.6`。
+
+独立 reviewer 另外亲自执行 GitHub API/Git refs/本地 digest 只读断言，exit 0，`PASS_REMOTE_METADATA_AND_LOCAL_DIGESTS`，未发现其范围内问题；确认精确 tag/Latest/三资产及生产输入无差异。reviewer 没有下载资产，重新下载字节核验由 Supervisor 执行，二者证据不混称。
+
+本次请求的本地实现、受限安装验收、远程代码清理与最新版发布已交付。真实在线服务、签名、跨版本安装升级与自动更新仍为明确未验收边界，不因发布完成将相应功能路线行改为 DONE。
