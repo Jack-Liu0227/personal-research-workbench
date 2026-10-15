@@ -538,9 +538,9 @@ function cmdVerify() {
   if (!fs.existsSync(effectiveFile) || hashFile(effectiveFile) !== receipt.configSha256)
     fail('Missing or changed hash-bound builder input configuration.')
   const effective = yaml.load(fs.readFileSync(effectiveFile, 'utf8'))
-  if (effective.appId !== 'com.personalworkshop.researchworkbench' || effective.nsis?.runAfterFinish !== false ||
+  if (effective.appId !== 'com.personalworkshop.researchworkbench' || effective.nsis?.oneClick !== false || effective.nsis?.runAfterFinish !== false ||
       effective.extraMetadata?.name !== PACKAGE_NAME ||
-      makensis.some((line) => !line.includes('-DHIDE_RUN_AFTER_FINISH') || /-DRUN_AFTER_FINISH(?:\s|$|=)/.test(line)))
+      makensis.some((line) => !line.includes('-DHIDE_RUN_AFTER_FINISH') || /-D(?:RUN_AFTER_FINISH|ONE_CLICK)(?:\s|$|=)/.test(line)))
     fail('Cannot attest installer identity and disabled automatic launch.')
   const attestationFile = path.join(out, 'installed-smoke-attestation.json')
   const attestation = {
